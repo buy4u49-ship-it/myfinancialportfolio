@@ -828,23 +828,25 @@ def to_percent(value):
     return value * 100
 
 
-def render_value_card(column, label: str, value: str, delta: str | None = None, large: bool = False):
+def summary_card_html(label: str, value: str, delta: str | None = None, large: bool = False) -> str:
     value_class = "summary-value large" if large else "summary-value"
     delta_value = safe_number(str(delta).replace("%", "")) if delta and delta != "N/A" else None
     delta_class = "summary-delta neutral"
     if delta_value is not None:
         delta_class = "summary-delta positive" if delta_value >= 0 else "summary-delta negative"
 
-    delta_html = f'<div class="{delta_class}">{html_lib.escape(delta or "")}</div>' if delta else ""
-    column.markdown(
+    card_class = "summary-card large" if large else "summary-card"
+    delta_html = f'<span class="{delta_class}">{html_lib.escape(delta or "")}</span>' if delta else ""
+    return (
         f"""
-        <div class="summary-card">
+        <div class="{card_class}">
             <div class="summary-label">{html_lib.escape(label)}</div>
-            <div class="{value_class}">{html_lib.escape(value)}</div>
-            {delta_html}
+            <div class="summary-value-row">
+                <span class="{value_class}">{html_lib.escape(value)}</span>
+                {delta_html}
+            </div>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
 
@@ -857,65 +859,31 @@ def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window
     comparison_summary = comparison["metrics"]
 
     st.subheader(display_symbol(symbol))
-    price_cols = st.columns([1.35, 1.35, 1.1, 1.1])
-    render_value_card(
-        price_cols[0],
-        "Current Price",
-        format_money(quote["price"], quote["currency"]),
-        format_pct(quote["change_pct"]),
-        large=True,
-    )
-    render_value_card(
-        price_cols[1],
-        "Previous Close",
-        format_money(quote["previous_close"], quote["currency"]),
-        large=True,
-    )
-    render_value_card(
-        price_cols[2],
-        "CAPM_Price",
-        format_money(capm["capm_price"], quote["currency"]),
-        large=True,
-    )
-    render_value_card(
-        price_cols[3],
-        "Current vs CAPM",
-        format_pct(capm["current_vs_capm_pct"]),
-        large=True,
-    )
-
-    metric_cols = st.columns(3)
-    render_value_card(
-        metric_cols[0],
-        "Avg Monthly Log Return",
-        format_pct(to_percent(metric_summary["avg_monthly_log_return"])),
-    )
-    render_value_card(
-        metric_cols[1],
-        "Avg Monthly Volatility",
-        format_pct(to_percent(metric_summary["avg_monthly_volatility"])),
-    )
-    render_value_card(
-        metric_cols[2],
-        f"Monthly Beta ({rolling_window}M)",
-        format_decimal(metric_summary["latest_beta"]),
-    )
-
-    comparison_cols = st.columns(3)
-    render_value_card(
-        comparison_cols[0],
-        f"{comparison_label} Log Return",
-        format_pct(to_percent(comparison_summary["avg_monthly_log_return"])),
-    )
-    render_value_card(
-        comparison_cols[1],
-        f"{comparison_label} Volatility",
-        format_pct(to_percent(comparison_summary["avg_monthly_volatility"])),
-    )
-    render_value_card(
-        comparison_cols[2],
-        f"{comparison_label} Beta",
-        format_decimal(comparison_summary["latest_beta"]),
+    price_cards = [
+        summary_card_html("Current Price", format_money(quote["price"], quote["currency"]), format_pct(quote["change_pct"]), large=True),
+        summary_card_html("Previous Close", format_money(quote["previous_close"], quote["currency"]), large=True),
+        summary_card_html("CAPM_Price", format_money(capm["capm_price"], quote["currency"]), large=True),
+        summary_card_html("Current vs CAPM", format_pct(capm["current_vs_capm_pct"]), large=True),
+    ]
+    metric_cards = [
+        summary_card_html("Avg Monthly Log Return", format_pct(to_percent(metric_summary["avg_monthly_log_return"]))),
+        summary_card_html("Avg Monthly Volatility", format_pct(to_percent(metric_summary["avg_monthly_volatility"]))),
+        summary_card_html(f"Monthly Beta ({rolling_window}M)", format_decimal(metric_summary["latest_beta"])),
+    ]
+    comparison_cards = [
+        summary_card_html(f"{comparison_label} Log Return", format_pct(to_percent(comparison_summary["avg_monthly_log_return"]))),
+        summary_card_html(f"{comparison_label} Volatility", format_pct(to_percent(comparison_summary["avg_monthly_volatility"]))),
+        summary_card_html(f"{comparison_label} Beta", format_decimal(comparison_summary["latest_beta"])),
+    ]
+    st.markdown(
+        f"""
+        <div class="summary-stack">
+            <div class="summary-grid summary-grid-4">{''.join(price_cards)}</div>
+            <div class="summary-grid summary-grid-3">{''.join(metric_cards)}</div>
+            <div class="summary-grid summary-grid-3">{''.join(comparison_cards)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
     st.caption(
         f"CAPM uses the 3M T-Bill as risk-free rate ({format_pct(capm['risk_free_annual_pct'])}, {capm['risk_free_as_of']})."
@@ -1330,22 +1298,59 @@ def inject_styles():
     st.markdown(
         """
         <style>
+        .summary-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            margin: 0;
+            width: 100%;
+        }
+        .summary-grid {
+            display: grid;
+            gap: 0;
+            margin: 0;
+            width: 100%;
+        }
+        .summary-grid-4 {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+        .summary-grid-3 {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
         .summary-card {
             border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            padding: 12px 14px;
-            min-height: 92px;
+            border-radius: 0;
+            padding: 14px 20px;
+            height: 112px;
             background: #ffffff;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-width: 0;
+        }
+        .summary-card.large {
+            height: 138px;
         }
         .summary-label {
             color: #6b7280;
             font-size: 0.78rem;
             font-weight: 700;
             letter-spacing: 0;
-            margin-bottom: 4px;
+            margin-bottom: 10px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            text-align: right;
+            width: 100%;
+        }
+        .summary-value-row {
+            display: flex;
+            align-items: flex-end;
+            justify-content: flex-start;
+            gap: 12px;
+            min-width: 0;
+            width: 100%;
         }
         .summary-value {
             color: #111827;
@@ -1354,14 +1359,19 @@ def inject_styles():
             letter-spacing: 0;
             line-height: 1.15;
             overflow-wrap: anywhere;
+            text-align: left;
+            min-width: 0;
         }
         .summary-value.large {
-            font-size: 2rem;
+            font-size: clamp(1.65rem, 2.2vw, 2.25rem);
         }
         .summary-delta {
-            margin-top: 6px;
+            margin: 0 0 0.18rem 0;
             font-size: 0.95rem;
             font-weight: 700;
+            line-height: 1;
+            white-space: nowrap;
+            flex: 0 0 auto;
         }
         .summary-delta.positive {
             color: #15803d;
