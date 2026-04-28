@@ -1341,13 +1341,13 @@ def inject_styles():
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            text-align: right;
+            text-align: left;
             width: 100%;
         }
         .summary-value-row {
             display: flex;
             align-items: flex-end;
-            justify-content: flex-start;
+            justify-content: flex-end;
             gap: 12px;
             min-width: 0;
             width: 100%;
@@ -1360,7 +1360,7 @@ def inject_styles():
             letter-spacing: 0;
             line-height: 1.15;
             overflow-wrap: anywhere;
-            text-align: left;
+            text-align: right;
             min-width: 0;
         }
         .summary-value.large {
