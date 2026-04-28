@@ -672,6 +672,13 @@ def format_pct(value):
     return f"{value:+.2f}%"
 
 
+def format_pct_plain(value):
+    value = safe_number(value)
+    if value is None:
+        return "N/A"
+    return f"{value:+.2f}%"
+
+
 def format_decimal(value, digits=4):
     value = safe_number(value)
     if value is None:
@@ -836,15 +843,15 @@ def summary_card_html(label: str, value: str, delta: str | None = None, large: b
         delta_class = "summary-delta positive" if delta_value >= 0 else "summary-delta negative"
 
     card_class = "summary-card large" if large else "summary-card"
-    delta_html = f'<span class="{delta_class}">{html_lib.escape(delta or "")}</span>' if delta else ""
+    delta_html = f'<div class="{delta_class}">{html_lib.escape(delta or "")}</div>' if delta else ""
     return "".join(
         [
             f'<div class="{card_class}">',
             f'<div class="summary-label">{html_lib.escape(label)}</div>',
             '<div class="summary-value-row">',
             f'<span class="{value_class}">{html_lib.escape(value)}</span>',
-            delta_html,
             "</div>",
+            delta_html,
             "</div>",
         ]
     )
@@ -1162,17 +1169,42 @@ def render_metrics(symbol: str, benchmark: str, years: int, rolling_window: int)
     display_metrics["monthly_log_return_pct"] = display_metrics["monthly_log_return"] * 100
     display_metrics["benchmark_monthly_log_return_pct"] = display_metrics["benchmark_monthly_log_return"] * 100
     display_metrics["monthly_volatility_pct"] = display_metrics["monthly_volatility"] * 100
-    display_columns = [
-        "month",
-        "symbol",
-        "benchmark",
-        "monthly_log_return_pct",
-        "benchmark_monthly_log_return_pct",
-        "monthly_volatility_pct",
-        "beta_full_period",
-        beta_key,
+    display_table = display_metrics.tail(24).iloc[::-1].copy()
+    display_table = pd.DataFrame(
+        {
+            "Month": display_table["month"],
+            "Symbol": display_table["symbol"],
+            "Benchmark": display_table["benchmark"],
+            "Monthly Return": display_table["monthly_log_return_pct"].map(format_pct_plain),
+            "Benchmark Return": display_table["benchmark_monthly_log_return_pct"].map(format_pct_plain),
+            "Monthly Volatility": display_table["monthly_volatility_pct"].map(format_pct_plain),
+            "Beta (Full Period)": display_table["beta_full_period"].map(lambda value: format_decimal(value, 4)),
+            "Beta (Rolling)": display_table[beta_key].map(lambda value: format_decimal(value, 4)),
+        }
+    )
+    display_table.index = range(1, len(display_table) + 1)
+    display_table.index.name = ""
+    styled_table = (
+        display_table.style.set_properties(**{"text-align": "center"})
+        .set_table_styles(
+            [
+                {"selector": "th", "props": [("text-align", "center")]},
+                {"selector": "td", "props": [("text-align", "center")]},
+            ]
+        )
+    )
+    equal_width_columns = [
+        "Monthly Return",
+        "Benchmark Return",
+        "Monthly Volatility",
+        "Beta (Full Period)",
+        "Beta (Rolling)",
     ]
-    st.dataframe(display_metrics.tail(24)[display_columns], use_container_width=True)
+    st.dataframe(
+        styled_table,
+        use_container_width=True,
+        column_config={column: st.column_config.TextColumn(column, width="medium") for column in equal_width_columns},
+    )
 
 
 def render_profile(symbol: str):
@@ -1367,12 +1399,13 @@ def inject_styles():
             font-size: clamp(1.45rem, 2vw, 2.05rem);
         }
         .summary-delta {
-            margin: 0 0 0.18rem 0;
+            margin-top: 8px;
             font-size: 0.95rem;
             font-weight: 700;
             line-height: 1;
             white-space: nowrap;
-            flex: 0 0 auto;
+            width: 100%;
+            text-align: right;
         }
         .summary-delta.positive {
             color: #15803d;
