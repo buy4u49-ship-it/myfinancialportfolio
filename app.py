@@ -837,16 +837,16 @@ def summary_card_html(label: str, value: str, delta: str | None = None, large: b
 
     card_class = "summary-card large" if large else "summary-card"
     delta_html = f'<span class="{delta_class}">{html_lib.escape(delta or "")}</span>' if delta else ""
-    return (
-        f"""
-        <div class="{card_class}">
-            <div class="summary-label">{html_lib.escape(label)}</div>
-            <div class="summary-value-row">
-                <span class="{value_class}">{html_lib.escape(value)}</span>
-                {delta_html}
-            </div>
-        </div>
-        """
+    return "".join(
+        [
+            f'<div class="{card_class}">',
+            f'<div class="summary-label">{html_lib.escape(label)}</div>',
+            '<div class="summary-value-row">',
+            f'<span class="{value_class}">{html_lib.escape(value)}</span>',
+            delta_html,
+            "</div>",
+            "</div>",
+        ]
     )
 
 
@@ -876,13 +876,13 @@ def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window
         summary_card_html(f"{comparison_label} Beta", format_decimal(comparison_summary["latest_beta"])),
     ]
     st.markdown(
-        f"""
-        <div class="summary-stack">
-            <div class="summary-grid summary-grid-4">{''.join(price_cards)}</div>
-            <div class="summary-grid summary-grid-3">{''.join(metric_cards)}</div>
-            <div class="summary-grid summary-grid-3">{''.join(comparison_cards)}</div>
-        </div>
-        """,
+        (
+            '<div class="summary-stack">'
+            f'<div class="summary-grid summary-grid-4">{"".join(price_cards)}</div>'
+            f'<div class="summary-grid summary-grid-3">{"".join(metric_cards)}</div>'
+            f'<div class="summary-grid summary-grid-3">{"".join(comparison_cards)}</div>'
+            "</div>"
+        ),
         unsafe_allow_html=True,
     )
     st.caption(
@@ -1320,7 +1320,7 @@ def inject_styles():
         .summary-card {
             border: 1px solid #e5e7eb;
             border-radius: 0;
-            padding: 14px 20px;
+            padding: 14px 18px;
             height: 112px;
             background: #ffffff;
             box-sizing: border-box;
@@ -1351,6 +1351,7 @@ def inject_styles():
             gap: 12px;
             min-width: 0;
             width: 100%;
+            overflow: hidden;
         }
         .summary-value {
             color: #111827;
@@ -1363,7 +1364,7 @@ def inject_styles():
             min-width: 0;
         }
         .summary-value.large {
-            font-size: clamp(1.65rem, 2.2vw, 2.25rem);
+            font-size: clamp(1.45rem, 2vw, 2.05rem);
         }
         .summary-delta {
             margin: 0 0 0.18rem 0;
