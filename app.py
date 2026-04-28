@@ -267,6 +267,8 @@ PAGE_CONFIG = {
     },
 }
 
+PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail"]
+
 SYMBOL_LABELS = {
     "BTC-USD": "Bitcoin",
     "ETH-USD": "Ethereum",
@@ -287,6 +289,38 @@ SYMBOL_LABELS = {
 }
 
 PROFILE_FALLBACKS = {
+    "AAPL": {
+        "name": "Apple Inc.",
+        "sector": "Technology",
+        "industry": "Consumer Electronics",
+        "country": "United States",
+        "website": "https://www.apple.com",
+        "summary": "Apple designs consumer electronics, software, and services including iPhone, Mac, iPad, wearables, and digital platforms.",
+    },
+    "AVGO": {
+        "name": "Broadcom Inc.",
+        "sector": "Technology",
+        "industry": "Semiconductors",
+        "country": "United States",
+        "website": "https://www.broadcom.com",
+        "summary": "Broadcom designs semiconductor and infrastructure software products for networking, broadband, wireless, storage, and enterprise markets.",
+    },
+    "CRWV": {
+        "name": "CoreWeave, Inc.",
+        "sector": "Technology",
+        "industry": "Cloud Infrastructure",
+        "country": "United States",
+        "website": "https://www.coreweave.com",
+        "summary": "CoreWeave provides cloud infrastructure focused on accelerated computing workloads, including artificial intelligence and high-performance computing.",
+    },
+    "MSFT": {
+        "name": "Microsoft Corporation",
+        "sector": "Technology",
+        "industry": "Software - Infrastructure",
+        "country": "United States",
+        "website": "https://www.microsoft.com",
+        "summary": "Microsoft develops software, cloud services, devices, gaming platforms, and productivity applications.",
+    },
     "NVDA": {
         "name": "NVIDIA Corporation",
         "sector": "Technology",
@@ -298,6 +332,30 @@ PROFILE_FALLBACKS = {
             "and software used in gaming, data centers, artificial intelligence, visualization, automotive, "
             "and embedded computing markets."
         ),
+    },
+    "SPY": {
+        "name": "SPDR S&P 500 ETF Trust",
+        "sector": "ETF",
+        "industry": "Exchange Traded Fund",
+        "country": "United States",
+        "website": "https://www.ssga.com",
+        "summary": "SPY is an exchange-traded fund designed to track the S&P 500 Index.",
+    },
+    "VOO": {
+        "name": "Vanguard S&P 500 ETF",
+        "sector": "ETF",
+        "industry": "Exchange Traded Fund",
+        "country": "United States",
+        "website": "https://investor.vanguard.com",
+        "summary": "VOO is an exchange-traded fund designed to track the S&P 500 Index.",
+    },
+    "QQQ": {
+        "name": "Invesco QQQ Trust",
+        "sector": "ETF",
+        "industry": "Exchange Traded Fund",
+        "country": "United States",
+        "website": "https://www.invesco.com",
+        "summary": "QQQ is an exchange-traded fund designed to track the Nasdaq-100 Index.",
     },
 }
 
@@ -313,6 +371,20 @@ SECTOR_WATCHLISTS = {
     "Basic Materials": ["LIN", "APD", "SHW", "FCX", "NEM", "NUE"],
     "Real Estate": ["PLD", "AMT", "EQIX", "WELL", "SPG", "O"],
     "Utilities": ["NEE", "SO", "DUK", "AEP", "SRE", "D"],
+}
+
+SECTOR_DEFAULT_INDUSTRIES = {
+    "Technology": "Technology Hardware, Software, and Semiconductors",
+    "Communication Services": "Media, Internet, and Telecommunications",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Financial Services": "Financial Services",
+    "Healthcare": "Healthcare",
+    "Industrials": "Industrials",
+    "Energy": "Energy",
+    "Basic Materials": "Basic Materials",
+    "Real Estate": "Real Estate",
+    "Utilities": "Utilities",
 }
 
 CRYPTO_BASE_SYMBOLS = {
@@ -524,6 +596,13 @@ def get_profile(symbol: str) -> dict[str, object]:
 
     fallback = PROFILE_FALLBACKS.get(symbol.upper(), {})
 
+    def sector_from_watchlist() -> str:
+        upper_symbol = symbol.upper()
+        for sector_name, candidates in SECTOR_WATCHLISTS.items():
+            if upper_symbol in candidates:
+                return sector_name
+        return ""
+
     def profile_value(*keys: str, fallback_key: str = ""):
         for key in keys:
             value = info.get(key)
@@ -531,11 +610,13 @@ def get_profile(symbol: str) -> dict[str, object]:
                 return value
         return fallback.get(fallback_key or keys[0], "")
 
+    sector = profile_value("sector") or sector_from_watchlist()
+    industry = profile_value("industry") or SECTOR_DEFAULT_INDUSTRIES.get(str(sector), "")
     return {
         "name": profile_value("longName", "shortName", fallback_key="name") or symbol,
-        "sector": profile_value("sector"),
-        "industry": profile_value("industry"),
-        "country": profile_value("country"),
+        "sector": sector,
+        "industry": industry,
+        "country": profile_value("country") or ("United States" if sector else ""),
         "website": profile_value("website"),
         "summary": profile_value("longBusinessSummary", fallback_key="summary"),
     }
@@ -835,28 +916,15 @@ def average_metric_values(summaries: list[dict[str, float | None]]) -> dict[str,
 @st.cache_data(ttl=1800)
 def comparison_metrics(symbol: str, benchmark: str, years: int, rolling_window: int) -> dict[str, object]:
     if is_crypto_symbol(symbol):
+        crypto_benchmark = "BTC-USD"
         return {
-            "label": "BTC-USD",
-            "metrics": summary_metrics("BTC-USD", benchmark, years, rolling_window),
+            "label": f"{crypto_benchmark} Benchmark",
+            "metrics": summary_metrics(crypto_benchmark, crypto_benchmark, years, rolling_window),
         }
 
-    if symbol.endswith(".KS") or symbol.endswith(".KQ"):
-        candidates = KOREA_UNIVERSE[:10]
-        label = "Korea Large-cap Avg"
-    else:
-        profile = get_profile(symbol)
-        sector = str(profile.get("sector") or "")
-        candidates = SECTOR_WATCHLISTS.get(sector, [])
-        label = f"{sector} Avg" if sector else f"{benchmark} Benchmark"
-        if not candidates:
-            candidates = [benchmark]
-        elif symbol not in candidates and not symbol.startswith("^"):
-            candidates = [symbol] + candidates
-
-    summaries = [summary_metrics(candidate, benchmark, years, rolling_window) for candidate in candidates[:8]]
     return {
-        "label": label,
-        "metrics": average_metric_values(summaries),
+        "label": f"{benchmark} Benchmark",
+        "metrics": summary_metrics(benchmark, benchmark, years, rolling_window),
     }
 
 
@@ -1462,7 +1530,7 @@ def inject_styles():
         .metrics-table td {
             border-bottom: 1px solid #e5e7eb;
             border-right: 1px solid #e5e7eb;
-            padding: 10px 12px;
+            padding: 10px 10px;
             white-space: nowrap;
         }
         .metrics-table th:last-child,
@@ -1491,12 +1559,14 @@ def inject_styles():
             width: 4%;
         }
         .metrics-table thead th:nth-child(2),
-        .metrics-table thead th:nth-child(3),
-        .metrics-table thead th:nth-child(4) {
+        .metrics-table thead th:nth-child(3) {
             width: 7%;
         }
+        .metrics-table thead th:nth-child(4) {
+            width: 8.5%;
+        }
         .metrics-table thead th:nth-child(n+5) {
-            width: 15%;
+            width: 14.7%;
         }
         </style>
         """,
@@ -1504,21 +1574,23 @@ def inject_styles():
     )
 
 
+def render_top_navigation() -> str:
+    if "pending_page" in st.session_state:
+        st.session_state.page_selector = st.session_state.pop("pending_page")
+    if st.session_state.get("page_selector") not in PAGE_OPTIONS:
+        st.session_state.page_selector = PAGE_OPTIONS[0]
+
+    page = st.pills("Page", PAGE_OPTIONS, key="page_selector", label_visibility="collapsed")
+    return str(page or st.session_state.page_selector)
+
+
 def main():
-    st.set_page_config(page_title="Market Intelligence Dashboard", layout="wide")
-    st.title("Market Intelligence Dashboard")
+    st.set_page_config(page_title="My Financial Portfolio", layout="wide")
     inject_styles()
+    page = render_top_navigation()
+    st.title("My Financial Portfolio")
 
     with st.sidebar:
-        st.header("Navigation")
-        if "pending_page" in st.session_state:
-            st.session_state.current_page = st.session_state.pop("pending_page")
-        page = st.radio(
-            "Page",
-            ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail"],
-            label_visibility="collapsed",
-            key="current_page",
-        )
         st.header("Search")
         focus_symbol = render_symbol_search("AAPL")
         benchmark = st.text_input("Benchmark", value="SPY")
