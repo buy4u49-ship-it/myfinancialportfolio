@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import html as html_lib
 from datetime import datetime, timezone
 
 import altair as alt
@@ -371,6 +372,10 @@ def normalize_symbol(text: str) -> str:
 def display_symbol(symbol: str) -> str:
     label = SYMBOL_LABELS.get(symbol)
     return f"{label} ({symbol})" if label else symbol
+
+
+def is_crypto_symbol(symbol: str) -> bool:
+    return symbol in CRYPTO_UNIVERSE or symbol.endswith("-USD")
 
 
 @st.cache_data(ttl=3600)
@@ -775,6 +780,47 @@ def capm_snapshot(symbol: str, benchmark: str, years: int, rolling_window: int, 
     }
 
 
+def average_metric_values(summaries: list[dict[str, float | None]]) -> dict[str, float | None]:
+    def mean_of(key: str):
+        values = [safe_number(summary.get(key)) for summary in summaries]
+        values = [value for value in values if value is not None]
+        return sum(values) / len(values) if values else None
+
+    return {
+        "avg_monthly_log_return": mean_of("avg_monthly_log_return"),
+        "avg_monthly_volatility": mean_of("avg_monthly_volatility"),
+        "latest_beta": mean_of("latest_beta"),
+    }
+
+
+@st.cache_data(ttl=1800)
+def comparison_metrics(symbol: str, benchmark: str, years: int, rolling_window: int) -> dict[str, object]:
+    if is_crypto_symbol(symbol):
+        return {
+            "label": "BTC-USD",
+            "metrics": summary_metrics("BTC-USD", benchmark, years, rolling_window),
+        }
+
+    if symbol.endswith(".KS") or symbol.endswith(".KQ"):
+        candidates = KOREA_UNIVERSE[:10]
+        label = "Korea Large-cap Avg"
+    else:
+        profile = get_profile(symbol)
+        sector = str(profile.get("sector") or "")
+        candidates = SECTOR_WATCHLISTS.get(sector, [])
+        label = f"{sector} Avg" if sector else f"{benchmark} Benchmark"
+        if not candidates:
+            candidates = [benchmark]
+        elif symbol not in candidates and not symbol.startswith("^"):
+            candidates = [symbol] + candidates
+
+    summaries = [summary_metrics(candidate, benchmark, years, rolling_window) for candidate in candidates[:8]]
+    return {
+        "label": label,
+        "metrics": average_metric_values(summaries),
+    }
+
+
 def to_percent(value):
     value = safe_number(value)
     if value is None:
@@ -782,52 +828,97 @@ def to_percent(value):
     return value * 100
 
 
+def render_value_card(column, label: str, value: str, delta: str | None = None, large: bool = False):
+    value_class = "summary-value large" if large else "summary-value"
+    delta_value = safe_number(str(delta).replace("%", "")) if delta and delta != "N/A" else None
+    delta_class = "summary-delta neutral"
+    if delta_value is not None:
+        delta_class = "summary-delta positive" if delta_value >= 0 else "summary-delta negative"
+
+    delta_html = f'<div class="{delta_class}">{html_lib.escape(delta or "")}</div>' if delta else ""
+    column.markdown(
+        f"""
+        <div class="summary-card">
+            <div class="summary-label">{html_lib.escape(label)}</div>
+            <div class="{value_class}">{html_lib.escape(value)}</div>
+            {delta_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window: int):
     quote = get_quote(symbol)
     metric_summary = summary_metrics(symbol, benchmark, years, rolling_window)
     capm = capm_snapshot(symbol, benchmark, years, rolling_window, quote)
+    comparison = comparison_metrics(symbol, benchmark, years, rolling_window)
+    comparison_label = str(comparison["label"])
+    comparison_summary = comparison["metrics"]
 
     st.subheader(display_symbol(symbol))
-    cols = st.columns(7)
-    cols[0].metric(
+    price_cols = st.columns([1.35, 1.35, 1.1, 1.1])
+    render_value_card(
+        price_cols[0],
         "Current Price",
         format_money(quote["price"], quote["currency"]),
         format_pct(quote["change_pct"]),
-        help=f"Previous close: {format_money(quote['previous_close'], quote['currency'])}\nExchange: {quote['exchange']}\nUTC: {quote['timestamp_utc']}",
+        large=True,
     )
-    cols[1].metric(
+    render_value_card(
+        price_cols[1],
         "Previous Close",
         format_money(quote["previous_close"], quote["currency"]),
-        help="For crypto pairs, this uses the prior UTC daily close returned by Yahoo Finance.",
+        large=True,
     )
-    cols[2].metric(
-        "Avg Monthly Log Return",
-        format_pct(to_percent(metric_summary["avg_monthly_log_return"])),
-        help=f"Average monthly log return over the selected {years}-year window, calculated from month-end closes.",
-    )
-    cols[3].metric(
-        "Avg Monthly Volatility",
-        format_pct(to_percent(metric_summary["avg_monthly_volatility"])),
-        help=f"Average of monthly volatility over the selected {years}-year window. Each month uses the standard deviation of daily log returns.",
-    )
-    cols[4].metric(
-        f"Monthly Beta ({rolling_window}M)",
-        format_decimal(metric_summary["latest_beta"]),
-        help=f"Rolling beta versus {benchmark}, calculated from monthly log returns.",
-    )
-    cols[5].metric(
+    render_value_card(
+        price_cols[2],
         "CAPM_Price",
         format_money(capm["capm_price"], quote["currency"]),
-        help=(
-            "1-month CAPM-implied price: previous close * exp(rf_monthly + beta * "
-            f"(avg {benchmark} monthly log return - rf_monthly)). "
-            f"Risk-free rate: 3M T-Bill {format_pct(capm['risk_free_annual_pct'])} annual, as of {capm['risk_free_as_of']}."
-        ),
+        large=True,
     )
-    cols[6].metric(
+    render_value_card(
+        price_cols[3],
         "Current vs CAPM",
         format_pct(capm["current_vs_capm_pct"]),
-        help="Positive means current price is above CAPM_Price; negative means it is below CAPM_Price.",
+        large=True,
+    )
+
+    metric_cols = st.columns(3)
+    render_value_card(
+        metric_cols[0],
+        "Avg Monthly Log Return",
+        format_pct(to_percent(metric_summary["avg_monthly_log_return"])),
+    )
+    render_value_card(
+        metric_cols[1],
+        "Avg Monthly Volatility",
+        format_pct(to_percent(metric_summary["avg_monthly_volatility"])),
+    )
+    render_value_card(
+        metric_cols[2],
+        f"Monthly Beta ({rolling_window}M)",
+        format_decimal(metric_summary["latest_beta"]),
+    )
+
+    comparison_cols = st.columns(3)
+    render_value_card(
+        comparison_cols[0],
+        f"{comparison_label} Log Return",
+        format_pct(to_percent(comparison_summary["avg_monthly_log_return"])),
+    )
+    render_value_card(
+        comparison_cols[1],
+        f"{comparison_label} Volatility",
+        format_pct(to_percent(comparison_summary["avg_monthly_volatility"])),
+    )
+    render_value_card(
+        comparison_cols[2],
+        f"{comparison_label} Beta",
+        format_decimal(comparison_summary["latest_beta"]),
+    )
+    st.caption(
+        f"CAPM uses the 3M T-Bill as risk-free rate ({format_pct(capm['risk_free_annual_pct'])}, {capm['risk_free_as_of']})."
     )
 
 
@@ -957,7 +1048,8 @@ def render_price_bar_chart(symbol: str):
             alt.Tooltip("Volume:Q", format=",.0f"),
         ],
     )
-    body = base.mark_bar(size=body_size).encode(
+    body_mark = base.mark_bar() if is_crypto_symbol(symbol) else base.mark_bar(size=body_size)
+    body = body_mark.encode(
         y="Open:Q",
         y2="Close:Q",
         color=alt.condition(alt.datum.Close >= alt.datum.Open, alt.value("#16a34a"), alt.value("#dc2626")),
@@ -1234,9 +1326,62 @@ def render_symbol_detail(symbol: str, benchmark: str, years: int, rolling_window
         )
 
 
+def inject_styles():
+    st.markdown(
+        """
+        <style>
+        .summary-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 12px 14px;
+            min-height: 92px;
+            background: #ffffff;
+        }
+        .summary-label {
+            color: #6b7280;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .summary-value {
+            color: #111827;
+            font-size: 1.35rem;
+            font-weight: 750;
+            letter-spacing: 0;
+            line-height: 1.15;
+            overflow-wrap: anywhere;
+        }
+        .summary-value.large {
+            font-size: 2rem;
+        }
+        .summary-delta {
+            margin-top: 6px;
+            font-size: 0.95rem;
+            font-weight: 700;
+        }
+        .summary-delta.positive {
+            color: #15803d;
+        }
+        .summary-delta.negative {
+            color: #dc2626;
+        }
+        .summary-delta.neutral {
+            color: #6b7280;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def main():
     st.set_page_config(page_title="Market Intelligence Dashboard", layout="wide")
     st.title("Market Intelligence Dashboard")
+    inject_styles()
 
     with st.sidebar:
         st.header("Navigation")
