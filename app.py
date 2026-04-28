@@ -286,6 +286,21 @@ SYMBOL_LABELS = {
     "000660.KS": "SK Hynix",
 }
 
+PROFILE_FALLBACKS = {
+    "NVDA": {
+        "name": "NVIDIA Corporation",
+        "sector": "Technology",
+        "industry": "Semiconductors",
+        "country": "United States",
+        "website": "https://www.nvidia.com",
+        "summary": (
+            "NVIDIA designs graphics processors, accelerated computing platforms, networking products, "
+            "and software used in gaming, data centers, artificial intelligence, visualization, automotive, "
+            "and embedded computing markets."
+        ),
+    },
+}
+
 SECTOR_WATCHLISTS = {
     "Technology": ["MSFT", "NVDA", "AAPL", "AVGO", "AMD", "CRM", "ADBE", "NOW"],
     "Communication Services": ["GOOGL", "META", "NFLX", "DIS", "TMUS", "SPOT"],
@@ -495,17 +510,34 @@ def get_quote(symbol: str) -> dict[str, object]:
 @st.cache_data(ttl=3600)
 def get_profile(symbol: str) -> dict[str, object]:
     ticker = yf.Ticker(symbol)
+    info = {}
     try:
-        info = ticker.info or {}
+        if hasattr(ticker, "get_info"):
+            info = ticker.get_info() or {}
     except Exception:
         info = {}
+    if not info:
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = {}
+
+    fallback = PROFILE_FALLBACKS.get(symbol.upper(), {})
+
+    def profile_value(*keys: str, fallback_key: str = ""):
+        for key in keys:
+            value = info.get(key)
+            if value not in (None, "", "N/A"):
+                return value
+        return fallback.get(fallback_key or keys[0], "")
+
     return {
-        "name": info.get("longName") or info.get("shortName") or symbol,
-        "sector": info.get("sector") or "",
-        "industry": info.get("industry") or "",
-        "country": info.get("country") or "",
-        "website": info.get("website") or "",
-        "summary": info.get("longBusinessSummary") or "",
+        "name": profile_value("longName", "shortName", fallback_key="name") or symbol,
+        "sector": profile_value("sector"),
+        "industry": profile_value("industry"),
+        "country": profile_value("country"),
+        "website": profile_value("website"),
+        "summary": profile_value("longBusinessSummary", fallback_key="summary"),
     }
 
 
@@ -1184,26 +1216,13 @@ def render_metrics(symbol: str, benchmark: str, years: int, rolling_window: int)
     )
     display_table.index = range(1, len(display_table) + 1)
     display_table.index.name = ""
-    styled_table = (
-        display_table.style.set_properties(**{"text-align": "center"})
-        .set_table_styles(
-            [
-                {"selector": "th", "props": [("text-align", "center")]},
-                {"selector": "td", "props": [("text-align", "center")]},
-            ]
-        )
-    )
-    equal_width_columns = [
-        "Monthly Return",
-        "Benchmark Return",
-        "Monthly Volatility",
-        "Beta (Full Period)",
-        "Beta (Rolling)",
-    ]
-    st.dataframe(
-        styled_table,
-        use_container_width=True,
-        column_config={column: st.column_config.TextColumn(column, width="medium") for column in equal_width_columns},
+    st.markdown(
+        (
+            '<div class="metrics-table-wrap">'
+            f'{display_table.to_html(classes="metrics-table", escape=True, border=0)}'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -1352,24 +1371,26 @@ def inject_styles():
         .summary-card {
             border: 1px solid #e5e7eb;
             border-radius: 0;
-            padding: 14px 18px;
+            padding: 18px 26px 16px;
             height: 112px;
             background: #ffffff;
             box-sizing: border-box;
             display: flex;
             flex-direction: column;
-            justify-content: center;
+            justify-content: flex-start;
             min-width: 0;
         }
         .summary-card.large {
             height: 138px;
+            padding-top: 22px;
         }
         .summary-label {
             color: #6b7280;
             font-size: 0.78rem;
             font-weight: 700;
             letter-spacing: 0;
-            margin-bottom: 10px;
+            line-height: 1.2;
+            margin-bottom: 18px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -1384,6 +1405,7 @@ def inject_styles():
             min-width: 0;
             width: 100%;
             overflow: hidden;
+            min-height: 2.15rem;
         }
         .summary-value {
             color: #111827;
@@ -1397,9 +1419,10 @@ def inject_styles():
         }
         .summary-value.large {
             font-size: clamp(1.45rem, 2vw, 2.05rem);
+            line-height: 1.05;
         }
         .summary-delta {
-            margin-top: 8px;
+            margin-top: 6px;
             font-size: 0.95rem;
             font-weight: 700;
             line-height: 1;
@@ -1415,6 +1438,65 @@ def inject_styles():
         }
         .summary-delta.neutral {
             color: #6b7280;
+        }
+        .metrics-table-wrap {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow-x: auto;
+            width: 100%;
+            margin-top: 0.5rem;
+        }
+        .metrics-table {
+            border-collapse: collapse;
+            table-layout: fixed;
+            width: 100%;
+            font-size: 0.94rem;
+        }
+        .metrics-table thead th {
+            background: #f8fafc;
+            color: #6b7280;
+            font-weight: 500;
+            text-align: center !important;
+        }
+        .metrics-table th,
+        .metrics-table td {
+            border-bottom: 1px solid #e5e7eb;
+            border-right: 1px solid #e5e7eb;
+            padding: 10px 12px;
+            white-space: nowrap;
+        }
+        .metrics-table th:last-child,
+        .metrics-table td:last-child {
+            border-right: 0;
+        }
+        .metrics-table tbody tr:last-child th,
+        .metrics-table tbody tr:last-child td {
+            border-bottom: 0;
+        }
+        .metrics-table tbody th {
+            color: #6b7280;
+            font-weight: 400;
+            text-align: right !important;
+        }
+        .metrics-table tbody td:nth-child(2),
+        .metrics-table tbody td:nth-child(3),
+        .metrics-table tbody td:nth-child(4) {
+            text-align: center !important;
+        }
+        .metrics-table tbody td:nth-child(n+5) {
+            font-variant-numeric: tabular-nums;
+            text-align: right !important;
+        }
+        .metrics-table thead th:nth-child(1) {
+            width: 4%;
+        }
+        .metrics-table thead th:nth-child(2),
+        .metrics-table thead th:nth-child(3),
+        .metrics-table thead th:nth-child(4) {
+            width: 7%;
+        }
+        .metrics-table thead th:nth-child(n+5) {
+            width: 15%;
         }
         </style>
         """,

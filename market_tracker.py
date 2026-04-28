@@ -89,6 +89,28 @@ def monthly_metrics(symbol: str, config: MetricConfig):
     np, pd, _ = _load_dependencies()
 
     asset = download_daily_prices(symbol, config.years)
+    if symbol == config.benchmark:
+        prices = asset.dropna()
+        if len(prices) < 2:
+            raise ValueError(f"Not enough price history for {symbol}")
+
+        daily_log_returns = np.log(prices / prices.shift(1)).dropna()
+        monthly_close = prices.resample("ME").last().dropna()
+        monthly_log_returns = np.log(monthly_close / monthly_close.shift(1)).dropna()
+
+        rows = pd.DataFrame(index=monthly_log_returns.index)
+        rows["symbol"] = symbol
+        rows["benchmark"] = config.benchmark
+        rows["monthly_log_return"] = monthly_log_returns[symbol]
+        rows["benchmark_monthly_log_return"] = monthly_log_returns[symbol]
+        rows["monthly_volatility"] = daily_log_returns[symbol].resample("ME").std()
+        rows["beta_full_period"] = 1.0
+        rows[f"beta_rolling_{config.rolling_window}m"] = 1.0
+
+        rows = rows.reset_index(names="month")
+        rows["month"] = rows["month"].dt.strftime("%Y-%m")
+        return rows
+
     benchmark = download_daily_prices(config.benchmark, config.years)
     prices = asset.join(benchmark, how="inner").dropna()
     if len(prices) < 2:
