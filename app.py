@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
+import secrets
 import html as html_lib
 from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 
 import altair as alt
 import pandas as pd
@@ -267,7 +272,11 @@ PAGE_CONFIG = {
     },
 }
 
-PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail"]
+PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail", "Login", "My Page"]
+
+APP_DATA_DIR = Path(os.environ.get("PORTFOLIO_USER_DATA_DIR", "user_data"))
+USER_STORE_PATH = APP_DATA_DIR / "users.json"
+PASSWORD_HASH_ITERATIONS = 200_000
 
 SYMBOL_LABELS = {
     "BTC-USD": "Bitcoin",
@@ -479,6 +488,139 @@ def is_korea_symbol(symbol: str) -> bool:
     return symbol.endswith(".KS") or symbol.endswith(".KQ") or symbol in {"^KS11", "^KQ11"}
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def default_user_record(username: str) -> dict[str, object]:
+    return {
+        "username": username,
+        "created_at": utc_now_iso(),
+        "profile": {
+            "display_name": username,
+            "email": "",
+        },
+        "portfolio": [],
+        "alerts": [],
+    }
+
+
+def load_user_store() -> dict[str, object]:
+    if not USER_STORE_PATH.exists():
+        return {"users": {}}
+    try:
+        return json.loads(USER_STORE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"users": {}}
+
+
+def save_user_store(store: dict[str, object]) -> None:
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(store, ensure_ascii=False, indent=2)
+    temp_path = USER_STORE_PATH.with_suffix(".tmp")
+    try:
+        temp_path.write_text(payload, encoding="utf-8")
+        temp_path.replace(USER_STORE_PATH)
+    except PermissionError:
+        USER_STORE_PATH.write_text(payload, encoding="utf-8")
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
+def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        bytes.fromhex(salt),
+        PASSWORD_HASH_ITERATIONS,
+    ).hex()
+    return salt, digest
+
+
+def verify_password(password: str, salt: str, digest: str) -> bool:
+    _, candidate = hash_password(password, salt)
+    return secrets.compare_digest(candidate, digest)
+
+
+def current_username() -> str:
+    return str(st.session_state.get("auth_user") or "")
+
+
+def is_logged_in() -> bool:
+    return bool(current_username())
+
+
+def save_user_record(username: str, record: dict[str, object]) -> None:
+    store = load_user_store()
+    users = store.setdefault("users", {})
+    if isinstance(users, dict):
+        users[username] = record
+    save_user_store(store)
+
+
+def get_user_record(username: str | None = None) -> dict[str, object] | None:
+    username = username or current_username()
+    if not username:
+        return None
+    users = load_user_store().get("users", {})
+    if not isinstance(users, dict):
+        return None
+    record = users.get(username)
+    return record if isinstance(record, dict) else None
+
+
+def create_account(username: str, password: str, display_name: str, email: str) -> tuple[bool, str]:
+    username = normalize_username(username)
+    if len(username) < 3 or not username.replace("_", "").replace("-", "").isalnum():
+        return False, "Use at least 3 letters, numbers, underscores, or hyphens for the username."
+    if len(password) < 8:
+        return False, "Use at least 8 characters for the password."
+
+    store = load_user_store()
+    users = store.setdefault("users", {})
+    if not isinstance(users, dict):
+        users = {}
+        store["users"] = users
+    if username in users:
+        return False, "That username already exists."
+
+    salt, digest = hash_password(password)
+    record = default_user_record(username)
+    record["password_salt"] = salt
+    record["password_hash"] = digest
+    record["profile"] = {
+        "display_name": display_name.strip() or username,
+        "email": email.strip(),
+    }
+    users[username] = record
+    save_user_store(store)
+    return True, "Account created."
+
+
+def authenticate(username: str, password: str) -> tuple[bool, str]:
+    username = normalize_username(username)
+    record = get_user_record(username)
+    if not record:
+        return False, "No account exists for that username."
+    salt = str(record.get("password_salt") or "")
+    digest = str(record.get("password_hash") or "")
+    if not salt or not digest or not verify_password(password, salt, digest):
+        return False, "Password does not match."
+    st.session_state.auth_user = username
+    return True, "Signed in."
+
+
+def logout() -> None:
+    st.session_state.pop("auth_user", None)
+
+
 @st.cache_data(ttl=3600)
 def search_symbols(query: str, limit: int = 30) -> list[str]:
     normalized_query = query.strip().upper().replace("/", "-")
@@ -591,6 +733,167 @@ def get_quote(symbol: str) -> dict[str, object]:
         "exchange": exchange,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
+
+
+def portfolio_market_rows(portfolio: list[dict[str, object]]) -> list[dict[str, object]]:
+    rows = []
+    for position in portfolio:
+        symbol = str(position.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        quantity = safe_number(position.get("quantity")) or 0
+        avg_cost = safe_number(position.get("avg_cost")) or 0
+        quote = get_quote(symbol)
+        price = safe_number(quote.get("price"))
+        market_value = price * quantity if price is not None else None
+        cost_basis = avg_cost * quantity
+        gain_loss = market_value - cost_basis if market_value is not None else None
+        gain_loss_pct = pct_change(market_value, cost_basis) if market_value is not None and cost_basis else None
+        rows.append(
+            {
+                "Symbol": symbol,
+                "Quantity": quantity,
+                "Avg Cost": format_money(avg_cost, str(quote.get("currency") or "")),
+                "Current Price": format_money(price, str(quote.get("currency") or "")),
+                "Market Value": format_money(market_value, str(quote.get("currency") or "")),
+                "Gain/Loss": format_money(gain_loss, str(quote.get("currency") or "")),
+                "Gain/Loss %": format_pct(gain_loss_pct),
+                "Note": str(position.get("note") or ""),
+            }
+        )
+    return rows
+
+
+def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float, note: str) -> None:
+    record = get_user_record(username) or default_user_record(username)
+    portfolio = record.setdefault("portfolio", [])
+    if not isinstance(portfolio, list):
+        portfolio = []
+        record["portfolio"] = portfolio
+    symbol = normalize_symbol(symbol) or symbol.strip().upper()
+    updated = False
+    for position in portfolio:
+        if isinstance(position, dict) and position.get("symbol") == symbol:
+            position.update(
+                {
+                    "quantity": quantity,
+                    "avg_cost": avg_cost,
+                    "note": note.strip(),
+                    "updated_at": utc_now_iso(),
+                }
+            )
+            updated = True
+            break
+    if not updated:
+        portfolio.append(
+            {
+                "symbol": symbol,
+                "quantity": quantity,
+                "avg_cost": avg_cost,
+                "note": note.strip(),
+                "created_at": utc_now_iso(),
+            }
+        )
+    save_user_record(username, record)
+
+
+def remove_position(username: str, symbol: str) -> None:
+    record = get_user_record(username)
+    if not record:
+        return
+    portfolio = record.get("portfolio", [])
+    if isinstance(portfolio, list):
+        record["portfolio"] = [position for position in portfolio if not isinstance(position, dict) or position.get("symbol") != symbol]
+        save_user_record(username, record)
+
+
+def add_price_alert(username: str, symbol: str, direction: str, target_price: float) -> None:
+    record = get_user_record(username) or default_user_record(username)
+    alerts = record.setdefault("alerts", [])
+    if not isinstance(alerts, list):
+        alerts = []
+        record["alerts"] = alerts
+    alerts.append(
+        {
+            "id": uuid4().hex,
+            "symbol": normalize_symbol(symbol) or symbol.strip().upper(),
+            "direction": direction,
+            "target_price": target_price,
+            "active": True,
+            "created_at": utc_now_iso(),
+            "last_checked_at": "",
+            "last_triggered_at": "",
+            "last_price": None,
+        }
+    )
+    save_user_record(username, record)
+
+
+def toggle_price_alert(username: str, alert_id: str) -> None:
+    record = get_user_record(username)
+    if not record:
+        return
+    alerts = record.get("alerts", [])
+    if isinstance(alerts, list):
+        for alert in alerts:
+            if isinstance(alert, dict) and alert.get("id") == alert_id:
+                alert["active"] = not bool(alert.get("active", True))
+                break
+        save_user_record(username, record)
+
+
+def remove_price_alert(username: str, alert_id: str) -> None:
+    record = get_user_record(username)
+    if not record:
+        return
+    alerts = record.get("alerts", [])
+    if isinstance(alerts, list):
+        record["alerts"] = [alert for alert in alerts if not isinstance(alert, dict) or alert.get("id") != alert_id]
+        save_user_record(username, record)
+
+
+def evaluate_price_alerts(username: str) -> list[dict[str, object]]:
+    record = get_user_record(username)
+    if not record:
+        return []
+    alerts = record.get("alerts", [])
+    if not isinstance(alerts, list):
+        return []
+
+    triggered_alerts = []
+    changed = False
+    for alert in alerts:
+        if not isinstance(alert, dict) or not bool(alert.get("active", True)):
+            continue
+        symbol = str(alert.get("symbol") or "").upper()
+        target = safe_number(alert.get("target_price"))
+        if not symbol or target is None:
+            continue
+        quote = get_quote(symbol)
+        price = safe_number(quote.get("price"))
+        alert["last_checked_at"] = utc_now_iso()
+        alert["last_price"] = price
+        changed = True
+        if price is None:
+            continue
+        direction = str(alert.get("direction") or "above")
+        is_triggered = price >= target if direction == "above" else price <= target
+        if is_triggered:
+            if not alert.get("last_triggered_at"):
+                alert["last_triggered_at"] = utc_now_iso()
+            triggered_alerts.append(
+                {
+                    "id": alert.get("id"),
+                    "symbol": symbol,
+                    "price": price,
+                    "target_price": target,
+                    "direction": direction,
+                    "currency": str(quote.get("currency") or ""),
+                }
+            )
+    if changed:
+        save_user_record(username, record)
+    return triggered_alerts
 
 
 @st.cache_data(ttl=3600)
@@ -1548,6 +1851,210 @@ def render_symbol_search(default_symbol: str = "AAPL") -> str:
     return st.session_state.selected_symbol
 
 
+def render_login_page():
+    st.header("Login")
+    if is_logged_in():
+        record = get_user_record() or {}
+        profile = record.get("profile", {}) if isinstance(record.get("profile"), dict) else {}
+        st.success(f"Signed in as {profile.get('display_name') or current_username()}.")
+        cols = st.columns(2)
+        if cols[0].button("Go to My Page", use_container_width=True):
+            st.session_state.pending_page = "My Page"
+            st.rerun()
+        if cols[1].button("Logout", use_container_width=True):
+            logout()
+            st.rerun()
+        return
+
+    login_tab, create_tab = st.tabs(["Login", "Create Account"])
+    with login_tab:
+        with st.form("login_form"):
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Login", use_container_width=True)
+        if submitted:
+            ok, message = authenticate(username, password)
+            if ok:
+                st.success(message)
+                st.session_state.pending_page = "My Page"
+                st.rerun()
+            else:
+                st.error(message)
+
+    with create_tab:
+        with st.form("create_account_form"):
+            new_username = st.text_input("New username", key="create_username")
+            display_name = st.text_input("Display name", key="create_display_name")
+            email = st.text_input("Email", key="create_email")
+            new_password = st.text_input("New password", type="password", key="create_password")
+            confirm_password = st.text_input("Confirm password", type="password", key="create_confirm_password")
+            submitted = st.form_submit_button("Create account", use_container_width=True)
+        if submitted:
+            if new_password != confirm_password:
+                st.error("Passwords do not match.")
+            else:
+                ok, message = create_account(new_username, new_password, display_name, email)
+                if ok:
+                    authenticate(new_username, new_password)
+                    st.success(message)
+                    st.session_state.pending_page = "My Page"
+                    st.rerun()
+                else:
+                    st.error(message)
+
+
+def require_login() -> bool:
+    if is_logged_in():
+        return True
+    st.info("Login is required to use My Page.")
+    if st.button("Go to Login", use_container_width=True):
+        st.session_state.pending_page = "Login"
+        st.rerun()
+    return False
+
+
+def render_alert_banner(triggered_alerts: list[dict[str, object]]) -> None:
+    notified = st.session_state.setdefault("notified_alert_ids", set())
+    for alert in triggered_alerts:
+        symbol = str(alert.get("symbol") or "")
+        direction = "above" if alert.get("direction") == "above" else "below"
+        currency = str(alert.get("currency") or "")
+        price = format_money(alert.get("price"), currency)
+        target = format_money(alert.get("target_price"), currency)
+        message = f"{symbol} is {direction} target: current {price}, target {target}."
+        st.warning(message)
+        alert_id = str(alert.get("id") or message)
+        if alert_id not in notified:
+            st.toast(message)
+            notified.add(alert_id)
+
+
+def render_portfolio_manager(username: str, record: dict[str, object]) -> None:
+    st.subheader("Portfolio")
+    portfolio = record.get("portfolio", [])
+    portfolio = portfolio if isinstance(portfolio, list) else []
+    rows = portfolio_market_rows(portfolio)
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No portfolio positions yet.")
+
+    with st.form("portfolio_position_form"):
+        cols = st.columns([1.3, 1, 1, 1.4])
+        symbol = cols[0].text_input("Symbol", value=st.session_state.get("selected_symbol", "AAPL"), key="portfolio_symbol")
+        quantity = cols[1].number_input("Quantity", min_value=0.0, value=1.0, step=1.0, key="portfolio_quantity")
+        avg_cost = cols[2].number_input("Average cost", min_value=0.0, value=0.0, step=1.0, key="portfolio_avg_cost")
+        note = cols[3].text_input("Note", key="portfolio_note")
+        submitted = st.form_submit_button("Save position", use_container_width=True)
+    if submitted:
+        upsert_position(username, symbol, quantity, avg_cost, note)
+        st.success("Position saved.")
+        st.rerun()
+
+    symbols = [str(position.get("symbol")) for position in portfolio if isinstance(position, dict) and position.get("symbol")]
+    if symbols:
+        remove_symbol = st.selectbox("Remove position", symbols)
+        if st.button("Remove selected position", use_container_width=True):
+            remove_position(username, remove_symbol)
+            st.rerun()
+
+
+def render_alert_manager(username: str, record: dict[str, object]) -> None:
+    st.subheader("Price Alerts")
+    alerts = record.get("alerts", [])
+    alerts = alerts if isinstance(alerts, list) else []
+    if alerts:
+        rows = []
+        for alert in alerts:
+            if not isinstance(alert, dict):
+                continue
+            direction = "At or above" if alert.get("direction") == "above" else "At or below"
+            rows.append(
+                {
+                    "Symbol": str(alert.get("symbol") or ""),
+                    "Condition": direction,
+                    "Target": format_money(alert.get("target_price")),
+                    "Last Price": format_money(alert.get("last_price")),
+                    "Active": "Yes" if alert.get("active", True) else "No",
+                    "Triggered At": str(alert.get("last_triggered_at") or ""),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No price alerts yet.")
+
+    with st.form("price_alert_form"):
+        cols = st.columns([1.3, 1, 1])
+        symbol = cols[0].text_input("Alert symbol", value=st.session_state.get("selected_symbol", "AAPL"), key="alert_symbol")
+        direction_label = cols[1].selectbox("Condition", ["At or above", "At or below"], key="alert_direction")
+        target_price = cols[2].number_input("Target price", min_value=0.0, value=100.0, step=1.0, key="alert_target_price")
+        submitted = st.form_submit_button("Add alert", use_container_width=True)
+    if submitted:
+        direction = "above" if direction_label == "At or above" else "below"
+        add_price_alert(username, symbol, direction, target_price)
+        st.success("Alert added.")
+        st.rerun()
+
+    alert_options = {
+        f"{alert.get('symbol')} {alert.get('direction')} {alert.get('target_price')}": str(alert.get("id"))
+        for alert in alerts
+        if isinstance(alert, dict) and alert.get("id")
+    }
+    if alert_options:
+        selected = st.selectbox("Manage alert", list(alert_options.keys()))
+        cols = st.columns(2)
+        if cols[0].button("Enable / Disable", use_container_width=True):
+            toggle_price_alert(username, alert_options[selected])
+            st.rerun()
+        if cols[1].button("Delete alert", use_container_width=True):
+            remove_price_alert(username, alert_options[selected])
+            st.rerun()
+
+
+def render_account_settings(username: str, record: dict[str, object]) -> None:
+    st.subheader("Account")
+    profile = record.get("profile", {}) if isinstance(record.get("profile"), dict) else {}
+    with st.form("account_settings_form"):
+        display_name = st.text_input("Display name", value=str(profile.get("display_name") or username), key="account_display_name")
+        email = st.text_input("Email", value=str(profile.get("email") or ""), key="account_email")
+        submitted = st.form_submit_button("Save account", use_container_width=True)
+    if submitted:
+        record["profile"] = {
+            "display_name": display_name.strip() or username,
+            "email": email.strip(),
+        }
+        save_user_record(username, record)
+        st.success("Account saved.")
+        st.rerun()
+
+    if st.button("Logout", use_container_width=True):
+        logout()
+        st.session_state.pending_page = "Login"
+        st.rerun()
+
+
+def render_my_page():
+    st.header("My Page")
+    if not require_login():
+        return
+
+    username = current_username()
+    triggered_alerts = evaluate_price_alerts(username)
+    render_alert_banner(triggered_alerts)
+
+    record = get_user_record(username) or default_user_record(username)
+    profile = record.get("profile", {}) if isinstance(record.get("profile"), dict) else {}
+    st.caption(f"Signed in as {profile.get('display_name') or username}.")
+
+    portfolio_tab, alerts_tab, account_tab = st.tabs(["Portfolio", "Price Alerts", "Account"])
+    with portfolio_tab:
+        render_portfolio_manager(username, record)
+    with alerts_tab:
+        render_alert_manager(username, get_user_record(username) or record)
+    with account_tab:
+        render_account_settings(username, get_user_record(username) or record)
+
+
 def render_symbol_detail(symbol: str, benchmark: str, years: int, rolling_window: int):
     render_focus_summary(symbol, benchmark, years, rolling_window)
     render_metrics(symbol, benchmark, years, rolling_window)
@@ -1787,6 +2294,87 @@ def inject_styles():
         .metrics-table thead th:nth-child(n+5) {
             width: 14.7%;
         }
+        @media (max-width: 1024px) {
+            .block-container {
+                padding-left: 1rem;
+                padding-right: 1rem;
+                padding-top: 1.25rem;
+            }
+            .summary-grid-4 {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .summary-grid-3 {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+            .summary-card,
+            .summary-card.large {
+                height: auto;
+                min-height: 112px;
+                padding: 16px 18px 14px;
+            }
+            .summary-label {
+                margin-bottom: 14px;
+            }
+            .summary-value.large {
+                font-size: clamp(1.35rem, 4vw, 1.85rem);
+            }
+            .macro-table {
+                min-width: 760px;
+            }
+            .metrics-table {
+                min-width: 980px;
+            }
+            div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+                overflow-x: auto;
+                white-space: nowrap;
+            }
+        }
+        @media (max-width: 720px) {
+            h1 {
+                font-size: 1.75rem;
+            }
+            h2, h3 {
+                font-size: 1.18rem;
+            }
+            .summary-grid-4,
+            .summary-grid-3 {
+                grid-template-columns: 1fr;
+            }
+            .summary-card,
+            .summary-card.large {
+                min-height: 96px;
+                padding: 14px 14px 12px;
+            }
+            .summary-label {
+                white-space: normal;
+            }
+            .summary-value-row {
+                min-height: 1.8rem;
+            }
+            .summary-value,
+            .summary-value.large {
+                font-size: 1.35rem;
+            }
+            .summary-delta {
+                font-size: 0.9rem;
+            }
+            .macro-table th,
+            .macro-table td,
+            .metrics-table th,
+            .metrics-table td {
+                padding: 8px 8px;
+                font-size: 0.84rem;
+            }
+            div[data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap;
+            }
+            div[data-testid="stHorizontalBlock"] > div {
+                min-width: 100% !important;
+            }
+            div[data-testid="stMetricValue"] {
+                font-size: 1.35rem;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1817,6 +2405,18 @@ def main():
         rolling_window = st.slider("Rolling beta window in months", min_value=6, max_value=60, value=36)
         refresh_seconds = st.slider("Quote refresh seconds", min_value=5, max_value=120, value=20)
         auto_refresh = st.toggle("Auto refresh quotes", value=False)
+        st.divider()
+        if is_logged_in():
+            record = get_user_record() or {}
+            profile = record.get("profile", {}) if isinstance(record.get("profile"), dict) else {}
+            st.caption(f"Logged in: {profile.get('display_name') or current_username()}")
+            if st.button("My Page", use_container_width=True):
+                st.session_state.pending_page = "My Page"
+                st.rerun()
+        else:
+            if st.button("Login", use_container_width=True):
+                st.session_state.pending_page = "Login"
+                st.rerun()
 
     if auto_refresh:
         try:
@@ -1826,7 +2426,11 @@ def main():
         except Exception:
             st.info("Auto refresh package is unavailable. Use the browser refresh button.")
 
-    if page in PAGE_CONFIG:
+    if page == "Login":
+        render_login_page()
+    elif page == "My Page":
+        render_my_page()
+    elif page in PAGE_CONFIG:
         render_market_main(PAGE_CONFIG[page])
     else:
         render_symbol_detail(focus_symbol, benchmark, years, rolling_window)
