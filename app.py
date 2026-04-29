@@ -373,6 +373,16 @@ SECTOR_WATCHLISTS = {
     "Utilities": ["NEE", "SO", "DUK", "AEP", "SRE", "D"],
 }
 
+KOREA_SECTOR_WATCHLISTS = {
+    "Technology": ["005930.KS", "000660.KS", "035420.KS", "035720.KS", "066570.KS"],
+    "Healthcare": ["207940.KS", "068270.KS"],
+    "Consumer Cyclical": ["005380.KS", "000270.KS", "012330.KS"],
+    "Financial Services": ["105560.KS", "055550.KS", "032830.KS"],
+    "Basic Materials": ["373220.KS", "051910.KS", "006400.KS", "096770.KS"],
+    "Industrials": ["028260.KS", "003550.KS"],
+    "Utilities": ["015760.KS"],
+}
+
 SECTOR_DEFAULT_INDUSTRIES = {
     "Technology": "Technology Hardware, Software, and Semiconductors",
     "Communication Services": "Media, Internet, and Telecommunications",
@@ -463,6 +473,10 @@ def display_symbol(symbol: str) -> str:
 
 def is_crypto_symbol(symbol: str) -> bool:
     return symbol in CRYPTO_UNIVERSE or symbol.endswith("-USD")
+
+
+def is_korea_symbol(symbol: str) -> bool:
+    return symbol.endswith(".KS") or symbol.endswith(".KQ") or symbol in {"^KS11", "^KQ11"}
 
 
 @st.cache_data(ttl=3600)
@@ -1023,19 +1037,61 @@ def average_metric_values(summaries: list[dict[str, float | None]]) -> dict[str,
     }
 
 
+def empty_metric_summary() -> dict[str, float | None]:
+    return {
+        "avg_monthly_log_return": None,
+        "avg_monthly_volatility": None,
+        "latest_beta": None,
+    }
+
+
 @st.cache_data(ttl=1800)
-def comparison_metrics(symbol: str, benchmark: str, years: int, rolling_window: int) -> dict[str, object]:
-    if is_crypto_symbol(symbol):
-        crypto_benchmark = "BTC-USD"
+def sector_comparison_metrics(symbol: str, benchmark: str, years: int, rolling_window: int) -> dict[str, object]:
+    profile = get_profile(symbol)
+    sector = str(profile.get("sector") or "")
+    watchlists = KOREA_SECTOR_WATCHLISTS if is_korea_symbol(symbol) else SECTOR_WATCHLISTS
+    candidates = watchlists.get(sector, [])
+    if not candidates:
         return {
-            "label": f"{crypto_benchmark} Benchmark",
-            "metrics": summary_metrics(crypto_benchmark, crypto_benchmark, years, rolling_window),
+            "label": "Sector",
+            "metrics": empty_metric_summary(),
         }
 
+    summaries = [
+        summary_metrics(candidate, benchmark, years, rolling_window)
+        for candidate in candidates
+    ]
     return {
-        "label": f"{benchmark} Benchmark",
-        "metrics": summary_metrics(benchmark, benchmark, years, rolling_window),
+        "label": f"{sector} Sector",
+        "metrics": average_metric_values(summaries),
     }
+
+
+@st.cache_data(ttl=1800)
+def comparison_metrics(symbol: str, benchmark: str, years: int, rolling_window: int) -> list[dict[str, object]]:
+    if is_crypto_symbol(symbol):
+        rows: list[dict[str, object]] = [
+            {
+                "label": "BTC-USD Benchmark",
+                "metrics": summary_metrics("BTC-USD", "BTC-USD", years, rolling_window),
+            }
+        ]
+        if benchmark.upper() != "BTC-USD":
+            rows.append(
+                {
+                    "label": f"{benchmark.upper()} Market Portfolio",
+                    "metrics": summary_metrics(benchmark.upper(), benchmark.upper(), years, rolling_window),
+                }
+            )
+        return rows
+
+    return [
+        sector_comparison_metrics(symbol, benchmark, years, rolling_window),
+        {
+            "label": f"{benchmark.upper()} Benchmark",
+            "metrics": summary_metrics(benchmark.upper(), benchmark.upper(), years, rolling_window),
+        },
+    ]
 
 
 def to_percent(value):
@@ -1068,12 +1124,11 @@ def summary_card_html(label: str, value: str, delta: str | None = None, large: b
 
 
 def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window: int):
+    benchmark = benchmark.upper()
     quote = get_quote(symbol)
     metric_summary = summary_metrics(symbol, benchmark, years, rolling_window)
     capm = capm_snapshot(symbol, benchmark, years, rolling_window, quote)
-    comparison = comparison_metrics(symbol, benchmark, years, rolling_window)
-    comparison_label = str(comparison["label"])
-    comparison_summary = comparison["metrics"]
+    comparisons = comparison_metrics(symbol, benchmark, years, rolling_window)
 
     st.subheader(display_symbol(symbol))
     price_cards = [
@@ -1087,17 +1142,25 @@ def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window
         summary_card_html("Avg Monthly Volatility", format_pct(to_percent(metric_summary["avg_monthly_volatility"]))),
         summary_card_html(f"Monthly Beta ({rolling_window}M)", format_decimal(metric_summary["latest_beta"])),
     ]
-    comparison_cards = [
-        summary_card_html(f"{comparison_label} Log Return", format_pct(to_percent(comparison_summary["avg_monthly_log_return"]))),
-        summary_card_html(f"{comparison_label} Volatility", format_pct(to_percent(comparison_summary["avg_monthly_volatility"]))),
-        summary_card_html(f"{comparison_label} Beta", format_decimal(comparison_summary["latest_beta"])),
-    ]
+    comparison_rows = []
+    for comparison in comparisons:
+        comparison_label = str(comparison["label"])
+        comparison_summary = comparison["metrics"]
+        comparison_rows.append(
+            "".join(
+                [
+                    summary_card_html(f"{comparison_label} Log Return", format_pct(to_percent(comparison_summary["avg_monthly_log_return"]))),
+                    summary_card_html(f"{comparison_label} Volatility", format_pct(to_percent(comparison_summary["avg_monthly_volatility"]))),
+                    summary_card_html(f"{comparison_label} Beta", format_decimal(comparison_summary["latest_beta"])),
+                ]
+            )
+        )
     st.markdown(
         (
             '<div class="summary-stack">'
             f'<div class="summary-grid summary-grid-4">{"".join(price_cards)}</div>'
             f'<div class="summary-grid summary-grid-3">{"".join(metric_cards)}</div>'
-            f'<div class="summary-grid summary-grid-3">{"".join(comparison_cards)}</div>'
+            f'{"".join(f"<div class=\"summary-grid summary-grid-3\">{row}</div>" for row in comparison_rows)}'
             "</div>"
         ),
         unsafe_allow_html=True,
