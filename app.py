@@ -6,6 +6,8 @@ import math
 import os
 import secrets
 import html as html_lib
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -488,6 +490,13 @@ def is_korea_symbol(symbol: str) -> bool:
     return symbol.endswith(".KS") or symbol.endswith(".KQ") or symbol in {"^KS11", "^KQ11"}
 
 
+def crypto_base_symbol(symbol: str) -> str:
+    symbol = symbol.upper().strip()
+    if "-" in symbol:
+        return symbol.split("-", 1)[0]
+    return symbol
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -735,6 +744,108 @@ def get_quote(symbol: str) -> dict[str, object]:
     }
 
 
+def fetch_json(url: str) -> object:
+    request = urllib.request.Request(url, headers={"accept": "application/json", "User-Agent": "portfolio-tracker/1.0"})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+@st.cache_data(ttl=20)
+def get_upbit_krw_quote(base_symbol: str) -> dict[str, object]:
+    market = f"KRW-{base_symbol.upper()}"
+    query = urllib.parse.urlencode({"markets": market})
+    data = fetch_json(f"https://api.upbit.com/v1/ticker?{query}")
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"No Upbit KRW quote for {base_symbol}")
+    ticker = data[0]
+    price = safe_number(ticker.get("trade_price"))
+    previous_close = safe_number(ticker.get("prev_closing_price"))
+    signed_change_rate = safe_number(ticker.get("signed_change_rate"))
+    return {
+        "symbol": f"{base_symbol.upper()}-KRW",
+        "price": price,
+        "previous_close": previous_close,
+        "change_pct": signed_change_rate * 100 if signed_change_rate is not None else pct_change(price, previous_close),
+        "currency": "KRW",
+        "exchange": "Upbit",
+        "timestamp_utc": utc_now_iso(),
+    }
+
+
+@st.cache_data(ttl=20)
+def get_bithumb_krw_quote(base_symbol: str) -> dict[str, object]:
+    market = f"KRW-{base_symbol.upper()}"
+    query = urllib.parse.urlencode({"markets": market})
+    data = fetch_json(f"https://api.bithumb.com/v1/ticker?{query}")
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"No Bithumb KRW quote for {base_symbol}")
+    ticker = data[0]
+    price = safe_number(ticker.get("trade_price"))
+    previous_close = safe_number(ticker.get("prev_closing_price"))
+    signed_change_rate = safe_number(ticker.get("signed_change_rate"))
+    return {
+        "symbol": f"{base_symbol.upper()}-KRW",
+        "price": price,
+        "previous_close": previous_close,
+        "change_pct": signed_change_rate * 100 if signed_change_rate is not None else pct_change(price, previous_close),
+        "currency": "KRW",
+        "exchange": "Bithumb",
+        "timestamp_utc": utc_now_iso(),
+    }
+
+
+def get_crypto_krw_quote(symbol: str) -> dict[str, object]:
+    base_symbol = crypto_base_symbol(symbol)
+    for quote_source in (get_upbit_krw_quote, get_bithumb_krw_quote):
+        try:
+            quote = quote_source(base_symbol)
+            if safe_number(quote.get("price")) is not None:
+                return quote
+        except Exception:
+            continue
+    try:
+        quote = get_quote(f"{base_symbol}-KRW")
+        if safe_number(quote.get("price")) is not None:
+            quote["exchange"] = quote.get("exchange") or "Yahoo Finance KRW"
+            quote["currency"] = "KRW"
+            return quote
+    except Exception:
+        pass
+    return {
+        "symbol": f"{base_symbol}-KRW",
+        "price": None,
+        "previous_close": None,
+        "change_pct": None,
+        "currency": "KRW",
+        "exchange": "KRW quote unavailable",
+        "timestamp_utc": utc_now_iso(),
+    }
+
+
+def get_portfolio_quote(symbol: str, cost_currency: str) -> dict[str, object]:
+    cost_currency = cost_currency.upper()
+    if cost_currency == "KRW" and is_crypto_symbol(symbol):
+        return get_crypto_krw_quote(symbol)
+    return get_quote(symbol)
+
+
+def convert_currency_value(value, from_currency: str, to_currency: str) -> float | None:
+    value = safe_number(value)
+    if value is None:
+        return None
+    from_currency = (from_currency or "").upper()
+    to_currency = (to_currency or "").upper()
+    if not to_currency or from_currency == to_currency:
+        return value
+    if not from_currency:
+        return value
+    from_to_usd = get_fx_to_usd(from_currency)
+    to_to_usd = get_fx_to_usd(to_currency)
+    if not from_to_usd or not to_to_usd:
+        return None
+    return value * from_to_usd / to_to_usd
+
+
 def portfolio_market_rows(portfolio: list[dict[str, object]]) -> list[dict[str, object]]:
     rows = []
     for position in portfolio:
@@ -743,8 +854,11 @@ def portfolio_market_rows(portfolio: list[dict[str, object]]) -> list[dict[str, 
             continue
         quantity = safe_number(position.get("quantity")) or 0
         avg_cost = safe_number(position.get("avg_cost")) or 0
-        quote = get_quote(symbol)
-        price = safe_number(quote.get("price"))
+        cost_currency = str(position.get("cost_currency") or position.get("currency") or "USD").upper()
+        if cost_currency not in {"USD", "KRW"}:
+            cost_currency = "USD"
+        quote = get_portfolio_quote(symbol, cost_currency)
+        price = convert_currency_value(quote.get("price"), str(quote.get("currency") or cost_currency), cost_currency)
         market_value = price * quantity if price is not None else None
         cost_basis = avg_cost * quantity
         gain_loss = market_value - cost_basis if market_value is not None else None
@@ -753,24 +867,29 @@ def portfolio_market_rows(portfolio: list[dict[str, object]]) -> list[dict[str, 
             {
                 "Symbol": symbol,
                 "Quantity": quantity,
-                "Avg Cost": format_money(avg_cost, str(quote.get("currency") or "")),
-                "Current Price": format_money(price, str(quote.get("currency") or "")),
-                "Market Value": format_money(market_value, str(quote.get("currency") or "")),
-                "Gain/Loss": format_money(gain_loss, str(quote.get("currency") or "")),
+                "Cost Currency": cost_currency,
+                "Avg Cost": format_portfolio_money(avg_cost, cost_currency),
+                "Current Price": format_portfolio_money(price, cost_currency),
+                "Market Value": format_portfolio_money(market_value, cost_currency),
+                "Gain/Loss": format_portfolio_money(gain_loss, cost_currency),
                 "Gain/Loss %": format_pct(gain_loss_pct),
+                "Price Source": str(quote.get("exchange") or ""),
                 "Note": str(position.get("note") or ""),
             }
         )
     return rows
 
 
-def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float, note: str) -> None:
+def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float, cost_currency: str, note: str) -> None:
     record = get_user_record(username) or default_user_record(username)
     portfolio = record.setdefault("portfolio", [])
     if not isinstance(portfolio, list):
         portfolio = []
         record["portfolio"] = portfolio
     symbol = normalize_symbol(symbol) or symbol.strip().upper()
+    cost_currency = cost_currency.upper()
+    if cost_currency not in {"USD", "KRW"}:
+        cost_currency = "USD"
     updated = False
     for position in portfolio:
         if isinstance(position, dict) and position.get("symbol") == symbol:
@@ -778,6 +897,7 @@ def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float
                 {
                     "quantity": quantity,
                     "avg_cost": avg_cost,
+                    "cost_currency": cost_currency,
                     "note": note.strip(),
                     "updated_at": utc_now_iso(),
                 }
@@ -790,6 +910,7 @@ def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float
                 "symbol": symbol,
                 "quantity": quantity,
                 "avg_cost": avg_cost,
+                "cost_currency": cost_currency,
                 "note": note.strip(),
                 "created_at": utc_now_iso(),
             }
@@ -1203,6 +1324,16 @@ def format_money(value, currency=""):
     prefix = "$" if currency == "USD" else ""
     suffix = " KRW" if currency == "KRW" else (f" {currency}" if currency not in {"", "USD"} else "")
     return f"{prefix}{value:,.2f}{suffix}".strip()
+
+
+def format_portfolio_money(value, currency=""):
+    value = safe_number(value)
+    if value is None:
+        return "N/A"
+    currency = currency.upper()
+    if currency == "KRW":
+        return f"₩{value:,.0f}"
+    return format_money(value, currency)
 
 
 def format_pct(value):
@@ -1940,14 +2071,17 @@ def render_portfolio_manager(username: str, record: dict[str, object]) -> None:
         st.info("No portfolio positions yet.")
 
     with st.form("portfolio_position_form"):
-        cols = st.columns([1.3, 1, 1, 1.4])
+        default_symbol = str(st.session_state.get("selected_symbol", "AAPL"))
+        default_currency = "KRW" if is_korea_symbol(default_symbol) else "USD"
+        cols = st.columns([1.3, 0.9, 1, 0.8, 1.4])
         symbol = cols[0].text_input("Symbol", value=st.session_state.get("selected_symbol", "AAPL"), key="portfolio_symbol")
         quantity = cols[1].number_input("Quantity", min_value=0.0, value=1.0, step=1.0, key="portfolio_quantity")
         avg_cost = cols[2].number_input("Average cost", min_value=0.0, value=0.0, step=1.0, key="portfolio_avg_cost")
-        note = cols[3].text_input("Note", key="portfolio_note")
+        cost_currency = cols[3].selectbox("Cost currency", ["USD", "KRW"], index=0 if default_currency == "USD" else 1, key="portfolio_cost_currency")
+        note = cols[4].text_input("Note", key="portfolio_note")
         submitted = st.form_submit_button("Save position", use_container_width=True)
     if submitted:
-        upsert_position(username, symbol, quantity, avg_cost, note)
+        upsert_position(username, symbol, quantity, avg_cost, cost_currency, note)
         st.success("Position saved.")
         st.rerun()
 
