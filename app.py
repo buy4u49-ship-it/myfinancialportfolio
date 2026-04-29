@@ -1263,8 +1263,9 @@ def render_index_strip(market: str):
 def render_macro_panel():
     st.subheader("Rates and M2")
     macro = format_macro_table(get_macro_snapshot())
+    right_aligned_columns = ["Policy Rate", "M2", "M2 (USD)", "As Of"]
     st.dataframe(
-        macro,
+        macro.style.set_properties(subset=right_aligned_columns, **{"text-align": "right"}),
         use_container_width=True,
         hide_index=True,
         column_config={
