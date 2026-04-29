@@ -1072,8 +1072,8 @@ def comparison_metrics(symbol: str, benchmark: str, years: int, rolling_window: 
     if is_crypto_symbol(symbol):
         rows: list[dict[str, object]] = [
             {
-                "label": "BTC-USD Benchmark",
-                "metrics": summary_metrics("BTC-USD", "BTC-USD", years, rolling_window),
+                "label": "BTC",
+                "metrics": summary_metrics("BTC-USD", benchmark.upper(), years, rolling_window),
             }
         ]
         if benchmark.upper() != "BTC-USD":
