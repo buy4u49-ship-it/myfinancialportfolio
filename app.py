@@ -8,13 +8,14 @@ import secrets
 import html as html_lib
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from market_tracker import MetricConfig, monthly_metrics
 
@@ -274,11 +275,13 @@ PAGE_CONFIG = {
     },
 }
 
-PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail", "Login", "My Page"]
+PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail", "My Page"]
 
 APP_DATA_DIR = Path(os.environ.get("PORTFOLIO_USER_DATA_DIR", "user_data"))
 USER_STORE_PATH = APP_DATA_DIR / "users.json"
 PASSWORD_HASH_ITERATIONS = 200_000
+REMEMBER_COOKIE_NAME = "portfolio_remember_token"
+REMEMBER_LOGIN_DAYS = 30
 
 SYMBOL_LABELS = {
     "BTC-USD": "Bitcoin",
@@ -501,6 +504,16 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def parse_utc_datetime(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def default_user_record(username: str) -> dict[str, object]:
     return {
         "username": username,
@@ -511,6 +524,7 @@ def default_user_record(username: str) -> dict[str, object]:
         },
         "portfolio": [],
         "alerts": [],
+        "remember_tokens": [],
     }
 
 
@@ -556,6 +570,134 @@ def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
 def verify_password(password: str, salt: str, digest: str) -> bool:
     _, candidate = hash_password(password, salt)
     return secrets.compare_digest(candidate, digest)
+
+
+def remember_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def get_cookie(name: str) -> str:
+    try:
+        value = st.context.cookies.get(name)
+    except Exception:
+        value = ""
+    return str(value or "")
+
+
+def queue_remember_cookie(value: str) -> None:
+    st.session_state.pending_remember_cookie = value
+
+
+def queue_clear_remember_cookie() -> None:
+    st.session_state.clear_remember_cookie = True
+
+
+def emit_auth_cookie_scripts() -> None:
+    if st.session_state.pop("clear_remember_cookie", False):
+        components.html(
+            f"""
+            <script>
+            document.cookie = "{REMEMBER_COOKIE_NAME}=; Max-Age=0; path=/; SameSite=Lax";
+            </script>
+            """,
+            height=0,
+        )
+    remember_cookie = st.session_state.pop("pending_remember_cookie", "")
+    if remember_cookie:
+        encoded_value = urllib.parse.quote(remember_cookie, safe="")
+        max_age_seconds = REMEMBER_LOGIN_DAYS * 24 * 60 * 60
+        components.html(
+            f"""
+            <script>
+            document.cookie = "{REMEMBER_COOKIE_NAME}={encoded_value}; Max-Age={max_age_seconds}; path=/; SameSite=Lax";
+            </script>
+            """,
+            height=0,
+        )
+
+
+def create_remember_login_token(username: str) -> str:
+    record = get_user_record(username) or default_user_record(username)
+    tokens = record.setdefault("remember_tokens", [])
+    if not isinstance(tokens, list):
+        tokens = []
+        record["remember_tokens"] = tokens
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=REMEMBER_LOGIN_DAYS)
+    tokens.append(
+        {
+            "token_hash": remember_token_hash(token),
+            "created_at": utc_now_iso(),
+            "expires_at": expires_at.isoformat(timespec="seconds"),
+            "last_used_at": "",
+        }
+    )
+    save_user_record(username, record)
+    return f"{username}:{token}"
+
+
+def restore_remembered_login() -> None:
+    if current_username():
+        return
+    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME))
+    if ":" not in raw_cookie:
+        return
+    username, token = raw_cookie.split(":", 1)
+    username = normalize_username(username)
+    record = get_user_record(username)
+    if not record:
+        queue_clear_remember_cookie()
+        return
+
+    token_hash = remember_token_hash(token)
+    tokens = record.get("remember_tokens", [])
+    if not isinstance(tokens, list):
+        queue_clear_remember_cookie()
+        return
+
+    now = datetime.now(timezone.utc)
+    restored = False
+    retained_tokens = []
+    for item in tokens:
+        if not isinstance(item, dict):
+            continue
+        expires_at = parse_utc_datetime(item.get("expires_at"))
+        if expires_at and expires_at < now:
+            continue
+        if secrets.compare_digest(str(item.get("token_hash") or ""), token_hash):
+            item["last_used_at"] = utc_now_iso()
+            restored = True
+        retained_tokens.append(item)
+
+    if len(retained_tokens) != len(tokens) or restored:
+        record["remember_tokens"] = retained_tokens
+        save_user_record(username, record)
+    if restored:
+        st.session_state.auth_user = username
+    else:
+        queue_clear_remember_cookie()
+
+
+def revoke_current_remember_token(username: str) -> None:
+    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME))
+    if ":" not in raw_cookie:
+        return
+    cookie_username, token = raw_cookie.split(":", 1)
+    if normalize_username(cookie_username) != username:
+        return
+    record = get_user_record(username)
+    if not record:
+        return
+    tokens = record.get("remember_tokens", [])
+    if not isinstance(tokens, list):
+        return
+    token_hash = remember_token_hash(token)
+    record["remember_tokens"] = [
+        item
+        for item in tokens
+        if not isinstance(item, dict) or not secrets.compare_digest(str(item.get("token_hash") or ""), token_hash)
+    ]
+    save_user_record(username, record)
 
 
 def current_username() -> str:
@@ -627,7 +769,11 @@ def authenticate(username: str, password: str) -> tuple[bool, str]:
 
 
 def logout() -> None:
+    username = current_username()
+    if username:
+        revoke_current_remember_token(username)
     st.session_state.pop("auth_user", None)
+    queue_clear_remember_cookie()
 
 
 @st.cache_data(ttl=3600)
@@ -938,6 +1084,13 @@ def portfolio_totals(snapshots: list[dict[str, object]]) -> dict[str, float | No
         "total_gain_loss": total_gain_loss,
         "total_gain_loss_pct": total_gain_loss_pct,
     }
+
+
+def signed_value_class(value) -> str:
+    value = safe_number(value)
+    if value is None or value == 0:
+        return "neutral"
+    return "positive" if value > 0 else "negative"
 
 
 def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float, cost_currency: str, note: str) -> None:
@@ -1617,6 +1770,18 @@ def summary_card_html(label: str, value: str, delta: str | None = None, large: b
     )
 
 
+def portfolio_summary_card_html(label: str, value: str, value_class: str = "neutral", compact: bool = False) -> str:
+    card_class = "portfolio-mini-card compact" if compact else "portfolio-mini-card"
+    return "".join(
+        [
+            f'<div class="{card_class}">',
+            f'<div class="portfolio-mini-label">{html_lib.escape(label)}</div>',
+            f'<div class="portfolio-mini-value {value_class}">{html_lib.escape(value)}</div>',
+            "</div>",
+        ]
+    )
+
+
 def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window: int):
     benchmark = benchmark.upper()
     quote = get_quote(symbol)
@@ -2062,10 +2227,13 @@ def render_login_page():
         with st.form("login_form"):
             username = st.text_input("Username", key="login_username")
             password = st.text_input("Password", type="password", key="login_password")
+            remember_login = st.checkbox("Keep me logged in on this computer", value=True, key="login_remember")
             submitted = st.form_submit_button("Login", use_container_width=True)
         if submitted:
             ok, message = authenticate(username, password)
             if ok:
+                if remember_login:
+                    queue_remember_cookie(create_remember_login_token(normalize_username(username)))
                 st.success(message)
                 st.session_state.pending_page = "My Page"
                 st.rerun()
@@ -2079,6 +2247,7 @@ def render_login_page():
             email = st.text_input("Email", key="create_email")
             new_password = st.text_input("New password", type="password", key="create_password")
             confirm_password = st.text_input("Confirm password", type="password", key="create_confirm_password")
+            remember_login = st.checkbox("Keep me logged in on this computer", value=True, key="create_remember")
             submitted = st.form_submit_button("Create account", use_container_width=True)
         if submitted:
             if new_password != confirm_password:
@@ -2087,6 +2256,8 @@ def render_login_page():
                 ok, message = create_account(new_username, new_password, display_name, email)
                 if ok:
                     authenticate(new_username, new_password)
+                    if remember_login:
+                        queue_remember_cookie(create_remember_login_token(normalize_username(new_username)))
                     st.success(message)
                     st.session_state.pending_page = "My Page"
                     st.rerun()
@@ -2097,10 +2268,7 @@ def render_login_page():
 def require_login() -> bool:
     if is_logged_in():
         return True
-    st.info("Login is required to use My Page.")
-    if st.button("Go to Login", use_container_width=True):
-        st.session_state.pending_page = "Login"
-        st.rerun()
+    st.info("Login is required to use My Page. Use the login panel at the top of the left sidebar.")
     return False
 
 
@@ -2118,6 +2286,94 @@ def render_alert_banner(triggered_alerts: list[dict[str, object]]) -> None:
         if alert_id not in notified:
             st.toast(message)
             notified.add(alert_id)
+
+
+def portfolio_sidebar_summary(username: str) -> tuple[dict[str, float | None], str]:
+    record = get_user_record(username) or {}
+    portfolio = record.get("portfolio", [])
+    portfolio = portfolio if isinstance(portfolio, list) else []
+    summary_currency = default_portfolio_summary_currency(portfolio)
+    snapshots = portfolio_position_snapshots(portfolio, summary_currency)
+    return portfolio_totals(snapshots), summary_currency
+
+
+def render_sidebar_auth_panel() -> None:
+    st.subheader("Login")
+    if is_logged_in():
+        username = current_username()
+        record = get_user_record(username) or {}
+        profile = record.get("profile", {}) if isinstance(record.get("profile"), dict) else {}
+        totals, summary_currency = portfolio_sidebar_summary(username)
+        st.caption(f"{profile.get('display_name') or username}")
+        st.markdown(
+            "".join(
+                [
+                    portfolio_summary_card_html(
+                        "Total Investment",
+                        format_portfolio_money(totals["total_market_value"], summary_currency),
+                        compact=True,
+                    ),
+                    portfolio_summary_card_html(
+                        "Total Gain/Loss",
+                        format_portfolio_money(totals["total_gain_loss"], summary_currency),
+                        signed_value_class(totals["total_gain_loss"]),
+                        compact=True,
+                    ),
+                    portfolio_summary_card_html(
+                        "Total Return",
+                        format_pct(totals["total_gain_loss_pct"]),
+                        signed_value_class(totals["total_gain_loss_pct"]),
+                        compact=True,
+                    ),
+                ]
+            ),
+            unsafe_allow_html=True,
+        )
+        if st.button("My Page", use_container_width=True, key="sidebar_go_my_page"):
+            st.session_state.pending_page = "My Page"
+            st.rerun()
+        if st.button("Logout", use_container_width=True, key="sidebar_logout"):
+            logout()
+            st.rerun()
+        return
+
+    with st.form("sidebar_login_form"):
+        username = st.text_input("ID", key="sidebar_login_username")
+        password = st.text_input("PW", type="password", key="sidebar_login_password")
+        remember_login = st.checkbox("Keep me logged in", value=True, key="sidebar_login_remember")
+        submitted = st.form_submit_button("Login", use_container_width=True)
+    if submitted:
+        ok, message = authenticate(username, password)
+        if ok:
+            if remember_login:
+                queue_remember_cookie(create_remember_login_token(normalize_username(username)))
+            st.success(message)
+            st.rerun()
+        else:
+            st.error(message)
+
+    with st.expander("Create account"):
+        with st.form("sidebar_create_account_form"):
+            new_username = st.text_input("New ID", key="sidebar_create_username")
+            display_name = st.text_input("Display name", key="sidebar_create_display_name")
+            email = st.text_input("Email", key="sidebar_create_email")
+            new_password = st.text_input("New PW", type="password", key="sidebar_create_password")
+            confirm_password = st.text_input("Confirm PW", type="password", key="sidebar_create_confirm_password")
+            remember_login = st.checkbox("Keep me logged in", value=True, key="sidebar_create_remember")
+            submitted = st.form_submit_button("Create account", use_container_width=True)
+        if submitted:
+            if new_password != confirm_password:
+                st.error("Passwords do not match.")
+            else:
+                ok, message = create_account(new_username, new_password, display_name, email)
+                if ok:
+                    authenticate(new_username, new_password)
+                    if remember_login:
+                        queue_remember_cookie(create_remember_login_token(normalize_username(new_username)))
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
 
 
 def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currency: str) -> None:
@@ -2155,9 +2411,24 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
 
     with metric_col:
         st.markdown("**Portfolio Summary**")
-        st.metric("Total Investment Value", format_portfolio_money(totals["total_market_value"], summary_currency))
-        st.metric("Total Gain/Loss", format_portfolio_money(totals["total_gain_loss"], summary_currency))
-        st.metric("Total Return", format_pct(totals["total_gain_loss_pct"]))
+        st.markdown(
+            "".join(
+                [
+                    portfolio_summary_card_html("Total Investment Value", format_portfolio_money(totals["total_market_value"], summary_currency)),
+                    portfolio_summary_card_html(
+                        "Total Gain/Loss",
+                        format_portfolio_money(totals["total_gain_loss"], summary_currency),
+                        signed_value_class(totals["total_gain_loss"]),
+                    ),
+                    portfolio_summary_card_html(
+                        "Total Return",
+                        format_pct(totals["total_gain_loss_pct"]),
+                        signed_value_class(totals["total_gain_loss_pct"]),
+                    ),
+                ]
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 def render_portfolio_manager(username: str, record: dict[str, object]) -> None:
@@ -2431,6 +2702,45 @@ def inject_styles():
         .summary-delta.neutral {
             color: #6b7280;
         }
+        .portfolio-mini-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            background: #ffffff;
+        }
+        .portfolio-mini-card.compact {
+            padding: 10px 12px;
+            margin-bottom: 8px;
+        }
+        .portfolio-mini-label {
+            color: #6b7280;
+            font-size: 0.78rem;
+            font-weight: 700;
+            line-height: 1.2;
+            margin-bottom: 8px;
+        }
+        .portfolio-mini-value {
+            color: #111827;
+            font-size: 1.25rem;
+            font-weight: 800;
+            line-height: 1.1;
+            text-align: right;
+            overflow-wrap: anywhere;
+            font-variant-numeric: tabular-nums;
+        }
+        .portfolio-mini-card.compact .portfolio-mini-value {
+            font-size: 1.02rem;
+        }
+        .portfolio-mini-value.positive {
+            color: #dc2626;
+        }
+        .portfolio-mini-value.negative {
+            color: #2563eb;
+        }
+        .portfolio-mini-value.neutral {
+            color: #111827;
+        }
         .macro-table-wrap {
             border: 1px solid #e5e7eb;
             border-radius: 8px;
@@ -2638,10 +2948,14 @@ def render_top_navigation() -> str:
 def main():
     st.set_page_config(page_title="My Financial Portfolio", layout="wide")
     inject_styles()
+    restore_remembered_login()
+    emit_auth_cookie_scripts()
     page = render_top_navigation()
     st.title("My Financial Portfolio")
 
     with st.sidebar:
+        render_sidebar_auth_panel()
+        st.divider()
         st.header("Search")
         focus_symbol = render_symbol_search("AAPL")
         benchmark = st.text_input("Benchmark", value="SPY")
@@ -2649,18 +2963,6 @@ def main():
         rolling_window = st.slider("Rolling beta window in months", min_value=6, max_value=60, value=36)
         refresh_seconds = st.slider("Quote refresh seconds", min_value=5, max_value=120, value=20)
         auto_refresh = st.toggle("Auto refresh quotes", value=False)
-        st.divider()
-        if is_logged_in():
-            record = get_user_record() or {}
-            profile = record.get("profile", {}) if isinstance(record.get("profile"), dict) else {}
-            st.caption(f"Logged in: {profile.get('display_name') or current_username()}")
-            if st.button("My Page", use_container_width=True):
-                st.session_state.pending_page = "My Page"
-                st.rerun()
-        else:
-            if st.button("Login", use_container_width=True):
-                st.session_state.pending_page = "Login"
-                st.rerun()
 
     if auto_refresh:
         try:
@@ -2670,9 +2972,7 @@ def main():
         except Exception:
             st.info("Auto refresh package is unavailable. Use the browser refresh button.")
 
-    if page == "Login":
-        render_login_page()
-    elif page == "My Page":
+    if page == "My Page":
         render_my_page()
     elif page in PAGE_CONFIG:
         render_market_main(PAGE_CONFIG[page])
