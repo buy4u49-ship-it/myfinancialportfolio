@@ -852,6 +852,33 @@ def format_macro_table(macro: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def macro_table_html(macro: pd.DataFrame) -> str:
+    header_cells = "".join(f"<th>{html_lib.escape(str(column))}</th>" for column in macro.columns)
+    body_rows = []
+    for _, row in macro.iterrows():
+        cells = []
+        for column in macro.columns:
+            align_class = " macro-table-number" if column in {"Policy Rate", "M2", "M2 (USD)", "As Of"} else ""
+            cells.append(f'<td class="{align_class.strip()}">{html_lib.escape(str(row[column]))}</td>')
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+    return (
+        '<div class="macro-table-wrap">'
+        '<table class="macro-table">'
+        "<colgroup>"
+        '<col class="macro-col-country">'
+        '<col class="macro-col-policy">'
+        '<col class="macro-col-standard">'
+        '<col class="macro-col-standard">'
+        '<col class="macro-col-standard">'
+        '<col class="macro-col-standard">'
+        "</colgroup>"
+        f"<thead><tr>{header_cells}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+
 def format_money(value, currency=""):
     value = safe_number(value)
     if value is None:
@@ -1263,20 +1290,7 @@ def render_index_strip(market: str):
 def render_macro_panel():
     st.subheader("Rates and M2")
     macro = format_macro_table(get_macro_snapshot())
-    right_aligned_columns = ["Policy Rate", "M2", "M2 (USD)", "As Of"]
-    st.dataframe(
-        macro.style.set_properties(subset=right_aligned_columns, **{"text-align": "right"}),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Country": st.column_config.TextColumn("Country", width="medium"),
-            "Policy Rate": st.column_config.TextColumn("Policy Rate", width="small"),
-            "M2": st.column_config.TextColumn("M2", width="medium"),
-            "M2 (USD)": st.column_config.TextColumn("M2 (USD)", width="medium"),
-            "As Of": st.column_config.TextColumn("As Of", width="medium"),
-            "Source": st.column_config.TextColumn("Source", width="medium"),
-        },
-    )
+    st.markdown(macro_table_html(macro), unsafe_allow_html=True)
 
 
 def render_market_main(config: dict[str, object]):
@@ -1602,6 +1616,52 @@ def inject_styles():
         }
         .summary-delta.neutral {
             color: #6b7280;
+        }
+        .macro-table-wrap {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow-x: auto;
+            width: 100%;
+            margin-top: 0.5rem;
+        }
+        .macro-table {
+            border-collapse: collapse;
+            table-layout: fixed;
+            width: 100%;
+            font-size: 0.94rem;
+        }
+        .macro-table thead th {
+            background: #f8fafc;
+            color: #6b7280;
+            font-weight: 500;
+            text-align: left;
+        }
+        .macro-table th,
+        .macro-table td {
+            border-bottom: 1px solid #e5e7eb;
+            border-right: 1px solid #e5e7eb;
+            padding: 10px 10px;
+            white-space: nowrap;
+        }
+        .macro-table th:last-child,
+        .macro-table td:last-child {
+            border-right: 0;
+        }
+        .macro-table tbody tr:last-child td {
+            border-bottom: 0;
+        }
+        .macro-table .macro-table-number {
+            font-variant-numeric: tabular-nums;
+            text-align: right !important;
+        }
+        .macro-table .macro-col-country {
+            width: 18%;
+        }
+        .macro-table .macro-col-policy {
+            width: 12%;
+        }
+        .macro-table .macro-col-standard {
+            width: 17.5%;
         }
         .metrics-table-wrap {
             border: 1px solid #e5e7eb;
