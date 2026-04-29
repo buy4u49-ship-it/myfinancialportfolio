@@ -769,6 +769,89 @@ def get_macro_snapshot() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+FX_TO_USD_FALLBACK = {
+    "USD": 1.0,
+    "KRW": 1 / 1380,
+    "EUR": 1.08,
+    "JPY": 1 / 155,
+    "CNY": 1 / 7.25,
+}
+
+
+FX_TICKERS_TO_USD = {
+    "KRW": "KRW=X",
+    "EUR": "EURUSD=X",
+    "JPY": "JPY=X",
+    "CNY": "CNY=X",
+}
+
+
+def parse_m2_unit(unit: str) -> tuple[str, float]:
+    parts = str(unit).split()
+    currency = parts[0].upper() if parts else "USD"
+    scale = parts[1].lower() if len(parts) > 1 else "bn"
+    scale_to_bn = {"mn": 1 / 1000, "bn": 1.0, "tn": 1000.0}.get(scale, 1.0)
+    return currency, scale_to_bn
+
+
+@st.cache_data(ttl=3600)
+def get_fx_to_usd(currency: str) -> float:
+    currency = currency.upper()
+    if currency == "USD":
+        return 1.0
+    ticker_symbol = FX_TICKERS_TO_USD.get(currency)
+    if ticker_symbol:
+        try:
+            history = yf.Ticker(ticker_symbol).history(period="5d", interval="1d", auto_adjust=True, actions=False)
+            if not history.empty:
+                rate = safe_number(history["Close"].dropna().iloc[-1])
+                if rate:
+                    if currency in {"KRW", "JPY", "CNY"}:
+                        return 1 / rate
+                    return rate
+        except Exception:
+            pass
+    return FX_TO_USD_FALLBACK.get(currency, 1.0)
+
+
+def format_month(value) -> str:
+    if value in (None, ""):
+        return ""
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return str(value)[:7]
+    return parsed.strftime("%Y-%m")
+
+
+def format_currency_amount(value, currency: str) -> str:
+    value = safe_number(value)
+    if value is None:
+        return "N/A"
+    symbols = {"USD": "$", "KRW": "₩", "EUR": "€", "JPY": "¥", "CNY": "¥"}
+    return f"{symbols.get(currency, currency + ' ')}{value:,.0f}"
+
+
+def format_macro_table(macro: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, row in macro.iterrows():
+        currency, scale_to_bn = parse_m2_unit(row.get("m2_unit", "USD bn"))
+        m2_value = safe_number(row.get("m2"))
+        m2_usd_bn = None
+        if m2_value is not None:
+            m2_usd_bn = m2_value * scale_to_bn * get_fx_to_usd(currency)
+        rows.append(
+            {
+                "Country": row.get("country", ""),
+                "Policy Rate": "" if safe_number(row.get("policy_rate_pct")) is None else f"{safe_number(row.get('policy_rate_pct')):.2f}%",
+                "M2": format_currency_amount(m2_value, currency),
+                "M2 (USD)": format_currency_amount(m2_usd_bn, "USD"),
+                "As Of": format_month(row.get("as_of", "")),
+                "Source": row.get("source", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def format_money(value, currency=""):
     value = safe_number(value)
     if value is None:
@@ -1179,8 +1262,20 @@ def render_index_strip(market: str):
 
 def render_macro_panel():
     st.subheader("Rates and M2")
-    macro = get_macro_snapshot()
-    st.dataframe(macro, use_container_width=True, hide_index=True)
+    macro = format_macro_table(get_macro_snapshot())
+    st.dataframe(
+        macro,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Country": st.column_config.TextColumn("Country", width="medium"),
+            "Policy Rate": st.column_config.TextColumn("Policy Rate", width="small"),
+            "M2": st.column_config.TextColumn("M2", width="medium"),
+            "M2 (USD)": st.column_config.TextColumn("M2 (USD)", width="medium"),
+            "As Of": st.column_config.TextColumn("As Of", width="medium"),
+            "Source": st.column_config.TextColumn("Source", width="medium"),
+        },
+    )
 
 
 def render_market_main(config: dict[str, object]):
