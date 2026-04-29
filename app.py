@@ -846,9 +846,21 @@ def convert_currency_value(value, from_currency: str, to_currency: str) -> float
     return value * from_to_usd / to_to_usd
 
 
-def portfolio_market_rows(portfolio: list[dict[str, object]]) -> list[dict[str, object]]:
-    rows = []
+def default_portfolio_summary_currency(portfolio: list[dict[str, object]]) -> str:
+    currencies = {
+        str(position.get("cost_currency") or position.get("currency") or "USD").upper()
+        for position in portfolio
+        if isinstance(position, dict)
+    }
+    return "KRW" if "KRW" in currencies else "USD"
+
+
+def portfolio_position_snapshots(portfolio: list[dict[str, object]], summary_currency: str) -> list[dict[str, object]]:
+    snapshots = []
+    summary_currency = summary_currency.upper()
     for position in portfolio:
+        if not isinstance(position, dict):
+            continue
         symbol = str(position.get("symbol") or "").upper()
         if not symbol:
             continue
@@ -863,21 +875,69 @@ def portfolio_market_rows(portfolio: list[dict[str, object]]) -> list[dict[str, 
         cost_basis = avg_cost * quantity
         gain_loss = market_value - cost_basis if market_value is not None else None
         gain_loss_pct = pct_change(market_value, cost_basis) if market_value is not None and cost_basis else None
+        market_value_summary = convert_currency_value(market_value, cost_currency, summary_currency)
+        cost_basis_summary = convert_currency_value(cost_basis, cost_currency, summary_currency)
+        gain_loss_summary = convert_currency_value(gain_loss, cost_currency, summary_currency)
+        snapshots.append(
+            {
+                "symbol": symbol,
+                "quantity": quantity,
+                "avg_cost": avg_cost,
+                "cost_currency": cost_currency,
+                "price": price,
+                "market_value": market_value,
+                "cost_basis": cost_basis,
+                "gain_loss": gain_loss,
+                "gain_loss_pct": gain_loss_pct,
+                "market_value_summary": market_value_summary,
+                "cost_basis_summary": cost_basis_summary,
+                "gain_loss_summary": gain_loss_summary,
+                "price_source": str(quote.get("exchange") or ""),
+                "note": str(position.get("note") or ""),
+            }
+        )
+    return snapshots
+
+
+def portfolio_market_rows(portfolio: list[dict[str, object]], summary_currency: str | None = None) -> list[dict[str, object]]:
+    summary_currency = summary_currency or default_portfolio_summary_currency(portfolio)
+    snapshots = portfolio_position_snapshots(portfolio, summary_currency)
+    return portfolio_market_rows_from_snapshots(snapshots)
+
+
+def portfolio_market_rows_from_snapshots(snapshots: list[dict[str, object]]) -> list[dict[str, object]]:
+    rows = []
+    for snapshot in snapshots:
+        cost_currency = str(snapshot.get("cost_currency") or "USD")
         rows.append(
             {
-                "Symbol": symbol,
-                "Quantity": quantity,
+                "Symbol": str(snapshot.get("symbol") or ""),
+                "Quantity": safe_number(snapshot.get("quantity")) or 0,
                 "Cost Currency": cost_currency,
-                "Avg Cost": format_portfolio_money(avg_cost, cost_currency),
-                "Current Price": format_portfolio_money(price, cost_currency),
-                "Market Value": format_portfolio_money(market_value, cost_currency),
-                "Gain/Loss": format_portfolio_money(gain_loss, cost_currency),
-                "Gain/Loss %": format_pct(gain_loss_pct),
-                "Price Source": str(quote.get("exchange") or ""),
-                "Note": str(position.get("note") or ""),
+                "Avg Cost": format_portfolio_money(snapshot.get("avg_cost"), cost_currency),
+                "Current Price": format_portfolio_money(snapshot.get("price"), cost_currency),
+                "Market Value": format_portfolio_money(snapshot.get("market_value"), cost_currency),
+                "Gain/Loss": format_portfolio_money(snapshot.get("gain_loss"), cost_currency),
+                "Gain/Loss %": format_pct(snapshot.get("gain_loss_pct")),
+                "Price Source": str(snapshot.get("price_source") or ""),
+                "Note": str(snapshot.get("note") or ""),
             }
         )
     return rows
+
+
+def portfolio_totals(snapshots: list[dict[str, object]]) -> dict[str, float | None]:
+    market_values = [safe_number(snapshot.get("market_value_summary")) for snapshot in snapshots]
+    cost_values = [safe_number(snapshot.get("cost_basis_summary")) for snapshot in snapshots]
+    total_market_value = sum(value for value in market_values if value is not None)
+    total_cost_basis = sum(value for value in cost_values if value is not None)
+    total_gain_loss = total_market_value - total_cost_basis
+    total_gain_loss_pct = pct_change(total_market_value, total_cost_basis) if total_cost_basis else None
+    return {
+        "total_market_value": total_market_value,
+        "total_gain_loss": total_gain_loss,
+        "total_gain_loss_pct": total_gain_loss_pct,
+    }
 
 
 def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float, cost_currency: str, note: str) -> None:
@@ -2060,12 +2120,62 @@ def render_alert_banner(triggered_alerts: list[dict[str, object]]) -> None:
             notified.add(alert_id)
 
 
+def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currency: str) -> None:
+    chart_rows = [
+        {
+            "Symbol": str(snapshot.get("symbol") or ""),
+            "Market Value": safe_number(snapshot.get("market_value_summary")) or 0,
+        }
+        for snapshot in snapshots
+        if (safe_number(snapshot.get("market_value_summary")) or 0) > 0
+    ]
+    totals = portfolio_totals(snapshots)
+    chart_col, metric_col = st.columns([1.25, 1])
+
+    with chart_col:
+        st.markdown("**Portfolio Allocation**")
+        if chart_rows:
+            chart_data = pd.DataFrame(chart_rows)
+            chart = (
+                alt.Chart(chart_data)
+                .mark_arc(innerRadius=62, outerRadius=108)
+                .encode(
+                    theta=alt.Theta("Market Value:Q", stack=True),
+                    color=alt.Color("Symbol:N", legend=alt.Legend(title=None, orient="right")),
+                    tooltip=[
+                        alt.Tooltip("Symbol:N", title="Symbol"),
+                        alt.Tooltip("Market Value:Q", title=f"Value ({summary_currency})", format=",.0f"),
+                    ],
+                )
+                .properties(height=280)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("Allocation chart needs at least one position with a current value.")
+
+    with metric_col:
+        st.markdown("**Portfolio Summary**")
+        st.metric("Total Investment Value", format_portfolio_money(totals["total_market_value"], summary_currency))
+        st.metric("Total Gain/Loss", format_portfolio_money(totals["total_gain_loss"], summary_currency))
+        st.metric("Total Return", format_pct(totals["total_gain_loss_pct"]))
+
+
 def render_portfolio_manager(username: str, record: dict[str, object]) -> None:
     st.subheader("Portfolio")
     portfolio = record.get("portfolio", [])
     portfolio = portfolio if isinstance(portfolio, list) else []
-    rows = portfolio_market_rows(portfolio)
+    default_currency = default_portfolio_summary_currency(portfolio)
+    summary_currency = st.radio(
+        "Portfolio summary currency",
+        ["USD", "KRW"],
+        index=0 if default_currency == "USD" else 1,
+        horizontal=True,
+        key="portfolio_summary_currency",
+    )
+    snapshots = portfolio_position_snapshots(portfolio, summary_currency)
+    rows = portfolio_market_rows_from_snapshots(snapshots)
     if rows:
+        render_portfolio_summary(snapshots, summary_currency)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info("No portfolio positions yet.")
