@@ -281,6 +281,7 @@ APP_DATA_DIR = Path(os.environ.get("PORTFOLIO_USER_DATA_DIR", "user_data"))
 USER_STORE_PATH = APP_DATA_DIR / "users.json"
 PASSWORD_HASH_ITERATIONS = 200_000
 REMEMBER_COOKIE_NAME = "portfolio_remember_token"
+REMEMBER_QUERY_PARAM = "remember_login"
 REMEMBER_LOGIN_DAYS = 30
 
 SYMBOL_LABELS = {
@@ -584,6 +585,16 @@ def get_cookie(name: str) -> str:
     return str(value or "")
 
 
+def get_query_param(name: str) -> str:
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        value = ""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    return str(value or "")
+
+
 def queue_remember_cookie(value: str) -> None:
     st.session_state.pending_remember_cookie = value
 
@@ -594,6 +605,11 @@ def queue_clear_remember_cookie() -> None:
 
 def emit_auth_cookie_scripts() -> None:
     if st.session_state.pop("clear_remember_cookie", False):
+        try:
+            if REMEMBER_QUERY_PARAM in st.query_params:
+                del st.query_params[REMEMBER_QUERY_PARAM]
+        except Exception:
+            pass
         components.html(
             f"""
             <script>
@@ -604,6 +620,10 @@ def emit_auth_cookie_scripts() -> None:
         )
     remember_cookie = st.session_state.pop("pending_remember_cookie", "")
     if remember_cookie:
+        try:
+            st.query_params[REMEMBER_QUERY_PARAM] = remember_cookie
+        except Exception:
+            pass
         encoded_value = urllib.parse.quote(remember_cookie, safe="")
         max_age_seconds = REMEMBER_LOGIN_DAYS * 24 * 60 * 60
         components.html(
@@ -639,7 +659,7 @@ def create_remember_login_token(username: str) -> str:
 def restore_remembered_login() -> None:
     if current_username():
         return
-    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME))
+    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME)) or get_query_param(REMEMBER_QUERY_PARAM)
     if ":" not in raw_cookie:
         return
     username, token = raw_cookie.split(":", 1)
@@ -679,7 +699,7 @@ def restore_remembered_login() -> None:
 
 
 def revoke_current_remember_token(username: str) -> None:
-    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME))
+    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME)) or get_query_param(REMEMBER_QUERY_PARAM)
     if ":" not in raw_cookie:
         return
     cookie_username, token = raw_cookie.split(":", 1)
@@ -834,28 +854,32 @@ def pct_change(current, previous):
     return (current / previous - 1) * 100
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=30)
 def get_quote(symbol: str) -> dict[str, object]:
     ticker = yf.Ticker(symbol)
-    info = {}
-    try:
-        info = ticker.info or {}
-    except Exception:
-        info = {}
-
     price = None
     previous_close = None
-    currency = info.get("currency") or ""
-    exchange = info.get("exchange") or info.get("fullExchangeName") or ""
+    currency = ""
+    exchange = ""
 
     try:
         fast = ticker.fast_info
         price = safe_number(fast.get("last_price") or fast.get("regular_market_price"))
         previous_close = safe_number(fast.get("previous_close"))
-        currency = currency or fast.get("currency") or ""
-        exchange = exchange or fast.get("exchange") or ""
+        currency = fast.get("currency") or ""
+        exchange = fast.get("exchange") or ""
     except Exception:
         pass
+
+    if price is None or previous_close is None or not currency or not exchange:
+        try:
+            info = ticker.info or {}
+            price = price if price is not None else safe_number(info.get("currentPrice") or info.get("regularMarketPrice"))
+            previous_close = previous_close if previous_close is not None else safe_number(info.get("previousClose") or info.get("regularMarketPreviousClose"))
+            currency = currency or info.get("currency") or ""
+            exchange = exchange or info.get("exchange") or info.get("fullExchangeName") or ""
+        except Exception:
+            pass
 
     if symbol.endswith("-USD"):
         try:
@@ -875,9 +899,6 @@ def get_quote(symbol: str) -> dict[str, object]:
                     previous_close = safe_number(daily.iloc[-2])
         except Exception:
             pass
-
-    if previous_close is None:
-        previous_close = safe_number(info.get("previousClose") or info.get("regularMarketPreviousClose"))
 
     return {
         "symbol": symbol,
@@ -1139,6 +1160,60 @@ def remove_position(username: str, symbol: str) -> None:
     if isinstance(portfolio, list):
         record["portfolio"] = [position for position in portfolio if not isinstance(position, dict) or position.get("symbol") != symbol]
         save_user_record(username, record)
+
+
+def portfolio_edit_rows(portfolio: list[dict[str, object]]) -> list[dict[str, object]]:
+    rows = []
+    for position in portfolio:
+        if not isinstance(position, dict):
+            continue
+        cost_currency = str(position.get("cost_currency") or position.get("currency") or "USD").upper()
+        if cost_currency not in {"USD", "KRW"}:
+            cost_currency = "USD"
+        rows.append(
+            {
+                "Symbol": str(position.get("symbol") or ""),
+                "Quantity": safe_number(position.get("quantity")) or 0,
+                "Average Cost": safe_number(position.get("avg_cost")) or 0,
+                "Cost Currency": cost_currency,
+                "Note": str(position.get("note") or ""),
+            }
+        )
+    return rows
+
+
+def save_portfolio_edits(username: str, edited_rows: list[dict[str, object]]) -> None:
+    record = get_user_record(username) or default_user_record(username)
+    existing = record.get("portfolio", [])
+    existing_by_symbol = {
+        str(position.get("symbol") or ""): position
+        for position in existing
+        if isinstance(position, dict) and position.get("symbol")
+    } if isinstance(existing, list) else {}
+
+    portfolio = []
+    for row in edited_rows:
+        symbol = normalize_symbol(str(row.get("Symbol") or "")) or str(row.get("Symbol") or "").upper()
+        if not symbol:
+            continue
+        cost_currency = str(row.get("Cost Currency") or "USD").upper()
+        if cost_currency not in {"USD", "KRW"}:
+            cost_currency = "USD"
+        prior = existing_by_symbol.get(symbol, {})
+        portfolio.append(
+            {
+                "symbol": symbol,
+                "quantity": safe_number(row.get("Quantity")) or 0,
+                "avg_cost": safe_number(row.get("Average Cost")) or 0,
+                "cost_currency": cost_currency,
+                "note": str(row.get("Note") or "").strip(),
+                "created_at": prior.get("created_at") or utc_now_iso(),
+                "updated_at": utc_now_iso(),
+            }
+        )
+
+    record["portfolio"] = portfolio
+    save_user_record(username, record)
 
 
 def add_price_alert(username: str, symbol: str, direction: str, target_price: float) -> None:
@@ -2448,6 +2523,25 @@ def render_portfolio_manager(username: str, record: dict[str, object]) -> None:
     if rows:
         render_portfolio_summary(snapshots, summary_currency)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.markdown("**Edit Positions**")
+        edited_positions = st.data_editor(
+            pd.DataFrame(portfolio_edit_rows(portfolio)),
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            key="portfolio_position_editor",
+            disabled=["Symbol"],
+            column_config={
+                "Quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, step=0.0001, format="%.6f"),
+                "Average Cost": st.column_config.NumberColumn("Average Cost", min_value=0.0, step=1.0, format="%.6f"),
+                "Cost Currency": st.column_config.SelectboxColumn("Cost Currency", options=["USD", "KRW"]),
+                "Note": st.column_config.TextColumn("Note"),
+            },
+        )
+        if st.button("Save edited positions", use_container_width=True):
+            save_portfolio_edits(username, edited_positions.to_dict("records"))
+            st.success("Portfolio edits saved.")
+            st.rerun()
     else:
         st.info("No portfolio positions yet.")
 
