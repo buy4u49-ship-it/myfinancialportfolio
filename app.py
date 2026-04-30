@@ -3168,7 +3168,7 @@ def inject_styles():
         }
         .allocation-legend-label {
             color: #6b7280;
-            font-size: 1rem;
+            font-size: 0.8rem;
             line-height: 1.15;
             overflow: hidden;
             text-overflow: ellipsis;
