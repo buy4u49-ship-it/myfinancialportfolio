@@ -181,11 +181,9 @@ CRYPTO_UNIVERSE = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "BNB-USD", "ADA-U
 CRYPTO_UNIVERSE = [
     "BTC-USD",
     "ETH-USD",
-    "USDT-USD",
     "XRP-USD",
     "BNB-USD",
     "SOL-USD",
-    "USDC-USD",
     "DOGE-USD",
     "TRX-USD",
     "ADA-USD",
@@ -199,7 +197,6 @@ CRYPTO_UNIVERSE = [
     "BGB-USD",
     "XMR-USD",
     "UNI-USD",
-    "DAI-USD",
     "PEPE-USD",
     "APT-USD",
     "NEAR-USD",
@@ -436,6 +433,18 @@ CRYPTO_BASE_SYMBOLS = {
     "OP",
 }
 CRYPTO_QUOTE_SYMBOLS = {"USD", "USDT", "USDC", "KRW", "EUR", "JPY", "BTC", "ETH"}
+STABLECOIN_BASE_SYMBOLS = {
+    "USDT",
+    "USDC",
+    "DAI",
+    "FDUSD",
+    "TUSD",
+    "USDP",
+    "USDD",
+    "GUSD",
+    "PYUSD",
+    "BUSD",
+}
 
 
 def parse_symbols(text: str) -> list[str]:
@@ -488,6 +497,10 @@ def display_symbol(symbol: str) -> str:
 
 def is_crypto_symbol(symbol: str) -> bool:
     return symbol in CRYPTO_UNIVERSE or symbol.endswith("-USD")
+
+
+def is_stablecoin_symbol(symbol: str) -> bool:
+    return crypto_base_symbol(symbol) in STABLECOIN_BASE_SYMBOLS
 
 
 def is_korea_symbol(symbol: str) -> bool:
@@ -1101,6 +1114,8 @@ def portfolio_totals(snapshots: list[dict[str, object]]) -> dict[str, float | No
     total_gain_loss = total_market_value - total_cost_basis
     total_gain_loss_pct = pct_change(total_market_value, total_cost_basis) if total_cost_basis else None
     return {
+        "current_wealth": total_market_value,
+        "total_investment": total_cost_basis,
         "total_market_value": total_market_value,
         "total_gain_loss": total_gain_loss,
         "total_gain_loss_pct": total_gain_loss_pct,
@@ -1926,6 +1941,8 @@ def render_market_movers(universe_symbols: list[str], market: str):
     elif market == "korea":
         st.caption("Korea movers use the configured KRX large-cap universe available through Yahoo Finance suffixes.")
     universe = set(universe_symbols)
+    if market == "crypto":
+        universe = {symbol for symbol in universe if not is_stablecoin_symbol(symbol)}
     if market == "us":
         for screener_name in ("most_actives", "day_gainers", "day_losers"):
             try:
@@ -1942,7 +1959,7 @@ def render_market_movers(universe_symbols: list[str], market: str):
 
     def style_column(data: pd.DataFrame, column: str):
         return data.style.apply(
-            lambda row: ["background-color: #fff3bf; font-weight: 700" if name == column else "" for name in row.index],
+            lambda row: ["background-color: var(--mover-highlight-bg); color: var(--mover-highlight-fg); font-weight: 700" if name == column else "" for name in row.index],
             axis=1,
         )
 
@@ -2384,8 +2401,13 @@ def render_sidebar_auth_panel() -> None:
             "".join(
                 [
                     portfolio_summary_card_html(
+                        "Current Wealth",
+                        format_portfolio_money(totals["current_wealth"], summary_currency),
+                        compact=True,
+                    ),
+                    portfolio_summary_card_html(
                         "Total Investment",
-                        format_portfolio_money(totals["total_market_value"], summary_currency),
+                        format_portfolio_money(totals["total_investment"], summary_currency),
                         compact=True,
                     ),
                     portfolio_summary_card_html(
@@ -2460,6 +2482,7 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
         for snapshot in snapshots
         if (safe_number(snapshot.get("market_value_summary")) or 0) > 0
     ]
+    chart_rows = sorted(chart_rows, key=lambda row: row["Market Value"], reverse=True)
     totals = portfolio_totals(snapshots)
     chart_col, metric_col = st.columns([1.25, 1])
 
@@ -2471,8 +2494,8 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
                 alt.Chart(chart_data)
                 .mark_arc(innerRadius=62, outerRadius=108)
                 .encode(
-                    theta=alt.Theta("Market Value:Q", stack=True),
-                    color=alt.Color("Symbol:N", legend=alt.Legend(title=None, orient="right")),
+                    theta=alt.Theta("Market Value:Q", stack=True, sort="descending"),
+                    color=alt.Color("Symbol:N", sort=alt.SortField("Market Value", order="descending"), legend=alt.Legend(title=None, orient="right")),
                     tooltip=[
                         alt.Tooltip("Symbol:N", title="Symbol"),
                         alt.Tooltip("Market Value:Q", title=f"Value ({summary_currency})", format=",.0f"),
@@ -2489,7 +2512,8 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
         st.markdown(
             "".join(
                 [
-                    portfolio_summary_card_html("Total Investment Value", format_portfolio_money(totals["total_market_value"], summary_currency)),
+                    portfolio_summary_card_html("Current Wealth", format_portfolio_money(totals["current_wealth"], summary_currency)),
+                    portfolio_summary_card_html("Total Investment Value", format_portfolio_money(totals["total_investment"], summary_currency)),
                     portfolio_summary_card_html(
                         "Total Gain/Loss",
                         format_portfolio_money(totals["total_gain_loss"], summary_currency),
@@ -2706,6 +2730,16 @@ def inject_styles():
     st.markdown(
         """
         <style>
+        :root {
+            --mover-highlight-bg: #fff3bf;
+            --mover-highlight-fg: #111827;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --mover-highlight-bg: #374151;
+                --mover-highlight-fg: #f9fafb;
+            }
+        }
         .summary-stack {
             display: flex;
             flex-direction: column;
