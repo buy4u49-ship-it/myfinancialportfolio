@@ -63,6 +63,19 @@ app.py
 
 The app will be available from a public HTTPS URL that works on desktop and mobile.
 
+### Supabase user storage
+
+The app stores accounts, remember-login tokens, portfolios, and alerts in Supabase when these Streamlit secrets are configured:
+
+```toml
+SUPABASE_URL = "https://lwtlxlhnxznehomhlhif.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
+```
+
+In Streamlit Community Cloud, open the app settings, go to **Secrets**, and add the values above. The service role key must stay in Streamlit secrets and must not be committed to GitHub.
+
+If these secrets are not configured, the app falls back to local `user_data/users.json` storage.
+
 ## Deploy Online: Render
 
 This repository includes `render.yaml` and `Procfile`.
