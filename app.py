@@ -2712,7 +2712,9 @@ def render_portfolio_summary(
                 )
                 .properties(width=320, height=280)
             )
-            st.altair_chart(chart, use_container_width=False)
+            _chart_left_pad, chart_slot, _chart_right_pad = st.columns([1, 2.8, 1])
+            with chart_slot:
+                st.altair_chart(chart, use_container_width=False)
         else:
             st.info("Allocation chart needs at least one position with a current value.")
 
