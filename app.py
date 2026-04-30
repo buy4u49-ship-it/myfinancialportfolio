@@ -1250,6 +1250,74 @@ def portfolio_totals(snapshots: list[dict[str, object]]) -> dict[str, float | No
     }
 
 
+def portfolio_capm_projection(
+    snapshots: list[dict[str, object]],
+    benchmark: str,
+    years: int,
+    rolling_window: int,
+) -> dict[str, float | str | None]:
+    benchmark = (benchmark or "SPY").upper()
+    weighted_positions = [
+        {
+            "symbol": str(snapshot.get("symbol") or "").upper(),
+            "market_value": safe_number(snapshot.get("market_value_summary")),
+        }
+        for snapshot in snapshots
+    ]
+    weighted_positions = [
+        position
+        for position in weighted_positions
+        if position["symbol"] and position["market_value"] is not None and position["market_value"] > 0
+    ]
+    total_value = sum(float(position["market_value"]) for position in weighted_positions)
+    if total_value <= 0:
+        return {
+            "portfolio_beta": None,
+            "expected_monthly_log_return": None,
+            "expected_portfolio_value": None,
+            "expected_gain": None,
+            "beta_coverage": None,
+            "risk_free_as_of": "",
+        }
+
+    weighted_beta = 0.0
+    beta_weight = 0.0
+    for position in weighted_positions:
+        weight = float(position["market_value"]) / total_value
+        beta = safe_number(summary_metrics(str(position["symbol"]), benchmark, years, rolling_window).get("latest_beta"))
+        if beta is None:
+            continue
+        weighted_beta += weight * beta
+        beta_weight += weight
+
+    if beta_weight <= 0:
+        portfolio_beta = None
+    else:
+        portfolio_beta = weighted_beta / beta_weight
+
+    market_monthly_log_return = summary_metrics(benchmark, benchmark, years, rolling_window).get("avg_monthly_log_return")
+    market_monthly_log_return = safe_number(market_monthly_log_return)
+    tbill_annual_pct, tbill_as_of = get_three_month_tbill_rate()
+    rf_monthly_log_return = math.log(1 + (tbill_annual_pct / 100)) / 12 if tbill_annual_pct is not None else None
+
+    expected_monthly_log_return = None
+    expected_portfolio_value = None
+    expected_gain = None
+    if portfolio_beta is not None and market_monthly_log_return is not None and rf_monthly_log_return is not None:
+        expected_monthly_log_return = rf_monthly_log_return + portfolio_beta * (market_monthly_log_return - rf_monthly_log_return)
+        expected_portfolio_value = total_value * math.exp(expected_monthly_log_return)
+        expected_gain = expected_portfolio_value - total_value
+
+    return {
+        "portfolio_beta": portfolio_beta,
+        "expected_monthly_log_return": expected_monthly_log_return,
+        "expected_portfolio_value": expected_portfolio_value,
+        "expected_gain": expected_gain,
+        "beta_coverage": beta_weight * 100,
+        "risk_free_as_of": tbill_as_of,
+    }
+
+
 def signed_value_class(value) -> str:
     value = safe_number(value)
     if value is None or value == 0:
@@ -2601,7 +2669,13 @@ def render_sidebar_auth_panel() -> None:
                     st.error(message)
 
 
-def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currency: str) -> None:
+def render_portfolio_summary(
+    snapshots: list[dict[str, object]],
+    summary_currency: str,
+    benchmark: str,
+    years: int,
+    rolling_window: int,
+) -> None:
     chart_rows = [
         {
             "Symbol": str(snapshot.get("symbol") or ""),
@@ -2612,7 +2686,8 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
     ]
     chart_rows = sorted(chart_rows, key=lambda row: row["Market Value"], reverse=True)
     totals = portfolio_totals(snapshots)
-    chart_col, metric_col = st.columns([1.25, 1])
+    projection = portfolio_capm_projection(snapshots, benchmark, years, rolling_window)
+    chart_col, metric_col, projection_col = st.columns([0.9, 1, 1])
 
     with chart_col:
         st.markdown("**Portfolio Allocation**")
@@ -2620,16 +2695,13 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
             chart_data = pd.DataFrame(chart_rows)
             total_value = chart_data["Market Value"].sum()
             chart_data["Share"] = chart_data["Market Value"] / total_value
-            chart_data["End Angle"] = chart_data["Share"].cumsum() * math.tau
-            chart_data["Start Angle"] = chart_data["End Angle"].shift(fill_value=0)
             chart_data["Rank"] = range(1, len(chart_data) + 1)
             symbol_order = chart_data["Symbol"].tolist()
             chart = (
                 alt.Chart(chart_data)
                 .mark_arc(innerRadius=62, outerRadius=108)
                 .encode(
-                    theta=alt.Theta("Start Angle:Q", stack=None),
-                    theta2=alt.Theta2("End Angle:Q"),
+                    theta=alt.Theta("Market Value:Q", stack=True),
                     order=alt.Order("Rank:Q", sort="ascending"),
                     color=alt.Color("Symbol:N", sort=symbol_order, legend=alt.Legend(title=None, orient="right")),
                     tooltip=[
@@ -2638,9 +2710,9 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
                         alt.Tooltip("Share:Q", title="Weight", format=".2%"),
                     ],
                 )
-                .properties(height=280)
+                .properties(width=260, height=280)
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, use_container_width=False)
         else:
             st.info("Allocation chart needs at least one position with a current value.")
 
@@ -2666,8 +2738,39 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
             unsafe_allow_html=True,
         )
 
+    with projection_col:
+        st.markdown("**Portfolio Expected Return**")
+        st.markdown(
+            "".join(
+                [
+                    portfolio_summary_card_html(
+                        f"Portfolio Beta ({rolling_window}M)",
+                        format_decimal(projection["portfolio_beta"]),
+                    ),
+                    portfolio_summary_card_html(
+                        "Monthly Expected Log Return",
+                        format_pct(to_percent(projection["expected_monthly_log_return"])),
+                        signed_value_class(projection["expected_monthly_log_return"]),
+                    ),
+                    portfolio_summary_card_html(
+                        "Expected Portfolio Value",
+                        format_portfolio_money(projection["expected_portfolio_value"], summary_currency),
+                    ),
+                    portfolio_summary_card_html(
+                        "Expected Gain/Loss",
+                        format_portfolio_money(projection["expected_gain"], summary_currency),
+                        signed_value_class(projection["expected_gain"]),
+                    ),
+                ]
+            ),
+            unsafe_allow_html=True,
+        )
+        beta_coverage = safe_number(projection.get("beta_coverage"))
+        if beta_coverage is not None and beta_coverage < 99.5:
+            st.caption(f"Beta coverage: {beta_coverage:.1f}% of current portfolio value.")
 
-def render_portfolio_manager(username: str, record: dict[str, object]) -> None:
+
+def render_portfolio_manager(username: str, record: dict[str, object], benchmark: str, years: int, rolling_window: int) -> None:
     st.subheader("Portfolio")
     portfolio = record.get("portfolio", [])
     portfolio = portfolio if isinstance(portfolio, list) else []
@@ -2682,7 +2785,7 @@ def render_portfolio_manager(username: str, record: dict[str, object]) -> None:
     snapshots = portfolio_position_snapshots(portfolio, summary_currency)
     rows = portfolio_market_rows_from_snapshots(snapshots)
     if rows:
-        render_portfolio_summary(snapshots, summary_currency)
+        render_portfolio_summary(snapshots, summary_currency, benchmark, years, rolling_window)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         st.markdown("**Edit Positions**")
         edited_positions = st.data_editor(
@@ -2803,7 +2906,7 @@ def render_account_settings(username: str, record: dict[str, object]) -> None:
         st.rerun()
 
 
-def render_my_page():
+def render_my_page(benchmark: str, years: int, rolling_window: int):
     st.header("My Page")
     if not require_login():
         return
@@ -2818,7 +2921,7 @@ def render_my_page():
 
     portfolio_tab, alerts_tab, account_tab = st.tabs(["Portfolio", "Price Alerts", "Account"])
     with portfolio_tab:
-        render_portfolio_manager(username, record)
+        render_portfolio_manager(username, record, benchmark, years, rolling_window)
     with alerts_tab:
         render_alert_manager(username, get_user_record(username) or record)
     with account_tab:
@@ -3228,7 +3331,7 @@ def main():
             st.info("Auto refresh package is unavailable. Use the browser refresh button.")
 
     if page == "My Page":
-        render_my_page()
+        render_my_page(benchmark, years, rolling_window)
     elif page in PAGE_CONFIG:
         render_market_main(PAGE_CONFIG[page])
     else:
