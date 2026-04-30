@@ -1959,7 +1959,7 @@ def render_market_movers(universe_symbols: list[str], market: str):
 
     def style_column(data: pd.DataFrame, column: str):
         return data.style.apply(
-            lambda row: ["background-color: var(--mover-highlight-bg); color: var(--mover-highlight-fg); font-weight: 700" if name == column else "" for name in row.index],
+            lambda row: ["background-color: #374151; color: #f9fafb; font-weight: 700" if name == column else "" for name in row.index],
             axis=1,
         )
 
@@ -2490,15 +2490,24 @@ def render_portfolio_summary(snapshots: list[dict[str, object]], summary_currenc
         st.markdown("**Portfolio Allocation**")
         if chart_rows:
             chart_data = pd.DataFrame(chart_rows)
+            total_value = chart_data["Market Value"].sum()
+            chart_data["Share"] = chart_data["Market Value"] / total_value
+            chart_data["End Angle"] = chart_data["Share"].cumsum() * math.tau
+            chart_data["Start Angle"] = chart_data["End Angle"].shift(fill_value=0)
+            chart_data["Rank"] = range(1, len(chart_data) + 1)
+            symbol_order = chart_data["Symbol"].tolist()
             chart = (
                 alt.Chart(chart_data)
                 .mark_arc(innerRadius=62, outerRadius=108)
                 .encode(
-                    theta=alt.Theta("Market Value:Q", stack=True, sort="descending"),
-                    color=alt.Color("Symbol:N", sort=alt.SortField("Market Value", order="descending"), legend=alt.Legend(title=None, orient="right")),
+                    theta=alt.Theta("Start Angle:Q", stack=None),
+                    theta2=alt.Theta2("End Angle:Q"),
+                    order=alt.Order("Rank:Q", sort="ascending"),
+                    color=alt.Color("Symbol:N", sort=symbol_order, legend=alt.Legend(title=None, orient="right")),
                     tooltip=[
                         alt.Tooltip("Symbol:N", title="Symbol"),
                         alt.Tooltip("Market Value:Q", title=f"Value ({summary_currency})", format=",.0f"),
+                        alt.Tooltip("Share:Q", title="Weight", format=".2%"),
                     ],
                 )
                 .properties(height=280)
@@ -2730,16 +2739,6 @@ def inject_styles():
     st.markdown(
         """
         <style>
-        :root {
-            --mover-highlight-bg: #fff3bf;
-            --mover-highlight-fg: #111827;
-        }
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --mover-highlight-bg: #374151;
-                --mover-highlight-fg: #f9fafb;
-            }
-        }
         .summary-stack {
             display: flex;
             flex-direction: column;
