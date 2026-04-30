@@ -2687,7 +2687,7 @@ def render_portfolio_summary(
     chart_rows = sorted(chart_rows, key=lambda row: row["Market Value"], reverse=True)
     totals = portfolio_totals(snapshots)
     projection = portfolio_capm_projection(snapshots, benchmark, years, rolling_window)
-    chart_col, metric_col, projection_col = st.columns([0.9, 1, 1])
+    chart_col, metric_col, projection_col = st.columns([1.25, 0.85, 0.85])
 
     with chart_col:
         st.markdown("**Portfolio Allocation**")
@@ -2710,7 +2710,7 @@ def render_portfolio_summary(
                         alt.Tooltip("Share:Q", title="Weight", format=".2%"),
                     ],
                 )
-                .properties(width=260, height=280)
+                .properties(width=320, height=280)
             )
             st.altair_chart(chart, use_container_width=False)
         else:
@@ -3063,7 +3063,7 @@ def inject_styles():
         .portfolio-mini-card {
             border: 1px solid #e5e7eb;
             border-radius: 8px;
-            padding: 14px 16px;
+            padding: 14px 14px;
             margin-bottom: 10px;
             background: #ffffff;
         }
@@ -3080,7 +3080,7 @@ def inject_styles():
         }
         .portfolio-mini-value {
             color: #111827;
-            font-size: 1.25rem;
+            font-size: clamp(1.05rem, 1.4vw, 1.25rem);
             font-weight: 800;
             line-height: 1.1;
             text-align: right;
