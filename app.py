@@ -2068,6 +2068,43 @@ def portfolio_summary_card_html(label: str, value: str, value_class: str = "neut
     )
 
 
+ALLOCATION_COLORS = [
+    "#0068c9",
+    "#83c9ff",
+    "#ff2b2b",
+    "#ffabab",
+    "#29b09d",
+    "#ff8700",
+    "#6d3fc0",
+    "#00c7b7",
+    "#7f7f7f",
+    "#bcbd22",
+]
+
+
+def allocation_color_range(count: int) -> list[str]:
+    if count <= len(ALLOCATION_COLORS):
+        return ALLOCATION_COLORS[:count]
+    repeats = (count // len(ALLOCATION_COLORS)) + 1
+    return (ALLOCATION_COLORS * repeats)[:count]
+
+
+def allocation_legend_html(symbols: list[str], colors: list[str]) -> str:
+    items = []
+    for symbol, color in zip(symbols, colors):
+        items.append(
+            "".join(
+                [
+                    '<div class="allocation-legend-item">',
+                    f'<span class="allocation-legend-swatch" style="background:{html_lib.escape(color)}"></span>',
+                    f'<span class="allocation-legend-label">{html_lib.escape(symbol)}</span>',
+                    "</div>",
+                ]
+            )
+        )
+    return f'<div class="allocation-legend">{"".join(items)}</div>'
+
+
 def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window: int):
     benchmark = benchmark.upper()
     quote = get_quote(symbol)
@@ -2697,24 +2734,33 @@ def render_portfolio_summary(
             chart_data["Share"] = chart_data["Market Value"] / total_value
             chart_data["Rank"] = range(1, len(chart_data) + 1)
             symbol_order = chart_data["Symbol"].tolist()
+            color_range = allocation_color_range(len(symbol_order))
             chart = (
                 alt.Chart(chart_data)
                 .mark_arc(innerRadius=62, outerRadius=108)
                 .encode(
                     theta=alt.Theta("Market Value:Q", stack=True),
                     order=alt.Order("Rank:Q", sort="ascending"),
-                    color=alt.Color("Symbol:N", sort=symbol_order, legend=alt.Legend(title=None, orient="right")),
+                    color=alt.Color(
+                        "Symbol:N",
+                        scale=alt.Scale(domain=symbol_order, range=color_range),
+                        legend=None,
+                    ),
                     tooltip=[
                         alt.Tooltip("Symbol:N", title="Symbol"),
                         alt.Tooltip("Market Value:Q", title=f"Value ({summary_currency})", format=",.0f"),
                         alt.Tooltip("Share:Q", title="Weight", format=".2%"),
                     ],
                 )
-                .properties(width=320, height=280)
+                .properties(width=300, height=280)
             )
-            _chart_left_pad, chart_slot, _chart_right_pad = st.columns([1, 2.8, 1])
-            with chart_slot:
-                st.altair_chart(chart, use_container_width=False)
+            allocation_chart_col, allocation_legend_col = st.columns([0.72, 0.28])
+            with allocation_chart_col:
+                _chart_left_pad, chart_slot, _chart_right_pad = st.columns([1, 3, 1])
+                with chart_slot:
+                    st.altair_chart(chart, use_container_width=False)
+            with allocation_legend_col:
+                st.markdown(allocation_legend_html(symbol_order, color_range), unsafe_allow_html=True)
         else:
             st.info("Allocation chart needs at least one position with a current value.")
 
@@ -3100,6 +3146,33 @@ def inject_styles():
         }
         .portfolio-mini-value.neutral {
             color: #111827;
+        }
+        .allocation-legend {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-top: 42px;
+            width: 100%;
+        }
+        .allocation-legend-item {
+            align-items: center;
+            display: flex;
+            gap: 8px;
+            min-width: 0;
+        }
+        .allocation-legend-swatch {
+            border-radius: 999px;
+            flex: 0 0 14px;
+            height: 14px;
+            width: 14px;
+        }
+        .allocation-legend-label {
+            color: #6b7280;
+            font-size: 1rem;
+            line-height: 1.15;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .macro-table-wrap {
             border: 1px solid #e5e7eb;
