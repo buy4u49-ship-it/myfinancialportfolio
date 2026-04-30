@@ -6,6 +6,7 @@ import math
 import os
 import secrets
 import html as html_lib
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -276,6 +277,7 @@ PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail
 
 APP_DATA_DIR = Path(os.environ.get("PORTFOLIO_USER_DATA_DIR", "user_data"))
 USER_STORE_PATH = APP_DATA_DIR / "users.json"
+SUPABASE_USER_TABLE = "app_user_records"
 PASSWORD_HASH_ITERATIONS = 200_000
 REMEMBER_COOKIE_NAME = "portfolio_remember_token"
 REMEMBER_QUERY_PARAM = "remember_login"
@@ -542,7 +544,117 @@ def default_user_record(username: str) -> dict[str, object]:
     }
 
 
+def read_config_value(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "")
+        if value:
+            return value.strip()
+        try:
+            value = st.secrets.get(name, "")
+        except Exception:
+            value = ""
+        if value:
+            return str(value).strip()
+
+    try:
+        supabase_secrets = st.secrets.get("supabase", {})
+    except Exception:
+        supabase_secrets = {}
+    if hasattr(supabase_secrets, "get"):
+        for name in names:
+            for key in {name, name.lower(), name.replace("SUPABASE_", "").lower()}:
+                value = supabase_secrets.get(key, "")
+                if value:
+                    return str(value).strip()
+    return ""
+
+
+def supabase_config() -> tuple[str, str]:
+    url = read_config_value("SUPABASE_URL").rstrip("/")
+    key = read_config_value("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_KEY")
+    return url, key
+
+
+def supabase_is_configured() -> bool:
+    url, key = supabase_config()
+    return bool(url and key)
+
+
+def supabase_warn_once(message: str) -> None:
+    if st.session_state.get("supabase_warning_shown"):
+        return
+    st.session_state.supabase_warning_shown = True
+    st.warning(message)
+
+
+def supabase_rest_request(method: str, path: str, payload: object | None = None) -> object:
+    url, key = supabase_config()
+    if not url or not key:
+        raise RuntimeError("Supabase credentials are not configured.")
+
+    data = None
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+    }
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if method in {"POST", "PATCH"}:
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+
+    request = urllib.request.Request(
+        f"{url}/rest/v1/{path}",
+        data=data,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Supabase request failed ({exc.code}): {detail}") from exc
+    if not body:
+        return None
+    return json.loads(body)
+
+
+def load_supabase_user_store() -> dict[str, object]:
+    rows = supabase_rest_request("GET", f"{SUPABASE_USER_TABLE}?select=username,record")
+    users: dict[str, object] = {}
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            username = normalize_username(str(row.get("username") or ""))
+            record = row.get("record")
+            if username and isinstance(record, dict):
+                record.setdefault("username", username)
+                users[username] = record
+    return {"users": users}
+
+
+def upsert_supabase_user_record(username: str, record: dict[str, object]) -> None:
+    username = normalize_username(username)
+    record["username"] = username
+    supabase_rest_request(
+        "POST",
+        SUPABASE_USER_TABLE,
+        {
+            "username": username,
+            "record": record,
+        },
+    )
+
+
 def load_user_store() -> dict[str, object]:
+    if supabase_is_configured():
+        try:
+            return load_supabase_user_store()
+        except Exception as exc:
+            supabase_warn_once(f"Supabase connection failed. Using local storage for this session. ({exc})")
     if not USER_STORE_PATH.exists():
         return {"users": {}}
     try:
@@ -552,6 +664,16 @@ def load_user_store() -> dict[str, object]:
 
 
 def save_user_store(store: dict[str, object]) -> None:
+    if supabase_is_configured():
+        try:
+            users = store.get("users", {})
+            if isinstance(users, dict):
+                for username, record in users.items():
+                    if isinstance(record, dict):
+                        upsert_supabase_user_record(str(username), record)
+                return
+        except Exception as exc:
+            supabase_warn_once(f"Supabase save failed. Falling back to local storage. ({exc})")
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(store, ensure_ascii=False, indent=2)
     temp_path = USER_STORE_PATH.with_suffix(".tmp")
@@ -742,6 +864,12 @@ def is_logged_in() -> bool:
 
 
 def save_user_record(username: str, record: dict[str, object]) -> None:
+    if supabase_is_configured():
+        try:
+            upsert_supabase_user_record(username, record)
+            return
+        except Exception as exc:
+            supabase_warn_once(f"Supabase save failed. Falling back to local storage. ({exc})")
     store = load_user_store()
     users = store.setdefault("users", {})
     if isinstance(users, dict):
