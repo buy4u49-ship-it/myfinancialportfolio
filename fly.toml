@@ -1,15 +1,29 @@
-app = "myfinancialportfolio"
-primary_region = "nrt"
-kill_signal = "SIGINT"
-kill_timeout = "5s"
+# fly.toml app configuration file generated for myfinancialportfolio on 2026-05-01T16:57:05Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'myfinancialportfolio'
+primary_region = 'nrt'
+kill_signal = 'SIGINT'
+kill_timeout = '5s'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [processes]
-  app = "python market_price_worker.py"
+  app = 'python market_price_worker.py'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
 
 [[vm]]
-  memory = "256mb"
-  cpu_kind = "shared"
+  memory = '256mb'
+  cpu_kind = 'shared'
   cpus = 1
+  memory_mb = 256
