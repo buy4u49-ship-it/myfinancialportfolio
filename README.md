@@ -81,18 +81,49 @@ If these secrets are not configured, the app falls back to local `user_data/user
 Crypto current prices are read from Upbit KRW quotes instead of yfinance. For the fastest updates, create the Supabase quote cache table by running `supabase_market_quote_cache.sql` in the Supabase SQL Editor, then run this worker as a separate process:
 
 ```powershell
-python market_price_worker.py
+cd "C:\Users\buy4u\OneDrive\문서\New project"
+python .\market_price_worker.py
+```
+
+Or run the helper script, which automatically switches into this project folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Users\buy4u\OneDrive\문서\New project\run_market_price_worker.ps1"
 ```
 
 The worker streams Upbit ticker data over WebSocket and upserts the latest prices into `public.market_quote_cache`. The Streamlit app reads that cache first and falls back to direct Upbit REST quotes if the worker is not running or the cached quote is stale.
+
+Streamlit Community Cloud normally runs only the Streamlit web app process, not a permanent background quote worker. If this worker runs only on your PC, the WebSocket cache updates only while your PC is on and the worker is running. Other users can still open the Streamlit app when your PC is off, but prices will come from the app's direct Upbit REST fallback instead of the faster Supabase WebSocket cache. For always-on cache updates, deploy this worker as a background worker on a separate hosting service such as Render, Railway, or Fly.io.
 
 If you run the worker outside Streamlit Cloud, provide the same secrets as environment variables:
 
 ```powershell
 $env:SUPABASE_URL = "https://lwtlxlhnxznehomhlhif.supabase.co"
 $env:SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
-python market_price_worker.py
+python .\market_price_worker.py
 ```
+
+### Deploy only the quote worker on Fly.io
+
+This repo includes `Dockerfile`, `requirements-worker.txt`, and `fly.toml` so Fly.io runs only `market_price_worker.py`. Streamlit Community Cloud should still run `app.py`; Fly.io is only for the always-on Upbit WebSocket quote cache.
+
+Before deploying, create `public.market_quote_cache` by running `supabase_market_quote_cache.sql` in the Supabase SQL Editor.
+
+In Fly.io, add these secrets in the app's **Secrets** page:
+
+```text
+SUPABASE_URL=https://lwtlxlhnxznehomhlhif.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+```
+
+If deploying with `flyctl`, use:
+
+```powershell
+fly secrets set SUPABASE_URL="https://lwtlxlhnxznehomhlhif.supabase.co" SUPABASE_SERVICE_ROLE_KEY="your-service-role-key" -a app-wandering-night-1272
+fly deploy -a app-wandering-night-1272
+```
+
+If the Fly.io app name is different, update `app = "app-wandering-night-1272"` in `fly.toml` and the `-a` value above to match the Fly.io app name. In the Fly.io deployment log, this is the value shown after `flyctl deploy ... -a`.
 
 ## Deploy Online: Render
 
