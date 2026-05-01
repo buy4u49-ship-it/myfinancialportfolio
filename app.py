@@ -178,44 +178,43 @@ MARKET_UNIVERSE = sorted(
 )
 
 US_UNIVERSE = sorted([symbol for symbol in MARKET_UNIVERSE if not symbol.endswith("-USD")])
-CRYPTO_UNIVERSE = ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "BNB-USD", "ADA-USD", "DOGE-USD"]
 CRYPTO_UNIVERSE = [
-    "BTC-USD",
-    "ETH-USD",
-    "XRP-USD",
-    "BNB-USD",
-    "SOL-USD",
-    "DOGE-USD",
-    "TRX-USD",
-    "ADA-USD",
-    "LINK-USD",
-    "AVAX-USD",
-    "XLM-USD",
-    "BCH-USD",
-    "HBAR-USD",
-    "LTC-USD",
-    "DOT-USD",
-    "BGB-USD",
-    "XMR-USD",
-    "UNI-USD",
-    "PEPE-USD",
-    "APT-USD",
-    "NEAR-USD",
-    "ICP-USD",
-    "ETC-USD",
-    "ONDO-USD",
-    "AAVE-USD",
-    "ARB-USD",
-    "POL-USD",
-    "VET-USD",
-    "ATOM-USD",
-    "FIL-USD",
-    "RENDER-USD",
-    "ALGO-USD",
-    "KAS-USD",
-    "FET-USD",
-    "OP-USD",
-    "WLD-USD",
+    "BTC-KRW",
+    "ETH-KRW",
+    "XRP-KRW",
+    "BNB-KRW",
+    "SOL-KRW",
+    "DOGE-KRW",
+    "TRX-KRW",
+    "ADA-KRW",
+    "LINK-KRW",
+    "AVAX-KRW",
+    "XLM-KRW",
+    "BCH-KRW",
+    "HBAR-KRW",
+    "LTC-KRW",
+    "DOT-KRW",
+    "BGB-KRW",
+    "XMR-KRW",
+    "UNI-KRW",
+    "PEPE-KRW",
+    "APT-KRW",
+    "NEAR-KRW",
+    "ICP-KRW",
+    "ETC-KRW",
+    "ONDO-KRW",
+    "AAVE-KRW",
+    "ARB-KRW",
+    "POL-KRW",
+    "VET-KRW",
+    "ATOM-KRW",
+    "FIL-KRW",
+    "RENDER-KRW",
+    "ALGO-KRW",
+    "KAS-KRW",
+    "FET-KRW",
+    "OP-KRW",
+    "WLD-KRW",
 ]
 KOREA_UNIVERSE = [
     "005930.KS",
@@ -241,7 +240,7 @@ KOREA_UNIVERSE = [
 ]
 
 INDEX_GROUPS = {
-    "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"],
+    "crypto": ["BTC-KRW", "ETH-KRW", "SOL-KRW", "BNB-KRW"],
     "us": ["^GSPC", "^IXIC", "^DJI", "^RUT", "^VIX"],
     "korea": ["^KS11", "^KQ11", "005930.KS", "000660.KS"],
 }
@@ -250,8 +249,8 @@ PAGE_CONFIG = {
     "Coin Main": {
         "market": "crypto",
         "title": "Coin Main",
-        "representative": "BTC-USD",
-        "representative_name": "Bitcoin (BTC-USD)",
+        "representative": "BTC-KRW",
+        "representative_name": "Bitcoin (BTC-KRW)",
         "benchmark": "BTC-USD",
         "universe": CRYPTO_UNIVERSE,
     },
@@ -286,6 +285,10 @@ REMEMBER_QUERY_PARAM = "remember_login"
 REMEMBER_LOGIN_DAYS = 30
 
 SYMBOL_LABELS = {
+    "BTC-KRW": "Bitcoin",
+    "ETH-KRW": "Ethereum",
+    "SOL-KRW": "Solana",
+    "BNB-KRW": "BNB",
     "BTC-USD": "Bitcoin",
     "ETH-USD": "Ethereum",
     "SOL-USD": "Solana",
@@ -435,6 +438,21 @@ CRYPTO_BASE_SYMBOLS = {
     "APT",
     "ARB",
     "OP",
+    "AAVE",
+    "ALGO",
+    "BGB",
+    "FET",
+    "HBAR",
+    "ICP",
+    "KAS",
+    "NEAR",
+    "ONDO",
+    "PEPE",
+    "POL",
+    "RENDER",
+    "VET",
+    "WLD",
+    "XMR",
 }
 CRYPTO_QUOTE_SYMBOLS = {"USD", "USDT", "USDC", "KRW", "EUR", "JPY", "BTC", "ETH"}
 STABLECOIN_BASE_SYMBOLS = {
@@ -476,7 +494,7 @@ def parse_symbols(text: str) -> list[str]:
             index += 2
             continue
         if token in CRYPTO_BASE_SYMBOLS:
-            symbols.append(f"{token}-USD")
+            symbols.append(f"{token}-KRW")
             index += 1
             continue
         if token in CRYPTO_QUOTE_SYMBOLS:
@@ -494,13 +512,44 @@ def normalize_symbol(text: str) -> str:
     return symbols[0] if symbols else ""
 
 
-def display_symbol(symbol: str) -> str:
-    label = SYMBOL_LABELS.get(symbol)
-    return f"{label} ({symbol})" if label else symbol
+def crypto_quote_symbol(symbol: str) -> str:
+    symbol = symbol.upper().strip()
+    if "-" not in symbol:
+        return ""
+    base, quote = symbol.split("-", 1)
+    return quote if base in CRYPTO_BASE_SYMBOLS and quote in CRYPTO_QUOTE_SYMBOLS else ""
+
+
+def crypto_pair_symbol(symbol: str, quote_currency: str = "KRW") -> str:
+    return f"{crypto_base_symbol(symbol)}-{quote_currency.upper()}"
+
+
+def market_data_symbol(symbol: str) -> str:
+    if is_crypto_symbol(symbol):
+        return crypto_pair_symbol(symbol, "USD")
+    return symbol.upper().strip()
+
+
+def display_ticker(symbol: str, currency: str | None = None) -> str:
+    symbol = symbol.upper().strip()
+    if is_crypto_symbol(symbol):
+        quote = (currency or crypto_quote_symbol(symbol) or "KRW").upper()
+        if quote == "KRW":
+            return crypto_pair_symbol(symbol, "KRW")
+        if quote == "USD":
+            return crypto_pair_symbol(symbol, "USD")
+    return symbol
+
+
+def display_symbol(symbol: str, currency: str | None = None) -> str:
+    ticker = display_ticker(symbol, currency)
+    label = SYMBOL_LABELS.get(ticker) or SYMBOL_LABELS.get(market_data_symbol(ticker))
+    return f"{label} ({ticker})" if label else ticker
 
 
 def is_crypto_symbol(symbol: str) -> bool:
-    return symbol in CRYPTO_UNIVERSE or symbol.endswith("-USD")
+    symbol = symbol.upper().strip()
+    return symbol in CRYPTO_UNIVERSE or bool(crypto_quote_symbol(symbol))
 
 
 def is_stablecoin_symbol(symbol: str) -> bool:
@@ -985,7 +1034,9 @@ def search_symbols(query: str, limit: int = 30) -> list[str]:
     if not normalized_query:
         return MARKET_UNIVERSE[:limit]
 
-    searchable_universe = sorted(set(MARKET_UNIVERSE + KOREA_UNIVERSE + ["^GSPC", "^IXIC", "^DJI", "^KS11", "^KQ11"]))
+    searchable_universe = sorted(
+        set(MARKET_UNIVERSE + CRYPTO_UNIVERSE + KOREA_UNIVERSE + ["^GSPC", "^IXIC", "^DJI", "^KS11", "^KQ11"])
+    )
     local_matches = [symbol for symbol in searchable_universe if normalized_query in symbol]
     remote_matches: list[str] = []
     try:
@@ -1052,7 +1103,7 @@ def get_cached_market_quote(symbol: str, currency: str = "KRW") -> dict[str, obj
     currency_filter = urllib.parse.quote(currency.upper(), safe="")
     path = (
         f"{SUPABASE_MARKET_QUOTE_TABLE}"
-        "?select=symbol,provider_symbol,price,previous_close,change_pct,currency,exchange,source,updated_at"
+        "?select=symbol,provider_symbol,price,previous_close,change_pct,currency,exchange,source,payload,updated_at"
         f"&symbol=eq.{symbol_filter}&currency=eq.{currency_filter}&limit=1"
     )
     try:
@@ -1072,6 +1123,7 @@ def get_cached_market_quote(symbol: str, currency: str = "KRW") -> dict[str, obj
         return None
     previous_close = safe_number(row.get("previous_close"))
     change_pct_value = safe_number(row.get("change_pct"))
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
     return {
         "symbol": symbol.upper(),
         "price": price,
@@ -1081,15 +1133,19 @@ def get_cached_market_quote(symbol: str, currency: str = "KRW") -> dict[str, obj
         "exchange": str(row.get("exchange") or "Upbit"),
         "timestamp_utc": str(row.get("updated_at") or utc_now_iso()),
         "source": str(row.get("source") or "market_quote_cache"),
+        "volume": safe_number(payload.get("acc_trade_volume_24h") or payload.get("acc_trade_volume")),
+        "trading_value": safe_number(payload.get("acc_trade_price_24h") or payload.get("acc_trade_price")),
     }
 
 
 @st.cache_data(ttl=30)
 def get_quote(symbol: str) -> dict[str, object]:
-    if is_crypto_symbol(symbol):
+    symbol = symbol.upper().strip()
+    if is_crypto_symbol(symbol) and crypto_quote_symbol(symbol) == "KRW":
         return get_crypto_krw_quote(symbol)
 
-    ticker = yf.Ticker(symbol)
+    provider_symbol = market_data_symbol(symbol)
+    ticker = yf.Ticker(provider_symbol)
     price = None
     previous_close = None
     currency = ""
@@ -1114,7 +1170,7 @@ def get_quote(symbol: str) -> dict[str, object]:
         except Exception:
             pass
 
-    if symbol.endswith("-USD"):
+    if provider_symbol.endswith("-USD"):
         try:
             daily = ticker.history(period="3d", interval="1d", auto_adjust=True, actions=False)
             if not daily.empty and len(daily["Close"].dropna()) >= 2:
@@ -1138,7 +1194,7 @@ def get_quote(symbol: str) -> dict[str, object]:
         "price": price,
         "previous_close": previous_close,
         "change_pct": pct_change(price, previous_close),
-        "currency": currency,
+        "currency": currency or crypto_quote_symbol(symbol),
         "exchange": exchange,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -1169,6 +1225,8 @@ def get_upbit_krw_quote(base_symbol: str) -> dict[str, object]:
         "currency": "KRW",
         "exchange": "Upbit REST",
         "timestamp_utc": utc_now_iso(),
+        "volume": safe_number(ticker.get("acc_trade_volume_24h") or ticker.get("acc_trade_volume")),
+        "trading_value": safe_number(ticker.get("acc_trade_price_24h") or ticker.get("acc_trade_price")),
     }
 
 
@@ -1196,11 +1254,12 @@ def get_bithumb_krw_quote(base_symbol: str) -> dict[str, object]:
 
 def get_crypto_krw_quote(symbol: str) -> dict[str, object]:
     base_symbol = crypto_base_symbol(symbol)
-    app_symbol = f"{base_symbol}-USD"
-    cached_quote = get_cached_market_quote(app_symbol, "KRW")
-    if cached_quote:
-        cached_quote["symbol"] = app_symbol
-        return cached_quote
+    app_symbol = crypto_pair_symbol(symbol, "KRW")
+    for cache_symbol in (app_symbol, crypto_pair_symbol(symbol, "USD")):
+        cached_quote = get_cached_market_quote(cache_symbol, "KRW")
+        if cached_quote:
+            cached_quote["symbol"] = app_symbol
+            return cached_quote
     try:
         quote = get_upbit_krw_quote(base_symbol)
         if safe_number(quote.get("price")) is not None:
@@ -1221,8 +1280,11 @@ def get_crypto_krw_quote(symbol: str) -> dict[str, object]:
 
 def get_portfolio_quote(symbol: str, cost_currency: str) -> dict[str, object]:
     cost_currency = cost_currency.upper()
-    if cost_currency == "KRW" and is_crypto_symbol(symbol):
-        return get_crypto_krw_quote(symbol)
+    if is_crypto_symbol(symbol):
+        if cost_currency == "KRW":
+            return get_crypto_krw_quote(symbol)
+        if cost_currency == "USD":
+            return get_quote(crypto_pair_symbol(symbol, "USD"))
     return get_quote(symbol)
 
 
@@ -1308,7 +1370,7 @@ def portfolio_market_rows_from_snapshots(snapshots: list[dict[str, object]]) -> 
         cost_currency = str(snapshot.get("cost_currency") or "USD")
         rows.append(
             {
-                "Symbol": str(snapshot.get("symbol") or ""),
+                "Symbol": display_ticker(str(snapshot.get("symbol") or ""), cost_currency),
                 "Quantity": safe_number(snapshot.get("quantity")) or 0,
                 "Cost Currency": cost_currency,
                 "Avg Cost": format_portfolio_money(snapshot.get("avg_cost"), cost_currency),
@@ -1475,6 +1537,8 @@ def upsert_position(username: str, symbol: str, quantity: float, avg_cost: float
     cost_currency = cost_currency.upper()
     if cost_currency not in {"USD", "KRW"}:
         cost_currency = "USD"
+    if is_crypto_symbol(symbol):
+        symbol = crypto_pair_symbol(symbol, cost_currency)
     updated = False
     for position in portfolio:
         if isinstance(position, dict) and position.get("symbol") == symbol:
@@ -1523,7 +1587,7 @@ def portfolio_edit_rows(portfolio: list[dict[str, object]]) -> list[dict[str, ob
             cost_currency = "USD"
         rows.append(
             {
-                "Symbol": str(position.get("symbol") or ""),
+                "Symbol": display_ticker(str(position.get("symbol") or ""), cost_currency),
                 "Quantity": safe_number(position.get("quantity")) or 0,
                 "Average Cost": safe_number(position.get("avg_cost")) or 0,
                 "Cost Currency": cost_currency,
@@ -1550,6 +1614,8 @@ def save_portfolio_edits(username: str, edited_rows: list[dict[str, object]]) ->
         cost_currency = str(row.get("Cost Currency") or "USD").upper()
         if cost_currency not in {"USD", "KRW"}:
             cost_currency = "USD"
+        if is_crypto_symbol(symbol):
+            symbol = crypto_pair_symbol(symbol, cost_currency)
         prior = existing_by_symbol.get(symbol, {})
         portfolio.append(
             {
@@ -1658,7 +1724,8 @@ def evaluate_price_alerts(username: str) -> list[dict[str, object]]:
 
 @st.cache_data(ttl=3600)
 def get_profile(symbol: str) -> dict[str, object]:
-    ticker = yf.Ticker(symbol)
+    provider_symbol = market_data_symbol(symbol)
+    ticker = yf.Ticker(provider_symbol)
     info = {}
     try:
         if hasattr(ticker, "get_info"):
@@ -1671,7 +1738,7 @@ def get_profile(symbol: str) -> dict[str, object]:
         except Exception:
             info = {}
 
-    fallback = PROFILE_FALLBACKS.get(symbol.upper(), {})
+    fallback = PROFILE_FALLBACKS.get(symbol.upper(), {}) or PROFILE_FALLBACKS.get(provider_symbol.upper(), {})
 
     def sector_from_watchlist() -> str:
         upper_symbol = symbol.upper()
@@ -1690,7 +1757,7 @@ def get_profile(symbol: str) -> dict[str, object]:
     sector = profile_value("sector") or sector_from_watchlist()
     industry = profile_value("industry") or SECTOR_DEFAULT_INDUSTRIES.get(str(sector), "")
     return {
-        "name": profile_value("longName", "shortName", fallback_key="name") or symbol,
+        "name": profile_value("longName", "shortName", fallback_key="name") or display_ticker(symbol),
         "sector": sector,
         "industry": industry,
         "country": profile_value("country") or ("United States" if sector else ""),
@@ -1701,7 +1768,7 @@ def get_profile(symbol: str) -> dict[str, object]:
 
 @st.cache_data(ttl=3600)
 def get_statement(symbol: str, statement_type: str) -> pd.DataFrame:
-    ticker = yf.Ticker(symbol)
+    ticker = yf.Ticker(market_data_symbol(symbol))
     try:
         table = {
             "balance": ticker.balance_sheet,
@@ -1719,15 +1786,46 @@ def get_statement(symbol: str, statement_type: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=1800)
 def get_metrics(symbol: str, benchmark: str, years: int, rolling_window: int) -> pd.DataFrame:
-    return monthly_metrics(symbol, MetricConfig(years=years, benchmark=benchmark, rolling_window=rolling_window))
+    return monthly_metrics(
+        market_data_symbol(symbol),
+        MetricConfig(years=years, benchmark=market_data_symbol(benchmark), rolling_window=rolling_window),
+    )
 
 
 @st.cache_data(ttl=60)
 def get_market_snapshot(symbols: tuple[str, ...]) -> pd.DataFrame:
     rows = []
+    crypto_symbols = [symbol.upper() for symbol in symbols if is_crypto_symbol(symbol) and crypto_quote_symbol(symbol) == "KRW"]
+    for symbol in crypto_symbols:
+        quote = get_quote(symbol)
+        price = safe_number(quote.get("price"))
+        volume = safe_number(quote.get("volume"))
+        trading_value = safe_number(quote.get("trading_value"))
+        rows.append(
+            {
+                "symbol": display_ticker(symbol, "KRW"),
+                "price": price,
+                "change_pct": safe_number(quote.get("change_pct")),
+                "volume": volume,
+                "avg_volume": None,
+                "trading_value": trading_value,
+                "currency": "KRW",
+            }
+        )
+
+    provider_symbols = tuple(
+        dict.fromkeys(
+            market_data_symbol(symbol)
+            for symbol in symbols
+            if symbol.upper() not in crypto_symbols
+        )
+    )
+    if not provider_symbols:
+        return pd.DataFrame(rows)
+
     try:
         history = yf.download(
-            list(symbols),
+            list(provider_symbols),
             period="7d",
             interval="1d",
             group_by="ticker",
@@ -1739,7 +1837,7 @@ def get_market_snapshot(symbols: tuple[str, ...]) -> pd.DataFrame:
     except Exception:
         history = pd.DataFrame()
 
-    for symbol in symbols:
+    for symbol in provider_symbols:
         price = previous_close = volume = average_volume = None
         if not history.empty:
             try:
@@ -1774,6 +1872,8 @@ def get_market_snapshot(symbols: tuple[str, ...]) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def get_price_bars(symbol: str, window: str = "1M") -> pd.DataFrame:
+    if is_crypto_symbol(symbol) and crypto_quote_symbol(symbol) == "KRW":
+        return get_upbit_krw_bars(symbol, window)
     settings = {
         "1W": ("7d", "1h"),
         "1M": ("1mo", "4h"),
@@ -1781,7 +1881,7 @@ def get_price_bars(symbol: str, window: str = "1M") -> pd.DataFrame:
         "YTD": ("ytd", "1d"),
     }
     period, interval = settings.get(window, settings["1M"])
-    history = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=False, actions=False)
+    history = yf.Ticker(market_data_symbol(symbol)).history(period=period, interval=interval, auto_adjust=False, actions=False)
     if history.empty:
         return pd.DataFrame()
     history = history.reset_index()
@@ -1790,8 +1890,49 @@ def get_price_bars(symbol: str, window: str = "1M") -> pd.DataFrame:
     return history[["date", "Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Open", "High", "Low", "Close"])
 
 
+@st.cache_data(ttl=60)
+def get_upbit_krw_bars(symbol: str, window: str = "1M") -> pd.DataFrame:
+    base_symbol = crypto_base_symbol(symbol)
+    market = f"KRW-{base_symbol}"
+    today = datetime.now().date()
+    day_count = max(1, min(200, (today - datetime(today.year, 1, 1).date()).days + 1))
+    settings = {
+        "1D": ("minutes/5", 200),
+        "1W": ("minutes/60", 168),
+        "1M": ("days", 31),
+        "1Y": ("days", 200),
+        "YTD": ("days", day_count),
+    }
+    candle_path, count = settings.get(window, settings["1M"])
+    query = urllib.parse.urlencode({"market": market, "count": count})
+    data = fetch_json(f"https://api.upbit.com/v1/candles/{candle_path}?{query}")
+    if not isinstance(data, list) or not data:
+        return pd.DataFrame()
+    rows = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        timestamp = item.get("candle_date_time_kst") or item.get("candle_date_time_utc")
+        rows.append(
+            {
+                "date": pd.to_datetime(timestamp),
+                "Open": safe_number(item.get("opening_price")),
+                "High": safe_number(item.get("high_price")),
+                "Low": safe_number(item.get("low_price")),
+                "Close": safe_number(item.get("trade_price")),
+                "Volume": safe_number(item.get("candle_acc_trade_volume")),
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("date").dropna(subset=["Open", "High", "Low", "Close"])
+
+
 @st.cache_data(ttl=120)
 def get_representative_chart(symbol: str, window: str) -> pd.DataFrame:
+    if is_crypto_symbol(symbol) and crypto_quote_symbol(symbol) == "KRW":
+        bars = get_upbit_krw_bars(symbol, window)
+        return bars[["date", "Close", "Volume"]] if not bars.empty else pd.DataFrame()
     settings = {
         "1D": ("1d", "5m"),
         "1W": ("7d", "30m"),
@@ -1799,7 +1940,7 @@ def get_representative_chart(symbol: str, window: str) -> pd.DataFrame:
         "1Y": ("1y", "1d"),
     }
     period, interval = settings.get(window, settings["1D"])
-    history = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=True, actions=False)
+    history = yf.Ticker(market_data_symbol(symbol)).history(period=period, interval=interval, auto_adjust=True, actions=False)
     if history.empty:
         return pd.DataFrame()
     history = history.reset_index()
@@ -2017,8 +2158,11 @@ def format_billions(value, currency=""):
     value = safe_number(value)
     if value is None:
         return "N/A"
+    currency = (currency or "").upper()
+    if currency == "KRW":
+        return f"₩{value / 1_000_000_000:,.2f}B"
     prefix = "$" if currency == "USD" else ""
-    suffix = "B KRW" if currency == "KRW" else ("B" if currency == "USD" else f"B {currency}".strip())
+    suffix = "B" if currency == "USD" else f"B {currency}".strip()
     return f"{prefix}{value / 1_000_000_000:,.2f}{suffix}"
 
 
@@ -2255,7 +2399,7 @@ def render_focus_summary(symbol: str, benchmark: str, years: int, rolling_window
     capm = capm_snapshot(symbol, benchmark, years, rolling_window, quote)
     comparisons = comparison_metrics(symbol, benchmark, years, rolling_window)
 
-    st.subheader(display_symbol(symbol))
+    st.subheader(display_symbol(symbol, str(quote.get("currency") or "")))
     price_cards = [
         summary_card_html("Current Price", format_money(quote["price"], quote["currency"]), format_pct(quote["change_pct"]), large=True),
         summary_card_html("Previous Close", format_money(quote["previous_close"], quote["currency"]), large=True),
@@ -2301,7 +2445,7 @@ def render_quote_cards(symbols: list[str]):
         quote = get_quote(symbol)
         with cols[index % len(cols)]:
             st.metric(
-                label=symbol,
+                label=display_ticker(symbol, str(quote.get("currency") or "")),
                 value=format_money(quote["price"], quote["currency"]),
                 delta=format_pct(quote["change_pct"]),
                 help=f"Previous close: {format_money(quote['previous_close'], quote['currency'])}\nExchange: {quote['exchange']}\nUTC: {quote['timestamp_utc']}",
@@ -2385,7 +2529,7 @@ def render_price_bar_chart(symbol: str):
     window = st.pills("Bar range", ["1W", "1M", "1Y", "YTD"], default="1M", key=f"{symbol}_bar_range")
     bars = get_price_bars(symbol, window or "1M")
     if bars.empty:
-        st.info(f"{symbol} price bar data is unavailable.")
+        st.info(f"{display_ticker(symbol)} price bar data is unavailable.")
         return
     bars = bars.sort_values("date").reset_index(drop=True)
     bars["date_label"] = bars["date"].dt.strftime("%m-%d %H:%M" if window in {"1W", "1M"} else "%Y-%m-%d")
@@ -2402,6 +2546,7 @@ def render_price_bar_chart(symbol: str):
         y_scale = alt.Scale(domain=[lower, upper], zero=False)
 
     body_size = {"1W": 10, "1M": 9, "1Y": 3, "YTD": 4}.get(window or "1M", 7)
+    price_format = ",.0f" if is_crypto_symbol(symbol) and crypto_quote_symbol(symbol) == "KRW" else ",.2f"
     x_axis = alt.X(
         "date_label:O",
         title="Date",
@@ -2416,10 +2561,10 @@ def render_price_bar_chart(symbol: str):
         color=alt.condition(alt.datum.Close >= alt.datum.Open, alt.value("#16a34a"), alt.value("#dc2626")),
         tooltip=[
             alt.Tooltip("date:T", title="Date"),
-            alt.Tooltip("Open:Q", format=",.2f"),
-            alt.Tooltip("High:Q", format=",.2f"),
-            alt.Tooltip("Low:Q", format=",.2f"),
-            alt.Tooltip("Close:Q", format=",.2f"),
+            alt.Tooltip("Open:Q", format=price_format),
+            alt.Tooltip("High:Q", format=price_format),
+            alt.Tooltip("Low:Q", format=price_format),
+            alt.Tooltip("Close:Q", format=price_format),
             alt.Tooltip("Volume:Q", format=",.0f"),
         ],
     )
@@ -2437,8 +2582,9 @@ def render_representative_chart(symbol: str, title: str):
     window = st.pills("Time range", ["1D", "1W", "1M", "1Y"], default="1D", key=f"{symbol}_time_range")
     data = get_representative_chart(symbol, window or "1D")
     if data.empty:
-        st.info(f"{symbol} chart data is unavailable.")
+        st.info(f"{display_ticker(symbol)} chart data is unavailable.")
         return
+    price_format = ",.0f" if is_crypto_symbol(symbol) and crypto_quote_symbol(symbol) == "KRW" else ",.2f"
 
     min_close = safe_number(data["Close"].min())
     max_close = safe_number(data["Close"].max())
@@ -2459,7 +2605,7 @@ def render_representative_chart(symbol: str, title: str):
             y=alt.Y("Close:Q", title="Close", scale=y_scale),
             tooltip=[
                 alt.Tooltip("date:T", title="Time"),
-                alt.Tooltip("Close:Q", title="Close", format=",.2f"),
+                alt.Tooltip("Close:Q", title="Close", format=price_format),
                 alt.Tooltip("Volume:Q", title="Volume", format=",.0f"),
             ],
         )
@@ -2474,7 +2620,11 @@ def render_index_strip(market: str):
     cols = st.columns(len(symbols))
     for col, symbol in zip(cols, symbols):
         quote = get_quote(symbol)
-        col.metric(display_symbol(symbol), format_money(quote["price"], quote["currency"]), format_pct(quote["change_pct"]))
+        col.metric(
+            display_symbol(symbol, str(quote.get("currency") or "")),
+            format_money(quote["price"], quote["currency"]),
+            format_pct(quote["change_pct"]),
+        )
 
 
 def render_macro_panel():
@@ -2498,7 +2648,7 @@ def render_metrics(symbol: str, benchmark: str, years: int, rolling_window: int)
         st.warning(f"{symbol} metric calculation failed: {exc}")
         return
 
-    st.subheader(f"{symbol} Monthly Metrics")
+    st.subheader(f"{display_ticker(symbol)} Monthly Metrics")
     chart_data = metrics.copy()
     chart_data["month_date"] = pd.to_datetime(chart_data["month"])
     chart_data["monthly_log_return_pct"] = chart_data["monthly_log_return"] * 100
@@ -2573,8 +2723,8 @@ def render_metrics(symbol: str, benchmark: str, years: int, rolling_window: int)
     display_table = pd.DataFrame(
         {
             "Month": display_table["month"],
-            "Symbol": display_table["symbol"],
-            "Benchmark": display_table["benchmark"],
+            "Symbol": display_ticker(symbol),
+            "Benchmark": display_ticker(benchmark),
             "Monthly Return": display_table["monthly_log_return_pct"].map(format_pct_plain),
             "Benchmark Return": display_table["benchmark_monthly_log_return_pct"].map(format_pct_plain),
             "Monthly Volatility": display_table["monthly_volatility_pct"].map(format_pct_plain),
@@ -2860,7 +3010,10 @@ def render_portfolio_summary(
 ) -> None:
     chart_rows = [
         {
-            "Symbol": str(snapshot.get("symbol") or ""),
+            "Symbol": display_ticker(
+                str(snapshot.get("symbol") or ""),
+                str(snapshot.get("cost_currency") or summary_currency),
+            ),
             "Market Value": safe_number(snapshot.get("market_value_summary")) or 0,
         }
         for snapshot in snapshots
@@ -3026,7 +3179,7 @@ def render_portfolio_manager(username: str, record: dict[str, object], benchmark
 
     with st.form("portfolio_position_form"):
         default_symbol = str(st.session_state.get("selected_symbol", "AAPL"))
-        default_currency = "KRW" if is_korea_symbol(default_symbol) else "USD"
+        default_currency = "KRW" if is_korea_symbol(default_symbol) or crypto_quote_symbol(default_symbol) == "KRW" else "USD"
         cols = st.columns([1.3, 0.9, 1, 0.8, 1.4])
         symbol = cols[0].text_input("Symbol", value=st.session_state.get("selected_symbol", "AAPL"), key="portfolio_symbol")
         quantity = cols[1].number_input("Quantity", min_value=0.0, value=1.0, step=1.0, key="portfolio_quantity")
@@ -3039,11 +3192,17 @@ def render_portfolio_manager(username: str, record: dict[str, object], benchmark
         st.success("Position saved.")
         st.rerun()
 
-    symbols = [str(position.get("symbol")) for position in portfolio if isinstance(position, dict) and position.get("symbol")]
-    if symbols:
-        remove_symbol = st.selectbox("Remove position", symbols)
+    remove_options = {}
+    for position in portfolio:
+        if not isinstance(position, dict) or not position.get("symbol"):
+            continue
+        raw_symbol = str(position.get("symbol"))
+        cost_currency = str(position.get("cost_currency") or position.get("currency") or "USD").upper()
+        remove_options[display_ticker(raw_symbol, cost_currency)] = raw_symbol
+    if remove_options:
+        remove_label = st.selectbox("Remove position", list(remove_options.keys()))
         if st.button("Remove selected position", use_container_width=True):
-            remove_position(username, remove_symbol)
+            remove_position(username, remove_options[remove_label])
             st.rerun()
 
 

@@ -14,34 +14,34 @@ import websockets
 
 
 DEFAULT_CRYPTO_SYMBOLS = [
-    "BTC-USD",
-    "ETH-USD",
-    "XRP-USD",
-    "BNB-USD",
-    "SOL-USD",
-    "DOGE-USD",
-    "TRX-USD",
-    "ADA-USD",
-    "XLM-USD",
-    "SUI-USD",
-    "HBAR-USD",
-    "LINK-USD",
-    "AVAX-USD",
-    "BCH-USD",
-    "LTC-USD",
-    "DOT-USD",
-    "SHIB-USD",
-    "UNI-USD",
-    "PEPE-USD",
-    "AAVE-USD",
-    "ONDO-USD",
-    "NEAR-USD",
-    "ETC-USD",
-    "APT-USD",
-    "POL-USD",
-    "FIL-USD",
-    "ALGO-USD",
-    "ARB-USD",
+    "BTC-KRW",
+    "ETH-KRW",
+    "XRP-KRW",
+    "BNB-KRW",
+    "SOL-KRW",
+    "DOGE-KRW",
+    "TRX-KRW",
+    "ADA-KRW",
+    "XLM-KRW",
+    "SUI-KRW",
+    "HBAR-KRW",
+    "LINK-KRW",
+    "AVAX-KRW",
+    "BCH-KRW",
+    "LTC-KRW",
+    "DOT-KRW",
+    "SHIB-KRW",
+    "UNI-KRW",
+    "PEPE-KRW",
+    "AAVE-KRW",
+    "ONDO-KRW",
+    "NEAR-KRW",
+    "ETC-KRW",
+    "APT-KRW",
+    "POL-KRW",
+    "FIL-KRW",
+    "ALGO-KRW",
+    "ARB-KRW",
 ]
 
 UPBIT_MARKET_URL = "https://api.upbit.com/v1/market/all?isDetails=false"
@@ -150,7 +150,7 @@ def crypto_base_symbol(symbol: str) -> str:
 
 
 def app_symbol_from_upbit_market(market: str) -> str:
-    return f"{market.split('-', 1)[1].upper()}-USD"
+    return f"{market.split('-', 1)[1].upper()}-KRW"
 
 
 def upbit_market_for_symbol(symbol: str) -> str:
@@ -240,7 +240,7 @@ async def stream_upbit(markets: list[str], flush_interval: float, reconnect_dela
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stream Upbit crypto quotes into Supabase.")
-    parser.add_argument("--symbols", nargs="*", default=DEFAULT_CRYPTO_SYMBOLS, help="App symbols such as BTC-USD ETH-USD.")
+    parser.add_argument("--symbols", nargs="*", default=DEFAULT_CRYPTO_SYMBOLS, help="App symbols such as BTC-KRW ETH-KRW.")
     parser.add_argument("--flush-interval", type=float, default=1.5, help="Seconds between Supabase quote upserts.")
     parser.add_argument("--reconnect-delay", type=float, default=5.0, help="Seconds to wait before reconnecting.")
     return parser.parse_args()
