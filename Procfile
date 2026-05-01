@@ -1,1 +1,2 @@
 web: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0 --server.headless=true
+worker: python market_price_worker.py

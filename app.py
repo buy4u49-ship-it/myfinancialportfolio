@@ -278,6 +278,8 @@ PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail
 APP_DATA_DIR = Path(os.environ.get("PORTFOLIO_USER_DATA_DIR", "user_data"))
 USER_STORE_PATH = APP_DATA_DIR / "users.json"
 SUPABASE_USER_TABLE = "app_user_records"
+SUPABASE_MARKET_QUOTE_TABLE = "market_quote_cache"
+MARKET_QUOTE_CACHE_MAX_AGE_SECONDS = 60
 PASSWORD_HASH_ITERATIONS = 200_000
 REMEMBER_COOKIE_NAME = "portfolio_remember_token"
 REMEMBER_QUERY_PARAM = "remember_login"
@@ -1035,8 +1037,58 @@ def pct_change(current, previous):
     return (current / previous - 1) * 100
 
 
+def quote_age_seconds(timestamp_value: object) -> float | None:
+    timestamp = parse_utc_datetime(timestamp_value)
+    if timestamp is None:
+        return None
+    return (datetime.now(timezone.utc) - timestamp).total_seconds()
+
+
+@st.cache_data(ttl=3)
+def get_cached_market_quote(symbol: str, currency: str = "KRW") -> dict[str, object] | None:
+    if not supabase_is_configured():
+        return None
+    symbol_filter = urllib.parse.quote(symbol.upper(), safe="")
+    currency_filter = urllib.parse.quote(currency.upper(), safe="")
+    path = (
+        f"{SUPABASE_MARKET_QUOTE_TABLE}"
+        "?select=symbol,provider_symbol,price,previous_close,change_pct,currency,exchange,source,updated_at"
+        f"&symbol=eq.{symbol_filter}&currency=eq.{currency_filter}&limit=1"
+    )
+    try:
+        rows = supabase_rest_request("GET", path)
+    except Exception:
+        return None
+    if not isinstance(rows, list) or not rows:
+        return None
+    row = rows[0]
+    if not isinstance(row, dict):
+        return None
+    price = safe_number(row.get("price"))
+    if price is None:
+        return None
+    age = quote_age_seconds(row.get("updated_at"))
+    if age is None or age > MARKET_QUOTE_CACHE_MAX_AGE_SECONDS:
+        return None
+    previous_close = safe_number(row.get("previous_close"))
+    change_pct_value = safe_number(row.get("change_pct"))
+    return {
+        "symbol": symbol.upper(),
+        "price": price,
+        "previous_close": previous_close,
+        "change_pct": change_pct_value if change_pct_value is not None else pct_change(price, previous_close),
+        "currency": str(row.get("currency") or currency).upper(),
+        "exchange": str(row.get("exchange") or "Upbit"),
+        "timestamp_utc": str(row.get("updated_at") or utc_now_iso()),
+        "source": str(row.get("source") or "market_quote_cache"),
+    }
+
+
 @st.cache_data(ttl=30)
 def get_quote(symbol: str) -> dict[str, object]:
+    if is_crypto_symbol(symbol):
+        return get_crypto_krw_quote(symbol)
+
     ticker = yf.Ticker(symbol)
     price = None
     previous_close = None
@@ -1098,7 +1150,7 @@ def fetch_json(url: str) -> object:
         return json.loads(response.read().decode("utf-8"))
 
 
-@st.cache_data(ttl=20)
+@st.cache_data(ttl=5)
 def get_upbit_krw_quote(base_symbol: str) -> dict[str, object]:
     market = f"KRW-{base_symbol.upper()}"
     query = urllib.parse.urlencode({"markets": market})
@@ -1115,7 +1167,7 @@ def get_upbit_krw_quote(base_symbol: str) -> dict[str, object]:
         "previous_close": previous_close,
         "change_pct": signed_change_rate * 100 if signed_change_rate is not None else pct_change(price, previous_close),
         "currency": "KRW",
-        "exchange": "Upbit",
+        "exchange": "Upbit REST",
         "timestamp_utc": utc_now_iso(),
     }
 
@@ -1144,28 +1196,25 @@ def get_bithumb_krw_quote(base_symbol: str) -> dict[str, object]:
 
 def get_crypto_krw_quote(symbol: str) -> dict[str, object]:
     base_symbol = crypto_base_symbol(symbol)
-    for quote_source in (get_upbit_krw_quote, get_bithumb_krw_quote):
-        try:
-            quote = quote_source(base_symbol)
-            if safe_number(quote.get("price")) is not None:
-                return quote
-        except Exception:
-            continue
+    app_symbol = f"{base_symbol}-USD"
+    cached_quote = get_cached_market_quote(app_symbol, "KRW")
+    if cached_quote:
+        cached_quote["symbol"] = app_symbol
+        return cached_quote
     try:
-        quote = get_quote(f"{base_symbol}-KRW")
+        quote = get_upbit_krw_quote(base_symbol)
         if safe_number(quote.get("price")) is not None:
-            quote["exchange"] = quote.get("exchange") or "Yahoo Finance KRW"
-            quote["currency"] = "KRW"
+            quote["symbol"] = app_symbol
             return quote
     except Exception:
         pass
     return {
-        "symbol": f"{base_symbol}-KRW",
+        "symbol": app_symbol,
         "price": None,
         "previous_close": None,
         "change_pct": None,
         "currency": "KRW",
-        "exchange": "KRW quote unavailable",
+        "exchange": "Upbit quote unavailable",
         "timestamp_utc": utc_now_iso(),
     }
 
@@ -1356,6 +1405,57 @@ def portfolio_capm_projection(
         "beta_coverage": beta_weight * 100,
         "risk_free_as_of": tbill_as_of,
     }
+
+
+def empty_portfolio_calculation() -> dict[str, float | str | int | None]:
+    return {
+        "portfolio_beta": None,
+        "expected_monthly_log_return": None,
+        "expected_portfolio_value": None,
+        "expected_gain": None,
+        "beta_coverage": None,
+        "risk_free_as_of": "",
+        "summary_currency": "",
+        "benchmark": "",
+        "years": None,
+        "rolling_window": None,
+        "calculated_at": "",
+    }
+
+
+def portfolio_calculation_matches(
+    calculation: dict[str, object],
+    summary_currency: str,
+    benchmark: str,
+    years: int,
+    rolling_window: int,
+) -> bool:
+    return (
+        str(calculation.get("summary_currency") or "").upper() == summary_currency.upper()
+        and str(calculation.get("benchmark") or "").upper() == (benchmark or "SPY").upper()
+        and safe_number(calculation.get("years")) == years
+        and safe_number(calculation.get("rolling_window")) == rolling_window
+    )
+
+
+def portfolio_calculation_record(
+    snapshots: list[dict[str, object]],
+    summary_currency: str,
+    benchmark: str,
+    years: int,
+    rolling_window: int,
+) -> dict[str, object]:
+    projection = portfolio_capm_projection(snapshots, benchmark, years, rolling_window)
+    projection.update(
+        {
+            "summary_currency": summary_currency.upper(),
+            "benchmark": (benchmark or "SPY").upper(),
+            "years": years,
+            "rolling_window": rolling_window,
+            "calculated_at": utc_now_iso(),
+        }
+    )
+    return projection
 
 
 def signed_value_class(value) -> str:
@@ -2747,6 +2847,8 @@ def render_sidebar_auth_panel(cookie_controller=None) -> None:
 
 
 def render_portfolio_summary(
+    username: str,
+    record: dict[str, object],
     snapshots: list[dict[str, object]],
     summary_currency: str,
     benchmark: str,
@@ -2763,7 +2865,14 @@ def render_portfolio_summary(
     ]
     chart_rows = sorted(chart_rows, key=lambda row: row["Market Value"], reverse=True)
     totals = portfolio_totals(snapshots)
-    projection = portfolio_capm_projection(snapshots, benchmark, years, rolling_window)
+    saved_calculation = record.get("portfolio_calculation", {})
+    if not isinstance(saved_calculation, dict):
+        saved_calculation = {}
+    projection = (
+        saved_calculation
+        if portfolio_calculation_matches(saved_calculation, summary_currency, benchmark, years, rolling_window)
+        else empty_portfolio_calculation()
+    )
     chart_col, metric_col, projection_col = st.columns([1.25, 0.85, 0.85])
 
     with chart_col:
@@ -2828,6 +2937,18 @@ def render_portfolio_summary(
 
     with projection_col:
         st.markdown("**Portfolio Expected Return**")
+        if st.button("Update calculation", use_container_width=True, key="portfolio_update_calculation"):
+            updated_record = get_user_record(username) or record or default_user_record(username)
+            updated_record["portfolio_calculation"] = portfolio_calculation_record(
+                snapshots,
+                summary_currency,
+                benchmark,
+                years,
+                rolling_window,
+            )
+            save_user_record(username, updated_record)
+            st.success("Portfolio calculation updated.")
+            st.rerun()
         st.markdown(
             "".join(
                 [
@@ -2856,6 +2977,9 @@ def render_portfolio_summary(
         beta_coverage = safe_number(projection.get("beta_coverage"))
         if beta_coverage is not None and beta_coverage < 99.5:
             st.caption(f"Beta coverage: {beta_coverage:.1f}% of current portfolio value.")
+        calculated_at = str(projection.get("calculated_at") or "")
+        if calculated_at:
+            st.caption(f"Calculated at {calculated_at}")
 
 
 def render_portfolio_manager(username: str, record: dict[str, object], benchmark: str, years: int, rolling_window: int) -> None:
@@ -2873,7 +2997,7 @@ def render_portfolio_manager(username: str, record: dict[str, object], benchmark
     snapshots = portfolio_position_snapshots(portfolio, summary_currency)
     rows = portfolio_market_rows_from_snapshots(snapshots)
     if rows:
-        render_portfolio_summary(snapshots, summary_currency, benchmark, years, rolling_window)
+        render_portfolio_summary(username, record, snapshots, summary_currency, benchmark, years, rolling_window)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         st.markdown("**Edit Positions**")
         edited_positions = st.data_editor(

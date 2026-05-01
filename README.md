@@ -76,6 +76,24 @@ In Streamlit Community Cloud, open the app settings, go to **Secrets**, and add 
 
 If these secrets are not configured, the app falls back to local `user_data/users.json` storage.
 
+### Realtime crypto quote cache
+
+Crypto current prices are read from Upbit KRW quotes instead of yfinance. For the fastest updates, create the Supabase quote cache table by running `supabase_market_quote_cache.sql` in the Supabase SQL Editor, then run this worker as a separate process:
+
+```powershell
+python market_price_worker.py
+```
+
+The worker streams Upbit ticker data over WebSocket and upserts the latest prices into `public.market_quote_cache`. The Streamlit app reads that cache first and falls back to direct Upbit REST quotes if the worker is not running or the cached quote is stale.
+
+If you run the worker outside Streamlit Cloud, provide the same secrets as environment variables:
+
+```powershell
+$env:SUPABASE_URL = "https://lwtlxlhnxznehomhlhif.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
+python market_price_worker.py
+```
+
 ## Deploy Online: Render
 
 This repository includes `render.yaml` and `Procfile`.

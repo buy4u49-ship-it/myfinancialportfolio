@@ -4,3 +4,4 @@ numpy>=1.26.0
 streamlit>=1.56.0
 streamlit-autorefresh>=1.0.1
 streamlit-cookies-controller>=0.0.4
+websockets>=16.0
