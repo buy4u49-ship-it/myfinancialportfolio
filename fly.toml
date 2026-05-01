@@ -1,4 +1,4 @@
-app = "app-wandering-night-1272"
+app = "myfinancialportfolio"
 primary_region = "nrt"
 kill_signal = "SIGINT"
 kill_timeout = "5s"
