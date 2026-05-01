@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import secrets
 import html as html_lib
 import urllib.error
@@ -1723,7 +1724,7 @@ def evaluate_price_alerts(username: str) -> list[dict[str, object]]:
 
 
 @st.cache_data(ttl=3600)
-def get_profile(symbol: str) -> dict[str, object]:
+def get_ticker_info(symbol: str) -> dict[str, object]:
     provider_symbol = market_data_symbol(symbol)
     ticker = yf.Ticker(provider_symbol)
     info = {}
@@ -1737,12 +1738,19 @@ def get_profile(symbol: str) -> dict[str, object]:
             info = ticker.info or {}
         except Exception:
             info = {}
+    return info if isinstance(info, dict) else {}
 
+
+@st.cache_data(ttl=3600)
+def get_profile(symbol: str) -> dict[str, object]:
+    provider_symbol = market_data_symbol(symbol)
+    info = get_ticker_info(symbol)
     fallback = PROFILE_FALLBACKS.get(symbol.upper(), {}) or PROFILE_FALLBACKS.get(provider_symbol.upper(), {})
 
     def sector_from_watchlist() -> str:
         upper_symbol = symbol.upper()
-        for sector_name, candidates in SECTOR_WATCHLISTS.items():
+        watchlists = KOREA_SECTOR_WATCHLISTS if is_korea_symbol(upper_symbol) else SECTOR_WATCHLISTS
+        for sector_name, candidates in watchlists.items():
             if upper_symbol in candidates:
                 return sector_name
         return ""
@@ -1782,6 +1790,168 @@ def get_statement(symbol: str, statement_type: str) -> pd.DataFrame:
     table = table.copy()
     table.columns = [pd.Timestamp(col).strftime("%Y-%m-%d") for col in table.columns]
     return table
+
+
+def readable_statement_label(label: object) -> str:
+    text = str(label or "").replace("_", " ").strip()
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    return re.sub(r"\s+", " ", text)
+
+
+def balance_sheet_row_rank(label: object, original_index: int) -> tuple[int, int]:
+    text = readable_statement_label(label).lower()
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+
+    if "cash" in compact:
+        return (100, original_index)
+    if "shortterminvestment" in compact:
+        return (110, original_index)
+    if "receivable" in compact:
+        return (120, original_index)
+    if "inventory" in compact:
+        return (130, original_index)
+    if "prepaid" in compact:
+        return (140, original_index)
+    if "asset" in compact:
+        if "noncurrentasset" in compact or "longtermasset" in compact:
+            return (290 if "total" in compact else 240, original_index)
+        if "totalcurrentasset" in compact:
+            return (180, original_index)
+        if "currentasset" in compact:
+            return (150, original_index)
+        if "totalasset" in compact:
+            return (300, original_index)
+        return (200, original_index)
+    if any(token in compact for token in ("ppe", "propertyplant", "goodwill", "intangible", "investment", "deferredtaxasset")):
+        return (230, original_index)
+
+    if ("noncurrent" in compact or "longterm" in compact) and any(token in compact for token in ("payable", "payables", "debt")):
+        return (540, original_index)
+    if any(token in compact for token in ("accountspayable", "payables")):
+        return (410, original_index)
+    if any(token in compact for token in ("currentdebt", "shorttermdebt")):
+        return (420, original_index)
+    if "liabilit" in compact:
+        if "noncurrentliabilit" in compact or "longtermliabilit" in compact:
+            return (580 if "total" in compact else 540, original_index)
+        if "totalcurrentliabilit" in compact:
+            return (480, original_index)
+        if "currentliabilit" in compact:
+            return (430, original_index)
+        if "totalliabilit" in compact:
+            return (600, original_index)
+        return (500, original_index)
+    if any(token in compact for token in ("longtermdebt", "deferredtaxliabilit")):
+        return (530, original_index)
+    if "totaldebt" in compact or "netdebt" in compact:
+        return (620, original_index)
+
+    if any(token in compact for token in ("equity", "stockholder", "shareholder", "retainedearnings", "commonstock", "treasurystock")):
+        if "totalequity" in compact or "stockholdersequity" in compact or "shareholdersequity" in compact:
+            return (780, original_index)
+        return (720, original_index)
+
+    return (900, original_index)
+
+
+def reorder_statement(statement: pd.DataFrame, statement_type: str) -> pd.DataFrame:
+    if statement.empty or statement_type != "balance":
+        return statement
+    indexed_rows = list(enumerate(statement.index))
+    ordered_index = [label for _, label in sorted(indexed_rows, key=lambda item: balance_sheet_row_rank(item[1], item[0]))]
+    return statement.loc[ordered_index]
+
+
+def format_statement_number(value: object) -> str:
+    number = safe_number(value)
+    if number is None:
+        return ""
+    abs_value = abs(number)
+    if abs_value >= 1_000_000_000:
+        return f"{number / 1_000_000_000:,.2f}B"
+    if abs_value >= 1_000_000:
+        return f"{number / 1_000_000:,.2f}M"
+    if abs_value >= 1_000:
+        return f"{number:,.0f}"
+    return f"{number:,.2f}"
+
+
+def format_statement_table(statement: pd.DataFrame, statement_type: str) -> pd.DataFrame:
+    table = reorder_statement(statement, statement_type).copy()
+    table.index = [readable_statement_label(label) for label in table.index]
+    formatted = table.map(format_statement_number)
+    formatted.insert(0, "Line Item", formatted.index)
+    formatted.index = range(1, len(formatted) + 1)
+    formatted.index.name = ""
+    return formatted
+
+
+RATIO_FIELDS = [
+    ("EPS", "eps", "number"),
+    ("PER", "per", "number"),
+    ("Net Profit Margin", "net_margin", "percent"),
+    ("Operating Margin", "operating_margin", "percent"),
+    ("ROE", "roe", "percent"),
+]
+
+
+def ratio_values(symbol: str) -> dict[str, float | None]:
+    info = get_ticker_info(symbol)
+    return {
+        "eps": safe_number(info.get("trailingEps") or info.get("epsTrailingTwelveMonths")),
+        "per": safe_number(info.get("trailingPE") or info.get("forwardPE")),
+        "net_margin": safe_number(info.get("profitMargins")),
+        "operating_margin": safe_number(info.get("operatingMargins")),
+        "roe": safe_number(info.get("returnOnEquity")),
+    }
+
+
+def format_ratio_value(value: object, value_type: str) -> str:
+    number = safe_number(value)
+    if number is None:
+        return "N/A"
+    if value_type == "percent":
+        return f"{number * 100:,.2f}%"
+    return f"{number:,.2f}"
+
+
+def industry_peer_candidates(symbol: str, profile: dict[str, object], limit: int = 12) -> list[str]:
+    provider_symbol = market_data_symbol(symbol).upper()
+    watchlists = KOREA_SECTOR_WATCHLISTS if is_korea_symbol(provider_symbol) else SECTOR_WATCHLISTS
+    sector = str(profile.get("sector") or "")
+    industry = str(profile.get("industry") or "")
+    candidates = [candidate for candidate in watchlists.get(sector, []) if candidate.upper() != provider_symbol]
+    if not candidates:
+        return []
+
+    same_industry = []
+    for candidate in candidates[:limit]:
+        peer_profile = get_profile(candidate)
+        if industry and str(peer_profile.get("industry") or "") == industry:
+            same_industry.append(candidate)
+    return (same_industry or candidates)[:limit]
+
+
+def mean_ratio(peer_ratios: list[dict[str, float | None]], key: str) -> float | None:
+    values = [safe_number(row.get(key)) for row in peer_ratios]
+    values = [value for value in values if value is not None]
+    return sum(values) / len(values) if values else None
+
+
+def financial_ratio_table(symbol: str, profile: dict[str, object]) -> tuple[pd.DataFrame, int]:
+    company = ratio_values(symbol)
+    peers = industry_peer_candidates(symbol, profile)
+    peer_ratios = [ratio_values(peer) for peer in peers]
+    rows = []
+    for label, key, value_type in RATIO_FIELDS:
+        rows.append(
+            {
+                "Metric": label,
+                "Company": format_ratio_value(company.get(key), value_type),
+                "Industry Average": format_ratio_value(mean_ratio(peer_ratios, key), value_type),
+            }
+        )
+    return pd.DataFrame(rows), len(peer_ratios)
 
 
 @st.cache_data(ttl=1800)
@@ -2791,15 +2961,40 @@ def render_statements(symbol: str):
         "income": "Income Statement",
         "cashflow": "Cashflow Statement",
     }
-    tabs = st.tabs(["Financial Position", "Income", "Cashflow"])
-    for tab, statement_type in zip(tabs, ["balance", "income", "cashflow"]):
+    tabs = st.tabs(["Financial Position", "Income", "Cashflow", "Financial Ratio"])
+    for tab, statement_type in zip(tabs[:3], ["balance", "income", "cashflow"]):
         with tab:
             statement = get_statement(symbol, statement_type)
             st.subheader(labels[statement_type])
             if statement.empty:
                 st.info("No statement data was returned for this symbol.")
             else:
-                st.dataframe(statement, use_container_width=True)
+                formatted = format_statement_table(statement, statement_type)
+                st.markdown(
+                    (
+                        '<div class="financial-table-wrap">'
+                        f'{formatted.to_html(classes="financial-table", escape=True, border=0, index=False)}'
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+    with tabs[3]:
+        profile = get_profile(symbol)
+        ratios, peer_count = financial_ratio_table(symbol, profile)
+        st.subheader("Financial Ratio")
+        st.markdown(
+            (
+                '<div class="financial-table-wrap financial-ratio-wrap">'
+                f'{ratios.to_html(classes="financial-table financial-ratio-table", escape=True, border=0, index=False)}'
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        industry = str(profile.get("industry") or profile.get("sector") or "industry")
+        if peer_count:
+            st.caption(f"Industry average uses {peer_count} comparable companies from {industry}.")
+        else:
+            st.caption(f"Industry average is unavailable for {industry}.")
 
 
 def render_symbol_search(default_symbol: str = "AAPL") -> str:
@@ -3093,18 +3288,6 @@ def render_portfolio_summary(
 
     with projection_col:
         st.markdown("**Portfolio Expected Return**")
-        if st.button("Update calculation", use_container_width=True, key="portfolio_update_calculation"):
-            updated_record = get_user_record(username) or record or default_user_record(username)
-            updated_record["portfolio_calculation"] = portfolio_calculation_record(
-                snapshots,
-                summary_currency,
-                benchmark,
-                years,
-                rolling_window,
-            )
-            save_user_record(username, updated_record)
-            st.success("Portfolio calculation updated.")
-            st.rerun()
         st.markdown(
             "".join(
                 [
@@ -3143,15 +3326,31 @@ def render_portfolio_manager(username: str, record: dict[str, object], benchmark
     portfolio = record.get("portfolio", [])
     portfolio = portfolio if isinstance(portfolio, list) else []
     default_currency = default_portfolio_summary_currency(portfolio)
-    summary_currency = st.radio(
-        "Portfolio summary currency",
-        ["USD", "KRW"],
-        index=0 if default_currency == "USD" else 1,
-        horizontal=True,
-        key="portfolio_summary_currency",
-    )
+    control_cols = st.columns([0.46, 0.28, 0.26])
+    with control_cols[0]:
+        summary_currency = st.radio(
+            "Portfolio summary currency",
+            ["USD", "KRW"],
+            index=0 if default_currency == "USD" else 1,
+            horizontal=True,
+            key="portfolio_summary_currency",
+        )
     snapshots = portfolio_position_snapshots(portfolio, summary_currency)
     rows = portfolio_market_rows_from_snapshots(snapshots)
+    with control_cols[1]:
+        st.markdown('<div class="portfolio-update-action-spacer"></div>', unsafe_allow_html=True)
+        if st.button("Update calculation", use_container_width=True, key="portfolio_update_calculation", disabled=not bool(rows)):
+            updated_record = get_user_record(username) or record or default_user_record(username)
+            updated_record["portfolio_calculation"] = portfolio_calculation_record(
+                snapshots,
+                summary_currency,
+                benchmark,
+                years,
+                rolling_window,
+            )
+            save_user_record(username, updated_record)
+            st.success("Portfolio calculation updated.")
+            st.rerun()
     if rows:
         render_portfolio_summary(username, record, snapshots, summary_currency, benchmark, years, rolling_window)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -3473,6 +3672,9 @@ def inject_styles():
         .portfolio-mini-value.neutral {
             color: #111827;
         }
+        .portfolio-update-action-spacer {
+            height: 1.55rem;
+        }
         .allocation-legend {
             display: flex;
             flex-direction: column;
@@ -3545,6 +3747,59 @@ def inject_styles():
         }
         .macro-table .macro-col-standard {
             width: 17.5%;
+        }
+        .financial-table-wrap {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow-x: auto;
+            width: 100%;
+            margin-top: 0.5rem;
+        }
+        .financial-table {
+            border-collapse: collapse;
+            table-layout: fixed;
+            width: 100%;
+            min-width: 860px;
+            font-size: 0.93rem;
+        }
+        .financial-table thead th {
+            background: #f8fafc;
+            color: #6b7280;
+            font-weight: 650;
+            text-align: right !important;
+        }
+        .financial-table thead th:first-child {
+            text-align: left !important;
+            width: 34%;
+        }
+        .financial-table th,
+        .financial-table td {
+            border-bottom: 1px solid #e5e7eb;
+            border-right: 1px solid #e5e7eb;
+            padding: 10px 12px;
+            white-space: nowrap;
+        }
+        .financial-table th:last-child,
+        .financial-table td:last-child {
+            border-right: 0;
+        }
+        .financial-table tbody tr:last-child td {
+            border-bottom: 0;
+        }
+        .financial-table tbody td {
+            font-variant-numeric: tabular-nums;
+            text-align: right !important;
+        }
+        .financial-table tbody td:first-child {
+            color: #374151;
+            font-weight: 600;
+            text-align: left !important;
+        }
+        .financial-ratio-wrap {
+            max-width: 820px;
+        }
+        .financial-ratio-table {
+            min-width: 620px;
         }
         .metrics-table-wrap {
             border: 1px solid #e5e7eb;
@@ -3634,6 +3889,9 @@ def inject_styles():
             .macro-table {
                 min-width: 760px;
             }
+            .financial-table {
+                min-width: 820px;
+            }
             .metrics-table {
                 min-width: 980px;
             }
@@ -3673,6 +3931,8 @@ def inject_styles():
             }
             .macro-table th,
             .macro-table td,
+            .financial-table th,
+            .financial-table td,
             .metrics-table th,
             .metrics-table td {
                 padding: 8px 8px;
