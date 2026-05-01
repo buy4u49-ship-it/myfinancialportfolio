@@ -712,12 +712,34 @@ def remember_token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def create_cookie_controller():
+    try:
+        from streamlit_cookies_controller import CookieController
+    except Exception:
+        return None
+    try:
+        return CookieController(key="portfolio_auth_cookies")
+    except Exception:
+        return None
+
+
 def get_cookie(name: str) -> str:
     try:
         value = st.context.cookies.get(name)
     except Exception:
         value = ""
     return str(value or "")
+
+
+def get_remember_cookie(cookie_controller=None) -> str:
+    if cookie_controller is not None:
+        try:
+            value = cookie_controller.get(REMEMBER_COOKIE_NAME)
+        except Exception:
+            value = ""
+        if value:
+            return str(value)
+    return get_cookie(REMEMBER_COOKIE_NAME)
 
 
 def get_query_param(name: str) -> str:
@@ -738,13 +760,18 @@ def queue_clear_remember_cookie() -> None:
     st.session_state.clear_remember_cookie = True
 
 
-def emit_auth_cookie_scripts() -> None:
+def emit_auth_cookie_scripts(cookie_controller=None) -> None:
     if st.session_state.pop("clear_remember_cookie", False):
         try:
             if REMEMBER_QUERY_PARAM in st.query_params:
                 del st.query_params[REMEMBER_QUERY_PARAM]
         except Exception:
             pass
+        if cookie_controller is not None:
+            try:
+                cookie_controller.remove(REMEMBER_COOKIE_NAME)
+            except Exception:
+                pass
         components.html(
             f"""
             <script>
@@ -756,11 +783,24 @@ def emit_auth_cookie_scripts() -> None:
     remember_cookie = st.session_state.pop("pending_remember_cookie", "")
     if remember_cookie:
         try:
-            st.query_params[REMEMBER_QUERY_PARAM] = remember_cookie
+            if REMEMBER_QUERY_PARAM in st.query_params:
+                del st.query_params[REMEMBER_QUERY_PARAM]
         except Exception:
             pass
         encoded_value = urllib.parse.quote(remember_cookie, safe="")
         max_age_seconds = REMEMBER_LOGIN_DAYS * 24 * 60 * 60
+        if cookie_controller is not None:
+            try:
+                cookie_controller.set(
+                    REMEMBER_COOKIE_NAME,
+                    remember_cookie,
+                    max_age=max_age_seconds,
+                    expires=datetime.now(timezone.utc) + timedelta(days=REMEMBER_LOGIN_DAYS),
+                    path="/",
+                    same_site="lax",
+                )
+            except Exception:
+                pass
         components.html(
             f"""
             <script>
@@ -791,10 +831,10 @@ def create_remember_login_token(username: str) -> str:
     return f"{username}:{token}"
 
 
-def restore_remembered_login() -> None:
+def restore_remembered_login(cookie_controller=None) -> None:
     if current_username():
         return
-    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME)) or get_query_param(REMEMBER_QUERY_PARAM)
+    raw_cookie = urllib.parse.unquote(get_remember_cookie(cookie_controller)) or get_query_param(REMEMBER_QUERY_PARAM)
     if ":" not in raw_cookie:
         return
     username, token = raw_cookie.split(":", 1)
@@ -833,8 +873,8 @@ def restore_remembered_login() -> None:
         queue_clear_remember_cookie()
 
 
-def revoke_current_remember_token(username: str) -> None:
-    raw_cookie = urllib.parse.unquote(get_cookie(REMEMBER_COOKIE_NAME)) or get_query_param(REMEMBER_QUERY_PARAM)
+def revoke_current_remember_token(username: str, cookie_controller=None) -> None:
+    raw_cookie = urllib.parse.unquote(get_remember_cookie(cookie_controller)) or get_query_param(REMEMBER_QUERY_PARAM)
     if ":" not in raw_cookie:
         return
     cookie_username, token = raw_cookie.split(":", 1)
@@ -929,10 +969,10 @@ def authenticate(username: str, password: str) -> tuple[bool, str]:
     return True, "Signed in."
 
 
-def logout() -> None:
+def logout(cookie_controller=None) -> None:
     username = current_username()
     if username:
-        revoke_current_remember_token(username)
+        revoke_current_remember_token(username, cookie_controller)
     st.session_state.pop("auth_user", None)
     queue_clear_remember_cookie()
 
@@ -2532,7 +2572,7 @@ def render_symbol_search(default_symbol: str = "AAPL") -> str:
     return st.session_state.selected_symbol
 
 
-def render_login_page():
+def render_login_page(cookie_controller=None):
     st.header("Login")
     if is_logged_in():
         record = get_user_record() or {}
@@ -2543,7 +2583,7 @@ def render_login_page():
             st.session_state.pending_page = "My Page"
             st.rerun()
         if cols[1].button("Logout", use_container_width=True):
-            logout()
+            logout(cookie_controller)
             st.rerun()
         return
 
@@ -2622,7 +2662,7 @@ def portfolio_sidebar_summary(username: str) -> tuple[dict[str, float | None], s
     return portfolio_totals(snapshots), summary_currency
 
 
-def render_sidebar_auth_panel() -> None:
+def render_sidebar_auth_panel(cookie_controller=None) -> None:
     st.subheader("Login")
     if is_logged_in():
         username = current_username()
@@ -2663,7 +2703,7 @@ def render_sidebar_auth_panel() -> None:
             st.session_state.pending_page = "My Page"
             st.rerun()
         if st.button("Logout", use_container_width=True, key="sidebar_logout"):
-            logout()
+            logout(cookie_controller)
             st.rerun()
         return
 
@@ -2932,7 +2972,7 @@ def render_alert_manager(username: str, record: dict[str, object]) -> None:
             st.rerun()
 
 
-def render_account_settings(username: str, record: dict[str, object]) -> None:
+def render_account_settings(username: str, record: dict[str, object], cookie_controller=None) -> None:
     st.subheader("Account")
     profile = record.get("profile", {}) if isinstance(record.get("profile"), dict) else {}
     with st.form("account_settings_form"):
@@ -2949,12 +2989,12 @@ def render_account_settings(username: str, record: dict[str, object]) -> None:
         st.rerun()
 
     if st.button("Logout", use_container_width=True):
-        logout()
+        logout(cookie_controller)
         st.session_state.pending_page = "Login"
         st.rerun()
 
 
-def render_my_page(benchmark: str, years: int, rolling_window: int):
+def render_my_page(benchmark: str, years: int, rolling_window: int, cookie_controller=None):
     st.header("My Page")
     if not require_login():
         return
@@ -2973,7 +3013,7 @@ def render_my_page(benchmark: str, years: int, rolling_window: int):
     with alerts_tab:
         render_alert_manager(username, get_user_record(username) or record)
     with account_tab:
-        render_account_settings(username, get_user_record(username) or record)
+        render_account_settings(username, get_user_record(username) or record, cookie_controller)
 
 
 def render_symbol_detail(symbol: str, benchmark: str, years: int, rolling_window: int):
@@ -3381,13 +3421,14 @@ def render_top_navigation() -> str:
 def main():
     st.set_page_config(page_title="My Financial Portfolio", layout="wide")
     inject_styles()
-    restore_remembered_login()
-    emit_auth_cookie_scripts()
+    cookie_controller = create_cookie_controller()
+    restore_remembered_login(cookie_controller)
+    emit_auth_cookie_scripts(cookie_controller)
     page = render_top_navigation()
     st.title("My Financial Portfolio")
 
     with st.sidebar:
-        render_sidebar_auth_panel()
+        render_sidebar_auth_panel(cookie_controller)
         st.divider()
         st.header("Search")
         focus_symbol = render_symbol_search("AAPL")
@@ -3406,7 +3447,7 @@ def main():
             st.info("Auto refresh package is unavailable. Use the browser refresh button.")
 
     if page == "My Page":
-        render_my_page(benchmark, years, rolling_window)
+        render_my_page(benchmark, years, rolling_window, cookie_controller)
     elif page in PAGE_CONFIG:
         render_market_main(PAGE_CONFIG[page])
     else:
