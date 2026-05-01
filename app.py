@@ -1886,6 +1886,379 @@ def format_statement_table(statement: pd.DataFrame, statement_type: str) -> pd.D
     return formatted
 
 
+def compact_statement_label(label: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", readable_statement_label(label).lower())
+
+
+def empty_statement_series(statement: pd.DataFrame) -> pd.Series:
+    return pd.Series([None for _ in statement.columns], index=statement.columns, dtype=object)
+
+
+def numeric_statement_series(row: object, columns: pd.Index) -> pd.Series:
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0] if not row.empty else pd.Series(index=columns, dtype=object)
+    if not isinstance(row, pd.Series):
+        row = pd.Series(row, index=columns)
+    return row.reindex(columns).map(safe_number)
+
+
+def candidate(includes: tuple[str, ...], excludes: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return includes, excludes
+
+
+def row_matches(compact_label: str, candidates: list[tuple[tuple[str, ...], tuple[str, ...]]]) -> bool:
+    for includes, excludes in candidates:
+        if all(token in compact_label for token in includes) and not any(token in compact_label for token in excludes):
+            return True
+    return False
+
+
+def find_statement_series(statement: pd.DataFrame, candidates: list[tuple[tuple[str, ...], tuple[str, ...]]]) -> pd.Series | None:
+    for includes, excludes in candidates:
+        for label in statement.index:
+            compact = compact_statement_label(label)
+            if all(token in compact for token in includes) and not any(token in compact for token in excludes):
+                return numeric_statement_series(statement.loc[label], statement.columns)
+    return None
+
+
+def find_statement_rows(
+    statement: pd.DataFrame,
+    candidates: list[tuple[tuple[str, ...], tuple[str, ...]]],
+    exclude_labels: set[str] | None = None,
+) -> list[tuple[str, pd.Series]]:
+    exclude_labels = exclude_labels or set()
+    rows: list[tuple[str, pd.Series]] = []
+    seen: set[str] = set()
+    for label in statement.index:
+        readable = readable_statement_label(label)
+        compact = compact_statement_label(label)
+        if readable in exclude_labels or readable in seen:
+            continue
+        if row_matches(compact, candidates):
+            rows.append((readable, numeric_statement_series(statement.loc[label], statement.columns)))
+            seen.add(readable)
+    return rows
+
+
+def unmatched_statement_rows(
+    statement: pd.DataFrame,
+    matched_candidates: list[tuple[tuple[str, ...], tuple[str, ...]]],
+) -> list[tuple[str, pd.Series]]:
+    rows: list[tuple[str, pd.Series]] = []
+    for label in statement.index:
+        compact = compact_statement_label(label)
+        if not row_matches(compact, matched_candidates):
+            rows.append((readable_statement_label(label), numeric_statement_series(statement.loc[label], statement.columns)))
+    return rows
+
+
+def series_or_empty(statement: pd.DataFrame, series: pd.Series | None) -> pd.Series:
+    return series if series is not None else empty_statement_series(statement)
+
+
+def add_statement_series(*series_values: pd.Series | None) -> pd.Series | None:
+    valid = [series for series in series_values if series is not None]
+    if not valid:
+        return None
+    total = valid[0].copy()
+    for series in valid[1:]:
+        total = total.combine(
+            series,
+            lambda left, right: (
+                (safe_number(left) or 0) + (safe_number(right) or 0)
+                if safe_number(left) is not None or safe_number(right) is not None
+                else None
+            ),
+        )
+    return total
+
+
+def subtract_statement_series(left: pd.Series | None, right: pd.Series | None) -> pd.Series | None:
+    if left is None and right is None:
+        return None
+    if left is None:
+        return right.map(lambda value: -safe_number(value) if safe_number(value) is not None else None)
+    if right is None:
+        return left
+    return left.combine(
+        right,
+        lambda a, b: (
+            (safe_number(a) or 0) - (safe_number(b) or 0)
+            if safe_number(a) is not None or safe_number(b) is not None
+            else None
+        ),
+    )
+
+
+def statement_html_cell(value: object) -> str:
+    return html_lib.escape(format_statement_number(value))
+
+
+def statement_grid_template(column_count: int) -> str:
+    return "minmax(280px, 1.45fr) " + " ".join(["minmax(118px, 1fr)"] * column_count)
+
+
+def financial_grid_header(statement: pd.DataFrame) -> str:
+    cells = ['<div class="financial-grid-cell financial-grid-label">Line Item</div>']
+    cells.extend(f'<div class="financial-grid-cell">{html_lib.escape(str(column))}</div>' for column in statement.columns)
+    return f'<div class="financial-grid-row financial-grid-header">{"".join(cells)}</div>'
+
+
+def financial_grid_row(label: str, values: pd.Series | None, css_class: str = "", level: int = 0) -> str:
+    series = values if values is not None else pd.Series(dtype=object)
+    cells = [
+        (
+            f'<div class="financial-grid-cell financial-grid-label level-{level}">'
+            f"{html_lib.escape(label)}</div>"
+        )
+    ]
+    for column in series.index:
+        cells.append(f'<div class="financial-grid-cell">{statement_html_cell(series.get(column))}</div>')
+    return f'<div class="financial-grid-row {css_class}">{"".join(cells)}</div>'
+
+
+def financial_empty_row(statement: pd.DataFrame, label: str = "No mapped line items available") -> str:
+    cells = [f'<div class="financial-grid-cell financial-grid-label level-2 muted">{html_lib.escape(label)}</div>']
+    cells.extend('<div class="financial-grid-cell muted"></div>' for _ in statement.columns)
+    return f'<div class="financial-grid-row financial-empty-row">{"".join(cells)}</div>'
+
+
+def financial_detail_group(
+    title: str,
+    summary: pd.Series | None,
+    children: list[str],
+    statement: pd.DataFrame,
+    css_class: str = "",
+    level: int = 0,
+    open_group: bool = False,
+) -> str:
+    open_attr = " open" if open_group else ""
+    body = "".join(children) if children else financial_empty_row(statement)
+    return (
+        f'<details class="financial-detail {css_class}"{open_attr}>'
+        "<summary>"
+        f'{financial_grid_row(title, series_or_empty(statement, summary), "financial-summary-row", level)}'
+        "</summary>"
+        f'<div class="financial-detail-body">{body}</div>'
+        "</details>"
+    )
+
+
+def rows_html(rows: list[tuple[str, pd.Series]], level: int = 1, css_class: str = "") -> list[str]:
+    return [financial_grid_row(label, series, css_class, level) for label, series in rows]
+
+
+BALANCE_CANDIDATES = {
+    "total_assets": [candidate(("totalassets",)), candidate(("total", "assets"), ("liabilit", "equity"))],
+    "current_assets": [candidate(("totalcurrentassets",)), candidate(("currentassets",), ("noncurrent",))],
+    "noncurrent_assets": [candidate(("totalnoncurrentassets",)), candidate(("noncurrentassets",)), candidate(("non", "current", "assets"))],
+    "cash": [candidate(("cashcashequivalentsandshortterminvestments",)), candidate(("cashandcashequivalents",)), candidate(("cashfinancial",)), candidate(("shortterminvestments",))],
+    "receivables": [candidate(("receivables",)), candidate(("accountsreceivable",))],
+    "inventory": [candidate(("inventory",)), candidate(("inventories",))],
+    "prepaid": [candidate(("prepaid",))],
+    "other_current_assets": [candidate(("othercurrentassets",))],
+    "long_term_investments": [candidate(("investmentinfinancialassets",)), candidate(("investmentsandadvances",)), candidate(("longterminvestments",)), candidate(("availableforsalesecurities",))],
+    "ppe": [candidate(("netppe",)), candidate(("propertyplantandequipment",)), candidate(("grossppe",)), candidate(("accumulateddepreciation",))],
+    "intangibles": [candidate(("goodwill",)), candidate(("intangible",))],
+    "deferred_assets": [candidate(("deferredassets",)), candidate(("deferredtaxassets",))],
+    "other_noncurrent_assets": [candidate(("othernoncurrentassets",))],
+    "total_liabilities": [candidate(("totalliabilities",)), candidate(("total", "liabilit"))],
+    "current_liabilities": [candidate(("totalcurrentliabilities",)), candidate(("currentliabilities",), ("noncurrent",))],
+    "noncurrent_liabilities": [candidate(("totalnoncurrentliabilities",)), candidate(("noncurrentliabilities",)), candidate(("longtermliabilities",))],
+    "total_equity": [candidate(("stockholdersequity",)), candidate(("shareholdersequity",)), candidate(("totalequity",)), candidate(("total", "equity"))],
+}
+
+
+def grouped_balance_statement_html(statement: pd.DataFrame) -> str:
+    total_assets = find_statement_series(statement, BALANCE_CANDIDATES["total_assets"])
+    current_assets = find_statement_series(statement, BALANCE_CANDIDATES["current_assets"])
+    noncurrent_assets = find_statement_series(statement, BALANCE_CANDIDATES["noncurrent_assets"])
+    total_liabilities = find_statement_series(statement, BALANCE_CANDIDATES["total_liabilities"])
+    current_liabilities = find_statement_series(statement, BALANCE_CANDIDATES["current_liabilities"])
+    noncurrent_liabilities = find_statement_series(statement, BALANCE_CANDIDATES["noncurrent_liabilities"])
+    total_equity = find_statement_series(statement, BALANCE_CANDIDATES["total_equity"])
+
+    cash_rows = find_statement_rows(statement, BALANCE_CANDIDATES["cash"], {"Cash Cash Equivalents And Short Term Investments"})
+    receivable_rows = find_statement_rows(statement, [candidate(("receivable",), ("total",))], {"Receivables"})
+    inventory_rows = find_statement_rows(statement, BALANCE_CANDIDATES["inventory"], {"Inventory"})
+    prepaid_rows = find_statement_rows(statement, BALANCE_CANDIDATES["prepaid"])
+    other_current_rows = find_statement_rows(statement, BALANCE_CANDIDATES["other_current_assets"])
+    long_investment_rows = find_statement_rows(statement, BALANCE_CANDIDATES["long_term_investments"])
+    ppe_rows = find_statement_rows(statement, BALANCE_CANDIDATES["ppe"], {"Net PPE"})
+    intangible_rows = find_statement_rows(statement, BALANCE_CANDIDATES["intangibles"])
+    deferred_asset_rows = find_statement_rows(statement, BALANCE_CANDIDATES["deferred_assets"])
+    other_noncurrent_rows = find_statement_rows(statement, BALANCE_CANDIDATES["other_noncurrent_assets"])
+
+    current_asset_children = [
+        financial_detail_group(
+            "Cash & Short-term Investments",
+            find_statement_series(statement, [candidate(("cashcashequivalentsandshortterminvestments",))]),
+            rows_html(cash_rows, 2),
+            statement,
+            level=1,
+        ),
+        financial_detail_group("Total Receivables", find_statement_series(statement, BALANCE_CANDIDATES["receivables"]), rows_html(receivable_rows, 2), statement, level=1),
+        financial_detail_group("Inventories", find_statement_series(statement, BALANCE_CANDIDATES["inventory"]), rows_html(inventory_rows, 2), statement, level=1),
+        financial_detail_group("Prepaid Expenses", find_statement_series(statement, BALANCE_CANDIDATES["prepaid"]), rows_html(prepaid_rows, 2), statement, level=1),
+        financial_detail_group("Other Current Assets", find_statement_series(statement, BALANCE_CANDIDATES["other_current_assets"]), rows_html(other_current_rows, 2), statement, level=1),
+    ]
+
+    noncurrent_asset_children = [
+        financial_detail_group("Long-term Investments", find_statement_series(statement, BALANCE_CANDIDATES["long_term_investments"]), rows_html(long_investment_rows, 2), statement, level=1),
+        financial_detail_group("Property, Plant & Equipment", find_statement_series(statement, BALANCE_CANDIDATES["ppe"]), rows_html(ppe_rows, 2), statement, level=1),
+        financial_detail_group("Intangible Assets", find_statement_series(statement, BALANCE_CANDIDATES["intangibles"]), rows_html(intangible_rows, 2), statement, level=1),
+        financial_detail_group("Deferred Assets", find_statement_series(statement, BALANCE_CANDIDATES["deferred_assets"]), rows_html(deferred_asset_rows, 2), statement, level=1),
+        financial_detail_group("Other Non-current Assets", find_statement_series(statement, BALANCE_CANDIDATES["other_noncurrent_assets"]), rows_html(other_noncurrent_rows, 2), statement, level=1),
+    ]
+
+    current_liability_rows = find_statement_rows(
+        statement,
+        [candidate(("current", "liabilit")), candidate(("accountspayable",)), candidate(("currentdebt",)), candidate(("payables",), ("noncurrent",))],
+        {"Current Liabilities"},
+    )
+    noncurrent_liability_rows = find_statement_rows(
+        statement,
+        [candidate(("noncurrent", "liabilit")), candidate(("longterm", "debt")), candidate(("payablesnoncurrent",))],
+        {"Total Non Current Liabilities Net Minority Interest"},
+    )
+    equity_rows = find_statement_rows(statement, [candidate(("equity",)), candidate(("retainedearnings",)), candidate(("commonstock",)), candidate(("treasurystock",))], {"Stockholders Equity"})
+
+    body = [
+        financial_detail_group(
+            "Total Assets",
+            total_assets,
+            [
+                financial_detail_group("Total Current Assets", current_assets, current_asset_children, statement, level=1, open_group=True),
+                financial_detail_group("Total Non-current Assets", noncurrent_assets, noncurrent_asset_children, statement, level=1),
+            ],
+            statement,
+            css_class="financial-grand-total asset-total",
+            open_group=True,
+        ),
+        financial_detail_group(
+            "Total Liabilities",
+            total_liabilities,
+            [
+                financial_detail_group("Total Current Liabilities", current_liabilities, rows_html(current_liability_rows, 2), statement, level=1),
+                financial_detail_group("Total Non-current Liabilities", noncurrent_liabilities, rows_html(noncurrent_liability_rows, 2), statement, level=1),
+            ],
+            statement,
+            css_class="financial-grand-total liability-total",
+        ),
+        financial_detail_group("Total Equity", total_equity, rows_html(equity_rows, 1), statement, css_class="financial-grand-total equity-total"),
+    ]
+    matched_candidates = [item for group in BALANCE_CANDIDATES.values() for item in group]
+    unmatched_rows = unmatched_statement_rows(statement, matched_candidates)
+    if unmatched_rows:
+        body.append(financial_detail_group("Provider-only / Unclassified Items", None, rows_html(unmatched_rows, 1), statement))
+    return (
+        '<div class="financial-grid-wrap">'
+        f'<div class="financial-grid" style="--financial-grid-template: {statement_grid_template(len(statement.columns))};">'
+        f"{financial_grid_header(statement)}{''.join(body)}"
+        "</div></div>"
+    )
+
+
+INCOME_CANDIDATES = {
+    "revenue": [candidate(("totalrevenue",)), candidate(("operatingrevenue",)), candidate(("revenue",), ("deferred", "cost"))],
+    "cost": [candidate(("costofrevenue",)), candidate(("reconciledcostofrevenue",))],
+    "gross_profit": [candidate(("grossprofit",))],
+    "sga": [candidate(("sellinggeneralandadministration",)), candidate(("generalandadministrativeexpense",))],
+    "operating_income": [candidate(("operatingincome",)), candidate(("ebit",))],
+    "pretax_income": [candidate(("pretaxincome",)), candidate(("incomebeforetax",))],
+    "tax": [candidate(("taxprovision",)), candidate(("incometaxexpense",))],
+    "net_income": [candidate(("netincome",), ("comprehensive",)), candidate(("netincomecommonstockholders",))],
+    "oci": [candidate(("othercomprehensiveincome",)), candidate(("comprehensiveincome",), ("net", "tax"))],
+    "comprehensive_income": [candidate(("comprehensiveincomenetoftax",)), candidate(("totalcomprehensiveincome",))],
+}
+
+
+def grouped_income_statement_html(statement: pd.DataFrame) -> str:
+    revenue = find_statement_series(statement, INCOME_CANDIDATES["revenue"])
+    cost = find_statement_series(statement, INCOME_CANDIDATES["cost"])
+    gross_profit = find_statement_series(statement, INCOME_CANDIDATES["gross_profit"])
+    if gross_profit is None:
+        gross_profit = subtract_statement_series(revenue, cost)
+    sga = find_statement_series(statement, INCOME_CANDIDATES["sga"])
+    operating_income = find_statement_series(statement, INCOME_CANDIDATES["operating_income"])
+    if operating_income is None:
+        operating_income = subtract_statement_series(gross_profit, sga)
+    pretax_income = find_statement_series(statement, INCOME_CANDIDATES["pretax_income"])
+    non_operating = subtract_statement_series(pretax_income, operating_income)
+    tax = find_statement_series(statement, INCOME_CANDIDATES["tax"])
+    net_income = find_statement_series(statement, INCOME_CANDIDATES["net_income"])
+    if net_income is None:
+        net_income = subtract_statement_series(pretax_income, tax)
+    oci = find_statement_series(statement, INCOME_CANDIDATES["oci"])
+    comprehensive_income = find_statement_series(statement, INCOME_CANDIDATES["comprehensive_income"])
+    if comprehensive_income is None:
+        comprehensive_income = add_statement_series(net_income, oci)
+
+    sga_detail_groups = [
+        ("Salaries and Benefits", [candidate(("salary",)), candidate(("salaries",)), candidate(("wage",)), candidate(("compensation",)), candidate(("personnel",))]),
+        ("Rent", [candidate(("rent",)), candidate(("lease",))]),
+        ("Depreciation and Amortization", [candidate(("depreciation",)), candidate(("amortization",))]),
+        ("Advertising and Promotion", [candidate(("advertising",)), candidate(("marketing",)), candidate(("promotion",))]),
+        ("Commissions and Fees", [candidate(("commission",)), candidate(("fees",)), candidate(("professional",))]),
+        ("Freight and Delivery", [candidate(("freight",)), candidate(("shipping",)), candidate(("delivery",)), candidate(("transport",))]),
+        ("Research and Development", [candidate(("researchanddevelopment",)), candidate(("research", "development"))]),
+        ("Bad Debt Expense", [candidate(("baddebt",)), candidate(("provisionforcreditlosses",)), candidate(("allowance", "credit"))]),
+        ("Other SG&A", [candidate(("otheroperatingexpenses",)), candidate(("otherganda",)), candidate(("othergeneral",))]),
+    ]
+    sga_children = [
+        financial_detail_group(title, find_statement_series(statement, group_candidates), rows_html(find_statement_rows(statement, group_candidates), 2), statement, level=1)
+        for title, group_candidates in sga_detail_groups
+    ]
+
+    non_operating_rows = find_statement_rows(
+        statement,
+        [
+            candidate(("interestincome",)),
+            candidate(("interestexpense",)),
+            candidate(("otherincomeexpense",)),
+            candidate(("netnonoperatinginterestincomeexpense",)),
+            candidate(("othernonoperatingincomeexpenses",)),
+        ],
+    )
+    oci_rows = find_statement_rows(statement, [candidate(("othercomprehensiveincome",)), candidate(("comprehensiveincome",), ("netincome",))])
+
+    sga_detail_candidates = [item for _, group_candidates in sga_detail_groups for item in group_candidates]
+    non_operating_candidates = [
+        candidate(("interestincome",)),
+        candidate(("interestexpense",)),
+        candidate(("otherincomeexpense",)),
+        candidate(("netnonoperatinginterestincomeexpense",)),
+        candidate(("othernonoperatingincomeexpenses",)),
+    ]
+    oci_candidates = [candidate(("othercomprehensiveincome",)), candidate(("comprehensiveincome",), ("netincome",))]
+    matched_candidates = [item for group in INCOME_CANDIDATES.values() for item in group] + sga_detail_candidates + non_operating_candidates + oci_candidates
+    unmatched_rows = unmatched_statement_rows(statement, matched_candidates)
+
+    body = [
+        financial_grid_row("Revenue", series_or_empty(statement, revenue), "financial-formula-start", 0),
+        financial_grid_row("Less: Cost of Revenue", series_or_empty(statement, cost), "financial-expense-row", 0),
+        financial_grid_row("Gross Profit", series_or_empty(statement, gross_profit), "financial-result-row", 0),
+        financial_detail_group("Less: Selling, General & Administrative Expenses", sga, sga_children, statement, css_class="financial-expense-group", level=0, open_group=True),
+        financial_grid_row("Operating Income", series_or_empty(statement, operating_income), "financial-result-row", 0),
+        financial_detail_group("Add/Less: Non-operating Income and Expenses", non_operating, rows_html(non_operating_rows, 1), statement, level=0),
+        financial_grid_row("Profit Before Tax", series_or_empty(statement, pretax_income), "financial-result-row", 0),
+        financial_grid_row("Less: Income Tax Expense", series_or_empty(statement, tax), "financial-expense-row", 0),
+        financial_grid_row("Net Income", series_or_empty(statement, net_income), "financial-result-row financial-grand-income", 0),
+        financial_detail_group("Add/Less: Other Comprehensive Income", oci, rows_html(oci_rows, 1), statement, level=0),
+        financial_grid_row("Comprehensive Income", series_or_empty(statement, comprehensive_income), "financial-result-row financial-grand-income", 0),
+    ]
+    if unmatched_rows:
+        body.append(financial_detail_group("Provider-only / Unclassified Items", None, rows_html(unmatched_rows, 1), statement))
+
+    return (
+        '<div class="financial-grid-wrap">'
+        f'<div class="financial-grid" style="--financial-grid-template: {statement_grid_template(len(statement.columns))};">'
+        f"{financial_grid_header(statement)}{''.join(body)}"
+        "</div></div>"
+    )
+
+
 RATIO_FIELDS = [
     ("EPS", "eps", "number"),
     ("PER", "per", "number"),
@@ -2969,15 +3342,20 @@ def render_statements(symbol: str):
             if statement.empty:
                 st.info("No statement data was returned for this symbol.")
             else:
-                formatted = format_statement_table(statement, statement_type)
-                st.markdown(
-                    (
-                        '<div class="financial-table-wrap">'
-                        f'{formatted.to_html(classes="financial-table", escape=True, border=0, index=False)}'
-                        "</div>"
-                    ),
-                    unsafe_allow_html=True,
-                )
+                if statement_type == "balance":
+                    st.markdown(grouped_balance_statement_html(statement), unsafe_allow_html=True)
+                elif statement_type == "income":
+                    st.markdown(grouped_income_statement_html(statement), unsafe_allow_html=True)
+                else:
+                    formatted = format_statement_table(statement, statement_type)
+                    st.markdown(
+                        (
+                            '<div class="financial-table-wrap">'
+                            f'{formatted.to_html(classes="financial-table", escape=True, border=0, index=False)}'
+                            "</div>"
+                        ),
+                        unsafe_allow_html=True,
+                    )
     with tabs[3]:
         profile = get_profile(symbol)
         ratios, peer_count = financial_ratio_table(symbol, profile)
@@ -3755,6 +4133,107 @@ def inject_styles():
             width: 100%;
             margin-top: 0.5rem;
         }
+        .financial-grid-wrap {
+            border: 1px solid #d8dee8;
+            border-radius: 8px;
+            overflow-x: auto;
+            width: 100%;
+            margin-top: 0.5rem;
+            background: #ffffff;
+        }
+        .financial-grid {
+            min-width: 920px;
+            width: 100%;
+        }
+        .financial-grid-row {
+            display: grid;
+            grid-template-columns: var(--financial-grid-template);
+            align-items: stretch;
+            min-height: 42px;
+        }
+        .financial-grid-cell {
+            border-bottom: 1px solid #e5e7eb;
+            border-right: 1px solid #e5e7eb;
+            color: #111827;
+            font-size: 0.92rem;
+            font-variant-numeric: tabular-nums;
+            padding: 10px 12px;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .financial-grid-cell:last-child {
+            border-right: 0;
+        }
+        .financial-grid-label {
+            color: #374151;
+            font-weight: 600;
+            text-align: left;
+        }
+        .financial-grid-label.level-1 {
+            padding-left: 28px;
+        }
+        .financial-grid-label.level-2 {
+            padding-left: 48px;
+            font-weight: 500;
+        }
+        .financial-grid-label.muted,
+        .financial-grid-cell.muted {
+            color: #9ca3af;
+            font-style: italic;
+        }
+        .financial-grid-header .financial-grid-cell {
+            background: #f8fafc;
+            color: #6b7280;
+            font-weight: 700;
+        }
+        .financial-detail {
+            margin: 0;
+        }
+        .financial-detail > summary {
+            cursor: pointer;
+            display: block;
+            list-style: none;
+        }
+        .financial-detail > summary::-webkit-details-marker {
+            display: none;
+        }
+        .financial-detail > summary .financial-grid-label::before {
+            color: #64748b;
+            content: "▸";
+            display: inline-block;
+            margin-right: 8px;
+            transition: transform 0.12s ease;
+        }
+        .financial-detail[open] > summary .financial-grid-label::before {
+            transform: rotate(90deg);
+        }
+        .financial-summary-row .financial-grid-cell {
+            background: #fbfdff;
+            font-weight: 700;
+        }
+        .financial-detail-body {
+            margin: 0;
+        }
+        .financial-grand-total > summary .financial-grid-cell,
+        .financial-result-row .financial-grid-cell,
+        .financial-grand-income .financial-grid-cell {
+            background: #eaf2ff;
+            color: #0f172a;
+            font-weight: 850;
+        }
+        .financial-grand-total.asset-total > summary .financial-grid-cell {
+            border-top: 2px solid #2563eb;
+        }
+        .financial-grand-total.liability-total > summary .financial-grid-cell {
+            border-top: 2px solid #dc2626;
+        }
+        .financial-grand-total.equity-total > summary .financial-grid-cell {
+            border-top: 2px solid #16a34a;
+        }
+        .financial-expense-row .financial-grid-cell,
+        .financial-expense-group > summary .financial-grid-cell {
+            background: #fff7ed;
+        }
         .financial-table {
             border-collapse: collapse;
             table-layout: fixed;
@@ -3800,6 +4279,41 @@ def inject_styles():
         }
         .financial-ratio-table {
             min-width: 620px;
+        }
+        @media (prefers-color-scheme: dark) {
+            .financial-grid-wrap,
+            .financial-table-wrap {
+                background: #0f172a;
+                border-color: #334155;
+            }
+            .financial-grid-cell,
+            .financial-table th,
+            .financial-table td {
+                border-color: #334155;
+                color: #e5e7eb;
+            }
+            .financial-grid-label,
+            .financial-table tbody td:first-child {
+                color: #f8fafc;
+            }
+            .financial-grid-header .financial-grid-cell,
+            .financial-table thead th {
+                background: #1e293b;
+                color: #cbd5e1;
+            }
+            .financial-summary-row .financial-grid-cell {
+                background: #111827;
+            }
+            .financial-grand-total > summary .financial-grid-cell,
+            .financial-result-row .financial-grid-cell,
+            .financial-grand-income .financial-grid-cell {
+                background: rgba(37, 99, 235, 0.24);
+                color: #f8fafc;
+            }
+            .financial-expense-row .financial-grid-cell,
+            .financial-expense-group > summary .financial-grid-cell {
+                background: rgba(234, 88, 12, 0.16);
+            }
         }
         .metrics-table-wrap {
             border: 1px solid #e5e7eb;
@@ -3892,6 +4406,9 @@ def inject_styles():
             .financial-table {
                 min-width: 820px;
             }
+            .financial-grid {
+                min-width: 900px;
+            }
             .metrics-table {
                 min-width: 980px;
             }
@@ -3933,6 +4450,7 @@ def inject_styles():
             .macro-table td,
             .financial-table th,
             .financial-table td,
+            .financial-grid-cell,
             .metrics-table th,
             .metrics-table td {
                 padding: 8px 8px;
