@@ -1960,8 +1960,11 @@ def format_money(value, currency=""):
     value = safe_number(value)
     if value is None:
         return "N/A"
+    currency = (currency or "").upper()
+    if currency == "KRW":
+        return f"₩{value:,.0f}"
     prefix = "$" if currency == "USD" else ""
-    suffix = " KRW" if currency == "KRW" else (f" {currency}" if currency not in {"", "USD"} else "")
+    suffix = f" {currency}" if currency not in {"", "USD"} else ""
     return f"{prefix}{value:,.2f}{suffix}".strip()
 
 
@@ -1971,7 +1974,7 @@ def format_portfolio_money(value, currency=""):
         return "N/A"
     currency = currency.upper()
     if currency == "KRW":
-        return f"₩{value:,.0f}"
+        return format_money(value, currency)
     return format_money(value, currency)
 
 
@@ -2298,10 +2301,10 @@ def render_quote_cards(symbols: list[str]):
         quote = get_quote(symbol)
         with cols[index % len(cols)]:
             st.metric(
-                label=f"{symbol} {quote['currency']}",
-                value=format_money(quote["price"]),
+                label=symbol,
+                value=format_money(quote["price"], quote["currency"]),
                 delta=format_pct(quote["change_pct"]),
-                help=f"Previous close: {format_money(quote['previous_close'])}\nExchange: {quote['exchange']}\nUTC: {quote['timestamp_utc']}",
+                help=f"Previous close: {format_money(quote['previous_close'], quote['currency'])}\nExchange: {quote['exchange']}\nUTC: {quote['timestamp_utc']}",
             )
 
 
