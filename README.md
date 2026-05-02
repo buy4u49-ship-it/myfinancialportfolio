@@ -63,6 +63,42 @@ app.py
 
 The app will be available from a public HTTPS URL that works on desktop and mobile.
 
+## Next.js / Vercel version
+
+This repo now also includes a Next.js app for Vercel. It keeps Supabase as the account/portfolio store and keeps the Fly.io worker as the realtime Upbit quote writer.
+
+Local setup:
+
+```powershell
+npm.cmd install
+npm.cmd run dev
+```
+
+Required Vercel environment variables:
+
+```text
+SUPABASE_URL=https://lwtlxlhnxznehomhlhif.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SESSION_SECRET=your-long-random-session-secret
+```
+
+Do not expose `SUPABASE_SERVICE_ROLE_KEY` as a `NEXT_PUBLIC_...` variable. It is used only by Next.js server routes.
+
+The Next.js app currently provides:
+
+- Existing Supabase username/password login using the same PBKDF2 password hash as the Streamlit app.
+- Portfolio loading/saving from `public.app_user_records`.
+- Realtime crypto prices from `public.market_quote_cache`, written by the Fly.io worker.
+- A single portfolio table with inline Buy/Sell actions.
+- Transaction history saved into `record.transactions`.
+
+For Vercel, keep the default settings:
+
+```text
+Build command: npm run build
+Output directory: Next.js default
+```
+
 ### Supabase user storage
 
 The app stores accounts, remember-login tokens, portfolios, and alerts in Supabase when these Streamlit secrets are configured:
@@ -106,6 +142,8 @@ python .\market_price_worker.py
 ### Deploy only the quote worker on Fly.io
 
 This repo includes `Dockerfile`, `requirements-worker.txt`, and `fly.toml` so Fly.io runs only `market_price_worker.py`. Streamlit Community Cloud should still run `app.py`; Fly.io is only for the always-on Upbit WebSocket quote cache.
+
+The Fly.io app is configured with `auto_stop_machines = "off"` and `min_machines_running = 1` so the quote worker keeps running even when there is no web traffic. One `shared-cpu-1x@256MB` Machine is enough for this worker; running two Machines only duplicates the same Upbit quote writes and roughly doubles the compute cost.
 
 Before deploying, create `public.market_quote_cache` by running `supabase_market_quote_cache.sql` in the Supabase SQL Editor.
 
