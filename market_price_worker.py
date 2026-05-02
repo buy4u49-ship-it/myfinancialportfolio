@@ -281,10 +281,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    start_health_server()
     markets = discover_upbit_markets(args.symbols)
     if not markets:
         raise SystemExit("No requested symbols are supported by Upbit KRW markets.")
-    start_health_server()
     asyncio.run(stream_upbit(markets, args.flush_interval, args.reconnect_delay))
 
 
