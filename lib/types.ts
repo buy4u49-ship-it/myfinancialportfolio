@@ -78,6 +78,88 @@ export type PortfolioSummary = {
   currency: string;
 };
 
+export type ChartPoint = {
+  time: string;
+  close: number;
+  volume: number | null;
+};
+
+export type MarketMoverRow = {
+  symbol: string;
+  price: number | null;
+  changePct: number | null;
+  volume: number | null;
+  tradingValue: number | null;
+  currency: string;
+};
+
+export type MarketPageResponse = {
+  market: "crypto" | "us" | "korea";
+  title: string;
+  representative: {
+    symbol: string;
+    name: string;
+    quote: Quote;
+    chart: ChartPoint[];
+  };
+  indices: Quote[];
+  movers: {
+    tradingValue: MarketMoverRow[];
+    volume: MarketMoverRow[];
+    gainers: MarketMoverRow[];
+    losers: MarketMoverRow[];
+  };
+  refreshedAt: string;
+};
+
+export type SymbolDetailResponse = {
+  symbol: string;
+  quote: Quote;
+  chart: ChartPoint[];
+  profile: {
+    name: string;
+    sector: string;
+    industry: string;
+    country: string;
+    website: string;
+    summary: string;
+  };
+  metrics: {
+    avgReturnPct: number | null;
+    volatilityPct: number | null;
+    high: number | null;
+    low: number | null;
+    volume: number | null;
+  };
+  peers: Quote[];
+  statements: {
+    income: FinancialStatement;
+    balance: FinancialStatement;
+    cashflow: FinancialStatement;
+    ratios: FinancialRatioRow[];
+    ratioPeerCount: number;
+    ratioIndustry: string;
+  };
+  refreshedAt: string;
+};
+
+export type FinancialLine = {
+  key: string;
+  label: string;
+  values: Array<number | null>;
+};
+
+export type FinancialStatement = {
+  columns: string[];
+  lines: FinancialLine[];
+};
+
+export type FinancialRatioRow = {
+  metric: string;
+  company: string;
+  industryAverage: string;
+};
+
 export type PortfolioResponse = {
   user: {
     username: string;
