@@ -47,6 +47,7 @@ export async function getUserRecord(username: string) {
   record.username = normalized;
   record.portfolio = Array.isArray(record.portfolio) ? record.portfolio : [];
   record.transactions = Array.isArray(record.transactions) ? record.transactions : [];
+  record.alerts = Array.isArray(record.alerts) ? record.alerts : [];
   return record;
 }
 

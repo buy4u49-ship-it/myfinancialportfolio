@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSessionUsername } from "@/lib/auth";
-import { applyTrade, buildPortfolioResponse } from "@/lib/portfolio";
+import { addPriceAlert, applyTrade, buildPortfolioResponse, deletePriceAlert, togglePriceAlert, updateProfile } from "@/lib/portfolio";
 import { getUserRecord, saveUserRecord } from "@/lib/userStore";
 import type { TradeInput } from "@/lib/types";
 
@@ -21,9 +21,43 @@ async function requireRecord(request: NextRequest) {
 export async function GET(request: NextRequest) {
   try {
     const record = await requireRecord(request);
-    return NextResponse.json(await buildPortfolioResponse(record));
+    const response = await buildPortfolioResponse(record);
+    await saveUserRecord(record.username, record);
+    return NextResponse.json(response);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Portfolio load failed." }, { status: 401 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const record = await requireRecord(request);
+    const body = (await request.json()) as Record<string, unknown>;
+    const action = String(body.action || "");
+
+    if (action === "add_alert") {
+      addPriceAlert(record, {
+        symbol: String(body.symbol || ""),
+        direction: String(body.direction || "above"),
+        targetPrice: Number(body.targetPrice)
+      });
+    } else if (action === "toggle_alert") {
+      togglePriceAlert(record, String(body.alertId || ""));
+    } else if (action === "delete_alert") {
+      deletePriceAlert(record, String(body.alertId || ""));
+    } else if (action === "update_profile") {
+      updateProfile(record, {
+        displayName: String(body.displayName || ""),
+        email: String(body.email || "")
+      });
+    } else {
+      throw new Error("Unsupported portfolio action.");
+    }
+
+    await saveUserRecord(record.username, record);
+    return NextResponse.json(await buildPortfolioResponse(record));
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Portfolio update failed." }, { status: 400 });
   }
 }
 

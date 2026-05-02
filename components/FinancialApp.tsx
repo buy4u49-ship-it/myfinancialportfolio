@@ -5,8 +5,10 @@ import type {
   ChartPoint,
   FinancialLine,
   FinancialStatement,
+  MacroPoint,
   MarketMoverRow,
   MarketPageResponse,
+  PriceAlert,
   PortfolioResponse,
   PortfolioRow,
   PortfolioTransaction,
@@ -17,10 +19,13 @@ import type {
 type User = {
   username: string;
   displayName: string;
+  email?: string;
 };
 
 type PageKey = "coin" | "us" | "korea" | "symbol" | "my";
 type TradeMode = "BUY" | "SELL";
+type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
+type MyTab = "portfolio" | "alerts" | "account";
 
 const PAGES: Array<{ key: PageKey; label: string }> = [
   { key: "coin", label: "Coin Main" },
@@ -32,6 +37,8 @@ const PAGES: Array<{ key: PageKey; label: string }> = [
 
 const moneyFormatters = new Map<string, Intl.NumberFormat>();
 const numberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 });
+const MARKET_CHART_RANGES: ChartRange[] = ["1D", "1W", "1M", "1Y"];
+const SYMBOL_BAR_RANGES: ChartRange[] = ["1W", "1M", "1Y", "YTD"];
 
 function currencyFormatter(currency: string) {
   const key = currency || "USD";
@@ -102,6 +109,12 @@ export default function FinancialApp() {
   const [symbolDetail, setSymbolDetail] = useState<SymbolDetailResponse | null>(null);
   const [symbol, setSymbol] = useState("AAPL");
   const [symbolDraft, setSymbolDraft] = useState("AAPL");
+  const [marketRanges, setMarketRanges] = useState<Record<"coin" | "us" | "korea", ChartRange>>({
+    coin: "1D",
+    us: "1D",
+    korea: "1D"
+  });
+  const [symbolRange, setSymbolRange] = useState<ChartRange>("1M");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -112,6 +125,11 @@ export default function FinancialApp() {
   const [newSymbol, setNewSymbol] = useState("");
   const [newCurrency, setNewCurrency] = useState("KRW");
   const [symbolTab, setSymbolTab] = useState<"overview" | "financials" | "price" | "provider">("overview");
+  const [myTab, setMyTab] = useState<MyTab>("portfolio");
+  const [alertSymbol, setAlertSymbol] = useState("BTC-KRW");
+  const [alertDirection, setAlertDirection] = useState<"above" | "below">("above");
+  const [alertTarget, setAlertTarget] = useState("");
+  const [profileDraft, setProfileDraft] = useState({ displayName: "", email: "" });
   const [credentials, setCredentials] = useState({
     username: "",
     password: "",
@@ -131,15 +149,17 @@ export default function FinancialApp() {
     }
   }
 
-  async function loadMarket(target: PageKey) {
+  async function loadMarket(target: PageKey, range = marketRanges[target as "coin" | "us" | "korea"] || "1D") {
     const market = target === "coin" ? "crypto" : target === "us" ? "us" : "korea";
-    const data = await parseJsonResponse<MarketPageResponse>(await fetch(`/api/market?market=${market}`, { cache: "no-store" }));
+    const data = await parseJsonResponse<MarketPageResponse>(
+      await fetch(`/api/market?market=${market}&range=${range}`, { cache: "no-store" })
+    );
     setMarketData((prev) => ({ ...prev, [target]: data }));
   }
 
-  async function loadSymbol(targetSymbol = symbol) {
+  async function loadSymbol(targetSymbol = symbol, range = symbolRange) {
     const data = await parseJsonResponse<SymbolDetailResponse>(
-      await fetch(`/api/symbol?symbol=${encodeURIComponent(targetSymbol)}`, { cache: "no-store" })
+      await fetch(`/api/symbol?symbol=${encodeURIComponent(targetSymbol)}&range=${range}`, { cache: "no-store" })
     );
     setSymbolDetail(data);
   }
@@ -152,6 +172,7 @@ export default function FinancialApp() {
       const data = await parseJsonResponse<PortfolioResponse>(await fetch("/api/portfolio", { cache: "no-store" }));
       setPortfolio(data);
       setUser(data.user);
+      setProfileDraft({ displayName: data.user.displayName, email: data.user.email || "" });
       setError("");
     } catch (err) {
       if (!silent) {
@@ -169,9 +190,9 @@ export default function FinancialApp() {
     setError("");
     try {
       if (page === "coin" || page === "us" || page === "korea") {
-        await loadMarket(page);
+        await loadMarket(page, marketRanges[page]);
       } else if (page === "symbol") {
-        await loadSymbol();
+        await loadSymbol(symbol, symbolRange);
       } else if (user) {
         await loadPortfolio();
       }
@@ -209,7 +230,7 @@ export default function FinancialApp() {
         loadPortfolio(true);
       }
       if (page === "coin" || page === "us" || page === "korea") {
-        loadMarket(page).catch(() => undefined);
+        loadMarket(page, marketRanges[page]).catch(() => undefined);
       }
     }, 5000);
     return () => window.clearInterval(timer);
@@ -275,6 +296,65 @@ export default function FinancialApp() {
     }
   }
 
+  async function changeMarketRange(target: "coin" | "us" | "korea", range: ChartRange) {
+    setMarketRanges((prev) => ({ ...prev, [target]: range }));
+    setBusy(true);
+    try {
+      await loadMarket(target, range);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Chart range update failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeSymbolRange(range: ChartRange) {
+    setSymbolRange(range);
+    setBusy(true);
+    try {
+      await loadSymbol(symbol, range);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Chart range update failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function patchPortfolio(body: Record<string, unknown>) {
+    setBusy(true);
+    setError("");
+    try {
+      const data = await parseJsonResponse<PortfolioResponse>(
+        await fetch("/api/portfolio", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        })
+      );
+      setPortfolio(data);
+      setUser(data.user);
+      setProfileDraft({ displayName: data.user.displayName, email: data.user.email || "" });
+      return data;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Portfolio update failed.");
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitAlert() {
+    const data = await patchPortfolio({
+      action: "add_alert",
+      symbol: alertSymbol,
+      direction: alertDirection,
+      targetPrice: Number(alertTarget)
+    });
+    if (data) {
+      setAlertTarget("");
+    }
+  }
+
   function openSymbol(target: string) {
     const next = target.trim().toUpperCase();
     if (!next) {
@@ -284,7 +364,7 @@ export default function FinancialApp() {
     setSymbolDraft(next);
     setPage("symbol");
     setBusy(true);
-    loadSymbol(next)
+    loadSymbol(next, symbolRange)
       .catch((err) => setError(err instanceof Error ? err.message : "Symbol load failed."))
       .finally(() => setBusy(false));
   }
@@ -332,45 +412,54 @@ export default function FinancialApp() {
         </div>
       </header>
 
-      <nav className="page-nav">
-        {PAGES.map((item) => (
-          <button
-            key={item.key}
-            className={page === item.key ? "active" : ""}
-            onClick={() => setPage(item.key)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
+      <div className="nav-search-row">
+        <nav className="page-nav">
+          {PAGES.map((item) => (
+            <button
+              key={item.key}
+              className={page === item.key ? "active" : ""}
+              onClick={() => setPage(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
 
-      <div className="symbol-toolbar">
-        <input
-          value={symbolDraft}
-          placeholder="Search symbol, e.g. BTC-KRW, AAPL, 005930.KS"
-          onChange={(event) => setSymbolDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              openSymbol(symbolDraft);
-            }
-          }}
-        />
-        <button className="primary-button" onClick={() => openSymbol(symbolDraft)}>
-          Open Symbol
-        </button>
+        <div className="symbol-toolbar">
+          <input
+            value={symbolDraft}
+            placeholder="Symbol, e.g. BTC-KRW"
+            onChange={(event) => setSymbolDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                openSymbol(symbolDraft);
+              }
+            }}
+          />
+          <button className="primary-button" onClick={() => openSymbol(symbolDraft)}>
+            Search
+          </button>
+        </div>
       </div>
 
       {error ? <div className="alert">{error}</div> : null}
 
       {page === "coin" || page === "us" || page === "korea" ? (
-        <MarketPage data={marketData[page]} onOpenSymbol={openSymbol} />
+        <MarketPage
+          data={marketData[page]}
+          range={marketRanges[page]}
+          onRange={(range) => changeMarketRange(page, range)}
+          onOpenSymbol={openSymbol}
+        />
       ) : null}
 
       {page === "symbol" ? (
         <SymbolDetail
           data={symbolDetail}
           activeTab={symbolTab}
+          range={symbolRange}
           onTab={setSymbolTab}
+          onRange={changeSymbolRange}
           onOpenSymbol={openSymbol}
         />
       ) : null}
@@ -386,12 +475,24 @@ export default function FinancialApp() {
             activeTrade={activeTrade}
             quantity={quantity}
             price={price}
+            activeTab={myTab}
+            alertSymbol={alertSymbol}
+            alertDirection={alertDirection}
+            alertTarget={alertTarget}
+            profileDraft={profileDraft}
             setNewSymbol={setNewSymbol}
             setNewCurrency={setNewCurrency}
             setActiveTrade={setActiveTrade}
             setQuantity={setQuantity}
             setPrice={setPrice}
+            setActiveTab={setMyTab}
+            setAlertSymbol={setAlertSymbol}
+            setAlertDirection={setAlertDirection}
+            setAlertTarget={setAlertTarget}
+            setProfileDraft={setProfileDraft}
             submitTrade={submitTrade}
+            submitAlert={submitAlert}
+            patchPortfolio={patchPortfolio}
           />
         ) : (
           <AuthPanel
@@ -410,9 +511,13 @@ export default function FinancialApp() {
 
 function MarketPage({
   data,
+  range,
+  onRange,
   onOpenSymbol
 }: {
   data?: MarketPageResponse;
+  range: ChartRange;
+  onRange: (range: ChartRange) => void;
   onOpenSymbol: (symbol: string) => void;
 }) {
   if (!data) {
@@ -429,7 +534,8 @@ function MarketPage({
           </div>
           <QuotePill quote={data.representative.quote} />
         </div>
-        <MiniChart points={data.representative.chart} currency={data.representative.quote.currency} />
+        <TimeRangeSelector ranges={MARKET_CHART_RANGES} active={range} onChange={onRange} />
+        <LineChart points={data.representative.chart} currency={data.representative.quote.currency} />
       </section>
 
       <section className="panel">
@@ -450,6 +556,8 @@ function MarketPage({
         </div>
       </section>
 
+      <MacroPanel points={data.macro} />
+
       <section className="market-movers-grid">
         <MoverTable title="Trading Value" rows={data.movers.tradingValue} onOpenSymbol={onOpenSymbol} />
         <MoverTable title="Volume" rows={data.movers.volume} onOpenSymbol={onOpenSymbol} />
@@ -463,12 +571,16 @@ function MarketPage({
 function SymbolDetail({
   data,
   activeTab,
+  range,
   onTab,
+  onRange,
   onOpenSymbol
 }: {
   data: SymbolDetailResponse | null;
   activeTab: "overview" | "financials" | "price" | "provider";
+  range: ChartRange;
   onTab: (tab: "overview" | "financials" | "price" | "provider") => void;
+  onRange: (range: ChartRange) => void;
   onOpenSymbol: (symbol: string) => void;
 }) {
   if (!data) {
@@ -496,7 +608,8 @@ function SymbolDetail({
           </div>
           <QuotePill quote={data.quote} />
         </div>
-        <MiniChart points={data.chart} currency={data.quote.currency} />
+        <TimeRangeSelector label="Bar range" ranges={SYMBOL_BAR_RANGES} active={range} onChange={onRange} />
+        <PriceBarChart points={data.chart} currency={data.quote.currency} />
       </section>
 
       <nav className="subtabs">
@@ -589,12 +702,24 @@ function MyPage({
   activeTrade,
   quantity,
   price,
+  activeTab,
+  alertSymbol,
+  alertDirection,
+  alertTarget,
+  profileDraft,
   setNewSymbol,
   setNewCurrency,
   setActiveTrade,
   setQuantity,
   setPrice,
-  submitTrade
+  setActiveTab,
+  setAlertSymbol,
+  setAlertDirection,
+  setAlertTarget,
+  setProfileDraft,
+  submitTrade,
+  submitAlert,
+  patchPortfolio
 }: {
   user: User;
   portfolio: PortfolioResponse | null;
@@ -604,12 +729,24 @@ function MyPage({
   activeTrade: { symbol: string; mode: TradeMode } | null;
   quantity: string;
   price: string;
+  activeTab: MyTab;
+  alertSymbol: string;
+  alertDirection: "above" | "below";
+  alertTarget: string;
+  profileDraft: { displayName: string; email: string };
   setNewSymbol: (value: string) => void;
   setNewCurrency: (value: string) => void;
   setActiveTrade: (value: { symbol: string; mode: TradeMode } | null) => void;
   setQuantity: (value: string) => void;
   setPrice: (value: string) => void;
+  setActiveTab: (value: MyTab) => void;
+  setAlertSymbol: (value: string) => void;
+  setAlertDirection: (value: "above" | "below") => void;
+  setAlertTarget: (value: string) => void;
+  setProfileDraft: (value: { displayName: string; email: string }) => void;
   submitTrade: (symbol: string, mode: TradeMode, currency: string) => void;
+  submitAlert: () => void;
+  patchPortfolio: (body: Record<string, unknown>) => Promise<PortfolioResponse | null>;
 }) {
   const rows = portfolio?.rows || [];
   const transactions = portfolio?.transactions || [];
@@ -624,22 +761,39 @@ function MyPage({
 
   return (
     <>
-      <section className="summary-grid">
-        <SummaryCard label="Current Value" value={formatMoney(portfolio?.summary.currentValue, summaryCurrency)} />
-        <SummaryCard label="Cost Basis" value={formatMoney(portfolio?.summary.costBasis, summaryCurrency)} />
-        <SummaryCard
-          label="Cumulative Gain/Loss"
-          value={formatMoney(portfolio?.summary.cumulativeGainLoss, summaryCurrency)}
-          tone={signedClass(portfolio?.summary.cumulativeGainLoss)}
-        />
-        <SummaryCard
-          label="Cumulative Return"
-          value={formatPct(portfolio?.summary.cumulativeReturnPct)}
-          tone={signedClass(portfolio?.summary.cumulativeReturnPct)}
-        />
-      </section>
+      <nav className="subtabs my-tabs">
+        {[
+          ["portfolio", "Portfolio"],
+          ["alerts", "Price Alerts"],
+          ["account", "Account"]
+        ].map(([key, label]) => (
+          <button key={key} className={activeTab === key ? "active" : ""} onClick={() => setActiveTab(key as MyTab)}>
+            {label}
+          </button>
+        ))}
+      </nav>
 
-      <section className="panel">
+      {portfolio?.triggeredAlerts.length ? <AlertBanner alerts={portfolio.triggeredAlerts} /> : null}
+
+      {activeTab === "portfolio" ? (
+        <>
+          <PortfolioAnalytics rows={rows} portfolio={portfolio} currency={summaryCurrency} />
+          <section className="summary-grid">
+            <SummaryCard label="Current Value" value={formatMoney(portfolio?.summary.currentValue, summaryCurrency)} />
+            <SummaryCard label="Cost Basis" value={formatMoney(portfolio?.summary.costBasis, summaryCurrency)} />
+            <SummaryCard
+              label="Cumulative Gain/Loss"
+              value={formatMoney(portfolio?.summary.cumulativeGainLoss, summaryCurrency)}
+              tone={signedClass(portfolio?.summary.cumulativeGainLoss)}
+            />
+            <SummaryCard
+              label="Cumulative Return"
+              value={formatPct(portfolio?.summary.cumulativeReturnPct)}
+              tone={signedClass(portfolio?.summary.cumulativeReturnPct)}
+            />
+          </section>
+
+          <section className="panel">
         <div className="panel-heading">
           <div>
             <h2>Current Portfolio</h2>
@@ -677,10 +831,291 @@ function MyPage({
           onCancel={() => setActiveTrade(null)}
           onSubmit={submitTrade}
         />
-      </section>
+          </section>
 
-      <TransactionPanel transactions={transactions} currency={summaryCurrency} />
+          <TransactionPanel transactions={transactions} currency={summaryCurrency} />
+        </>
+      ) : null}
+
+      {activeTab === "alerts" ? (
+        <PriceAlertsPanel
+          alerts={portfolio?.alerts || []}
+          symbol={alertSymbol}
+          direction={alertDirection}
+          target={alertTarget}
+          busy={busy}
+          onSymbol={setAlertSymbol}
+          onDirection={setAlertDirection}
+          onTarget={setAlertTarget}
+          onSubmit={submitAlert}
+          onToggle={(alertId) => patchPortfolio({ action: "toggle_alert", alertId })}
+          onDelete={(alertId) => patchPortfolio({ action: "delete_alert", alertId })}
+        />
+      ) : null}
+
+      {activeTab === "account" ? (
+        <AccountPanel
+          user={user}
+          draft={profileDraft}
+          busy={busy}
+          onDraft={setProfileDraft}
+          onSave={() => patchPortfolio({ action: "update_profile", displayName: profileDraft.displayName, email: profileDraft.email })}
+        />
+      ) : null}
     </>
+  );
+}
+
+function AlertBanner({ alerts }: { alerts: PortfolioResponse["triggeredAlerts"] }) {
+  return (
+    <section className="alert triggered-alerts">
+      {alerts.map((alert) => (
+        <div key={alert.id}>
+          <strong>{alert.symbol}</strong> is {alert.direction === "above" ? "at or above" : "at or below"} {formatMoney(alert.target_price, alert.currency)}.
+          Last price: {formatMoney(alert.price, alert.currency)}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function PortfolioAnalytics({
+  rows,
+  portfolio,
+  currency
+}: {
+  rows: PortfolioRow[];
+  portfolio: PortfolioResponse | null;
+  currency: string;
+}) {
+  const projection = portfolio?.projection;
+  return (
+    <section className="portfolio-analytics">
+      <article className="allocation-panel">
+        <h2>Portfolio Allocation</h2>
+        <AllocationDonut rows={rows} currency={currency} />
+      </article>
+      <article className="portfolio-card-stack">
+        <h2>Portfolio Summary</h2>
+        <MiniMetric label="Current Wealth" value={formatMoney(portfolio?.summary.currentValue, currency)} />
+        <MiniMetric label="Total Investment Value" value={formatMoney(portfolio?.summary.costBasis, currency)} />
+        <MiniMetric
+          label="Total Gain/Loss"
+          value={formatMoney(portfolio?.summary.cumulativeGainLoss, currency)}
+          tone={signedClass(portfolio?.summary.cumulativeGainLoss)}
+        />
+        <MiniMetric
+          label="Total Return"
+          value={formatPct(portfolio?.summary.cumulativeReturnPct)}
+          tone={signedClass(portfolio?.summary.cumulativeReturnPct)}
+        />
+      </article>
+      <article className="portfolio-card-stack">
+        <h2>Portfolio Expected Return</h2>
+        <MiniMetric label="Portfolio Beta (36M)" value={formatNumber(projection?.portfolioBeta, 4)} />
+        <MiniMetric
+          label="Monthly Expected Log Return"
+          value={formatPct(projection?.expectedMonthlyLogReturnPct)}
+          tone={signedClass(projection?.expectedMonthlyLogReturnPct)}
+        />
+        <MiniMetric label="Expected Portfolio Value" value={formatMoney(projection?.expectedPortfolioValue, currency)} />
+        <MiniMetric
+          label="Expected Gain/Loss"
+          value={formatMoney(projection?.expectedGainLoss, currency)}
+          tone={signedClass(projection?.expectedGainLoss)}
+        />
+        {projection?.betaCoveragePct ? <p className="muted">Beta coverage: {projection.betaCoveragePct.toFixed(1)}% of current portfolio value.</p> : null}
+      </article>
+    </section>
+  );
+}
+
+function MiniMetric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="mini-metric">
+      <span>{label}</span>
+      <strong className={tone}>{value}</strong>
+    </div>
+  );
+}
+
+function AllocationDonut({ rows, currency }: { rows: PortfolioRow[]; currency: string }) {
+  const chartRows = rows.filter((row) => (row.marketValue ?? 0) > 0);
+  const total = chartRows.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
+  const colors = ["#0068c9", "#83c9ff", "#ff2b2b", "#ffabab", "#29b09d", "#ff8700", "#6d3fc0", "#00c7b7", "#7f7f7f", "#bcbd22"];
+  let offset = 0;
+  const circumference = 2 * Math.PI * 54;
+
+  if (!chartRows.length || total <= 0) {
+    return <div className="empty-cell">Allocation chart needs at least one position with a current value.</div>;
+  }
+
+  return (
+    <div className="allocation-layout">
+      <svg className="donut-chart" viewBox="0 0 160 160" role="img">
+        <circle cx="80" cy="80" r="54" fill="none" stroke="var(--line)" strokeWidth="28" />
+        {chartRows.map((row, index) => {
+          const value = row.marketValue ?? 0;
+          const dash = (value / total) * circumference;
+          const segment = (
+            <circle
+              key={row.symbol}
+              cx="80"
+              cy="80"
+              r="54"
+              fill="none"
+              stroke={colors[index % colors.length]}
+              strokeWidth="28"
+              strokeDasharray={`${dash} ${circumference - dash}`}
+              strokeDashoffset={-offset}
+              transform="rotate(-90 80 80)"
+            />
+          );
+          offset += dash;
+          return segment;
+        })}
+        <circle cx="80" cy="80" r="34" fill="var(--panel)" />
+      </svg>
+      <div className="allocation-legend">
+        {chartRows.map((row, index) => (
+          <div key={row.symbol} className="allocation-legend-item">
+            <span className="allocation-legend-swatch" style={{ background: colors[index % colors.length] }}></span>
+            <span className="allocation-legend-label">{row.symbol}</span>
+            <span className="allocation-legend-value">{formatMoney(row.marketValue, currency)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PriceAlertsPanel({
+  alerts,
+  symbol,
+  direction,
+  target,
+  busy,
+  onSymbol,
+  onDirection,
+  onTarget,
+  onSubmit,
+  onToggle,
+  onDelete
+}: {
+  alerts: PriceAlert[];
+  symbol: string;
+  direction: "above" | "below";
+  target: string;
+  busy: boolean;
+  onSymbol: (value: string) => void;
+  onDirection: (value: "above" | "below") => void;
+  onTarget: (value: string) => void;
+  onSubmit: () => void;
+  onToggle: (alertId: string) => void;
+  onDelete: (alertId: string) => void;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Price Alerts</h2>
+          <p className="muted">Alerts are checked whenever My Page refreshes.</p>
+        </div>
+        <div className="alert-form">
+          <input placeholder="Symbol" value={symbol} onChange={(event) => onSymbol(event.target.value)} />
+          <select value={direction} onChange={(event) => onDirection(event.target.value === "below" ? "below" : "above")}>
+            <option value="above">At or above</option>
+            <option value="below">At or below</option>
+          </select>
+          <input type="number" min="0" step="any" placeholder="Target price" value={target} onChange={(event) => onTarget(event.target.value)} />
+          <button className="primary-button" disabled={busy || !symbol || !target} onClick={onSubmit}>
+            Add alert
+          </button>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th className="text-cell">Symbol</th>
+              <th className="text-cell">Condition</th>
+              <th className="number-cell">Target</th>
+              <th className="number-cell">Last Price</th>
+              <th className="text-cell">Active</th>
+              <th className="text-cell">Triggered At</th>
+              <th className="action-cell">Manage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {alerts.map((alert) => (
+              <tr key={alert.id}>
+                <td className="text-cell strong">{alert.symbol}</td>
+                <td className="text-cell">{alert.direction === "above" ? "At or above" : "At or below"}</td>
+                <td className="number-cell">{formatMoney(alert.target_price, alert.currency || "KRW")}</td>
+                <td className="number-cell">{formatMoney(alert.last_price, alert.currency || "KRW")}</td>
+                <td className="text-cell">{alert.active ? "Yes" : "No"}</td>
+                <td className="text-cell">{alert.last_triggered_at ? new Date(alert.last_triggered_at).toLocaleString() : ""}</td>
+                <td className="action-cell">
+                  <div className="trade-buttons">
+                    <button className="mini-ghost" onClick={() => onToggle(alert.id)}>
+                      Enable / Disable
+                    </button>
+                    <button className="sell-button" onClick={() => onDelete(alert.id)}>
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {!alerts.length ? (
+              <tr>
+                <td className="empty-cell" colSpan={7}>
+                  No price alerts yet.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function AccountPanel({
+  user,
+  draft,
+  busy,
+  onDraft,
+  onSave
+}: {
+  user: User;
+  draft: { displayName: string; email: string };
+  busy: boolean;
+  onDraft: (value: { displayName: string; email: string }) => void;
+  onSave: () => void;
+}) {
+  return (
+    <section className="panel account-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Account</h2>
+          <p className="muted">Signed in as {user.username}.</p>
+        </div>
+      </div>
+      <div className="account-form">
+        <label>
+          Display name
+          <input value={draft.displayName} onChange={(event) => onDraft({ ...draft, displayName: event.target.value })} />
+        </label>
+        <label>
+          Email
+          <input type="email" value={draft.email} onChange={(event) => onDraft({ ...draft, email: event.target.value })} />
+        </label>
+        <button className="primary-button" disabled={busy} onClick={onSave}>
+          Save account
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -877,38 +1312,270 @@ function QuotePill({ quote }: { quote: Quote }) {
   );
 }
 
-function MiniChart({ points, currency }: { points: ChartPoint[]; currency: string }) {
-  const width = 900;
-  const height = 280;
-  const values = points.map((point) => point.close).filter(Number.isFinite);
-  const min = values.length ? Math.min(...values) : 0;
-  const max = values.length ? Math.max(...values) : 1;
+function TimeRangeSelector({
+  label = "Time range",
+  ranges,
+  active,
+  onChange
+}: {
+  label?: string;
+  ranges: ChartRange[];
+  active: ChartRange;
+  onChange: (range: ChartRange) => void;
+}) {
+  return (
+    <div className="range-control">
+      <span>{label}</span>
+      <div>
+        {ranges.map((range) => (
+          <button key={range} className={active === range ? "active" : ""} onClick={() => onChange(range)}>
+            {range}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function chartStats(points: ChartPoint[]) {
+  const values = points.flatMap((point) => [point.low ?? point.close, point.high ?? point.close, point.close]).filter(Number.isFinite);
+  const minRaw = values.length ? Math.min(...values) : 0;
+  const maxRaw = values.length ? Math.max(...values) : 1;
+  const padding = Math.max((maxRaw - minRaw) * 0.08, Math.abs(maxRaw || 1) * 0.002);
+  const min = minRaw - padding;
+  const max = maxRaw + padding;
   const span = max - min || 1;
+  const ticks = Array.from({ length: 6 }, (_, index) => max - (span / 5) * index);
+  return { min, max, span, ticks };
+}
+
+function chartXLabel(point: ChartPoint, index: number, total: number) {
+  const date = new Date(point.time);
+  if (!Number.isFinite(date.getTime())) {
+    return "";
+  }
+  if (total > 80) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  if (total > 35) {
+    return date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
+  }
+  return index % 2 === 0
+    ? date.toLocaleDateString([], { month: "2-digit", day: "2-digit" })
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function LineChart({ points, currency }: { points: ChartPoint[]; currency: string }) {
+  const width = 920;
+  const height = 340;
+  const margin = { top: 26, right: 28, bottom: 54, left: 84 };
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+  const { min, span, ticks } = chartStats(points);
+  const xFor = (index: number) => margin.left + (index / Math.max(points.length - 1, 1)) * innerWidth;
+  const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
   const path = points
-    .map((point, index) => {
-      const x = (index / Math.max(points.length - 1, 1)) * width;
-      const y = height - ((point.close - min) / span) * (height - 20) - 10;
-      return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
-    })
+    .map((point, index) => `${index === 0 ? "M" : "L"}${xFor(index).toFixed(2)},${yFor(point.close).toFixed(2)}`)
     .join(" ");
+  const xTicks = points.filter((_, index) => index % Math.max(1, Math.floor(points.length / 8)) === 0).slice(0, 9);
 
   return (
-    <div className="chart-shell">
+    <div className="chart-shell full-chart">
       {points.length ? (
         <>
           <svg viewBox={`0 0 ${width} ${height}`} role="img">
-            <path d={path} fill="none" stroke="#2563eb" strokeWidth="4" vectorEffect="non-scaling-stroke" />
-            <line x1="0" x2={width} y1={height - 1} y2={height - 1} stroke="#e5e7eb" />
+            {ticks.map((tick) => (
+              <g key={tick}>
+                <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
+                <text x={margin.left - 10} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
+                  {currency === "KRW" ? Math.round(tick).toLocaleString("en-US") : tick.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                </text>
+              </g>
+            ))}
+            {xTicks.map((point, tickIndex) => {
+              const index = points.indexOf(point);
+              return (
+                <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={height - 18} className="chart-axis-label" textAnchor="middle">
+                  {chartXLabel(point, index, points.length)}
+                </text>
+              );
+            })}
+            <text x={22} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 22 ${margin.top + innerHeight / 2})`}>
+              Close
+            </text>
+            <text x={margin.left + innerWidth / 2} y={height - 2} className="chart-axis-title" textAnchor="middle">
+              Time
+            </text>
+            <path d={path} fill="none" stroke="#2563eb" strokeWidth="3" vectorEffect="non-scaling-stroke" />
           </svg>
-          <div className="chart-scale">
-            <span>{formatMoney(max, currency)}</span>
-            <span>{formatMoney(min, currency)}</span>
+          <div className="chart-legend">
+            <span className="legend-line"></span>
+            Close
           </div>
         </>
       ) : (
         <div className="empty-cell">Chart data is unavailable.</div>
       )}
     </div>
+  );
+}
+
+function PriceBarChart({ points, currency }: { points: ChartPoint[]; currency: string }) {
+  const width = 920;
+  const height = 340;
+  const margin = { top: 26, right: 28, bottom: 54, left: 84 };
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+  const { min, span, ticks } = chartStats(points);
+  const xFor = (index: number) => margin.left + (index / Math.max(points.length - 1, 1)) * innerWidth;
+  const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
+  const barWidth = Math.max(3, Math.min(13, innerWidth / Math.max(points.length, 1) * 0.62));
+  const xTicks = points.filter((_, index) => index % Math.max(1, Math.floor(points.length / 8)) === 0).slice(0, 9);
+
+  return (
+    <div className="chart-shell full-chart">
+      {points.length ? (
+        <>
+          <svg viewBox={`0 0 ${width} ${height}`} role="img">
+            {ticks.map((tick) => (
+              <g key={tick}>
+                <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
+                <text x={margin.left - 10} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
+                  {currency === "KRW" ? Math.round(tick).toLocaleString("en-US") : tick.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                </text>
+              </g>
+            ))}
+            {points.map((point, index) => {
+              const open = point.open ?? point.close;
+              const high = point.high ?? Math.max(open, point.close);
+              const low = point.low ?? Math.min(open, point.close);
+              const rising = point.close >= open;
+              const top = yFor(Math.max(open, point.close));
+              const bottom = yFor(Math.min(open, point.close));
+              const x = xFor(index);
+              return (
+                <g key={point.time}>
+                  <line x1={x} x2={x} y1={yFor(high)} y2={yFor(low)} stroke={rising ? "#16a34a" : "#dc2626"} strokeWidth="1.4" />
+                  <rect
+                    x={x - barWidth / 2}
+                    y={top}
+                    width={barWidth}
+                    height={Math.max(1, bottom - top)}
+                    fill={rising ? "#16a34a" : "#dc2626"}
+                    rx="1"
+                  />
+                </g>
+              );
+            })}
+            {xTicks.map((point, tickIndex) => {
+              const index = points.indexOf(point);
+              return (
+                <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={height - 18} className="chart-axis-label" textAnchor="middle">
+                  {chartXLabel(point, index, points.length)}
+                </text>
+              );
+            })}
+            <text x={22} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 22 ${margin.top + innerHeight / 2})`}>
+              Price
+            </text>
+            <text x={margin.left + innerWidth / 2} y={height - 2} className="chart-axis-title" textAnchor="middle">
+              Time
+            </text>
+          </svg>
+          <div className="chart-legend">
+            <span className="legend-box positive-box"></span>
+            Up
+            <span className="legend-box negative-box"></span>
+            Down
+          </div>
+        </>
+      ) : (
+        <div className="empty-cell">Chart data is unavailable.</div>
+      )}
+    </div>
+  );
+}
+
+function MacroPanel({ points }: { points: MacroPoint[] }) {
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Rates and M2</h2>
+          <p className="muted">Policy rates and M2 liquidity over the recent five-year window.</p>
+        </div>
+      </div>
+      <div className="macro-chart-grid">
+        <MacroLineChart points={points} field="policyRatePct" title="Policy Rate (%)" valueSuffix="%" />
+        <MacroLineChart points={points} field="m2" title="M2 Liquidity" valueSuffix="" compact />
+      </div>
+    </section>
+  );
+}
+
+function MacroLineChart({
+  points,
+  field,
+  title,
+  valueSuffix,
+  compact = false
+}: {
+  points: MacroPoint[];
+  field: "policyRatePct" | "m2";
+  title: string;
+  valueSuffix: string;
+  compact?: boolean;
+}) {
+  const countries = Array.from(new Set(points.map((point) => point.country)));
+  const colors = ["#2563eb", "#dc2626", "#16a34a", "#f59e0b", "#7c3aed"];
+  const width = 520;
+  const height = 250;
+  const margin = { top: 18, right: 18, bottom: 42, left: 64 };
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+  const values = points.map((point) => point[field]).filter((value): value is number => value !== null && Number.isFinite(value));
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 1;
+  const span = max - min || 1;
+  const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
+  const years = Array.from(new Set(points.map((point) => point.date.slice(0, 4))));
+  const xForYear = (year: string) => margin.left + (years.indexOf(year) / Math.max(years.length - 1, 1)) * innerWidth;
+  const ticks = Array.from({ length: 5 }, (_, index) => max - (span / 4) * index);
+
+  return (
+    <article className="macro-card">
+      <h3>{title}</h3>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
+            <text x={margin.left - 8} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
+              {compact ? formatCompact(tick) : `${tick.toFixed(1)}${valueSuffix}`}
+            </text>
+          </g>
+        ))}
+        {years.map((year) => (
+          <text key={year} x={xForYear(year)} y={height - 14} className="chart-axis-label" textAnchor="middle">
+            {year}
+          </text>
+        ))}
+        {countries.map((country, countryIndex) => {
+          const countryPoints = points.filter((point) => point.country === country && point[field] !== null);
+          const path = countryPoints
+            .map((point, index) => `${index === 0 ? "M" : "L"}${xForYear(point.date.slice(0, 4)).toFixed(2)},${yFor(point[field] || 0).toFixed(2)}`)
+            .join(" ");
+          return <path key={country} d={path} fill="none" stroke={colors[countryIndex % colors.length]} strokeWidth="2.4" vectorEffect="non-scaling-stroke" />;
+        })}
+      </svg>
+      <div className="macro-legend">
+        {countries.map((country, index) => (
+          <span key={country}>
+            <i style={{ background: colors[index % colors.length] }}></i>
+            {country}
+          </span>
+        ))}
+      </div>
+    </article>
   );
 }
 

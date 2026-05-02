@@ -11,8 +11,9 @@ export type UserRecord = {
   password_hash?: string;
   portfolio?: Position[];
   transactions?: PortfolioTransaction[];
-  alerts?: unknown[];
+  alerts?: PriceAlert[];
   remember_tokens?: unknown[];
+  portfolio_calculation?: unknown;
 };
 
 export type Position = {
@@ -31,6 +32,8 @@ export type Quote = {
   price: number | null;
   previousClose: number | null;
   changePct: number | null;
+  volume?: number | null;
+  tradingValue?: number | null;
   currency: string;
   exchange: string;
   source: string;
@@ -80,8 +83,18 @@ export type PortfolioSummary = {
 
 export type ChartPoint = {
   time: string;
+  open?: number | null;
+  high?: number | null;
+  low?: number | null;
   close: number;
   volume: number | null;
+};
+
+export type MacroPoint = {
+  date: string;
+  country: "United States" | "Korea" | "Europe" | "Japan" | "China";
+  policyRatePct: number | null;
+  m2: number | null;
 };
 
 export type MarketMoverRow = {
@@ -103,6 +116,7 @@ export type MarketPageResponse = {
     chart: ChartPoint[];
   };
   indices: Quote[];
+  macro: MacroPoint[];
   movers: {
     tradingValue: MarketMoverRow[];
     volume: MarketMoverRow[];
@@ -160,14 +174,49 @@ export type FinancialRatioRow = {
   industryAverage: string;
 };
 
+export type PortfolioProjection = {
+  portfolioBeta: number | null;
+  betaCoveragePct: number | null;
+  expectedMonthlyLogReturnPct: number | null;
+  expectedPortfolioValue: number | null;
+  expectedGainLoss: number | null;
+  calculatedAt: string;
+};
+
+export type PriceAlert = {
+  id: string;
+  symbol: string;
+  direction: "above" | "below";
+  target_price: number;
+  active: boolean;
+  created_at: string;
+  last_checked_at?: string;
+  last_triggered_at?: string;
+  last_price?: number | null;
+  currency?: string;
+};
+
+export type TriggeredAlert = {
+  id: string;
+  symbol: string;
+  direction: "above" | "below";
+  target_price: number;
+  price: number;
+  currency: string;
+};
+
 export type PortfolioResponse = {
   user: {
     username: string;
     displayName: string;
+    email: string;
   };
   rows: PortfolioRow[];
   transactions: PortfolioTransaction[];
+  alerts: PriceAlert[];
+  triggeredAlerts: TriggeredAlert[];
   summary: PortfolioSummary;
+  projection: PortfolioProjection;
   refreshedAt: string;
 };
 

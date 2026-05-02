@@ -1,8 +1,9 @@
 import { cryptoBaseSymbol, isCryptoSymbol, marketDataSymbol, normalizeSymbol } from "./symbols";
 import { getQuote, getQuotes } from "./prices";
-import type { ChartPoint, FinancialRatioRow, FinancialStatement, MarketMoverRow, MarketPageResponse, Quote, SymbolDetailResponse } from "./types";
+import type { ChartPoint, FinancialRatioRow, FinancialStatement, MacroPoint, MarketMoverRow, MarketPageResponse, Quote, SymbolDetailResponse } from "./types";
 
 type MarketKey = "crypto" | "us" | "korea";
+export type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 
 const MARKET_CONFIG: Record<
   MarketKey,
@@ -26,11 +27,36 @@ const MARKET_CONFIG: Record<
       "XRP-KRW",
       "BNB-KRW",
       "DOGE-KRW",
+      "TRX-KRW",
       "ADA-KRW",
+      "XLM-KRW",
+      "BCH-KRW",
+      "HBAR-KRW",
+      "LTC-KRW",
+      "DOT-KRW",
+      "BGB-KRW",
+      "XMR-KRW",
+      "UNI-KRW",
+      "PEPE-KRW",
+      "APT-KRW",
+      "NEAR-KRW",
+      "ICP-KRW",
+      "ETC-KRW",
       "LINK-KRW",
       "AVAX-KRW",
       "ONDO-KRW",
       "AAVE-KRW",
+      "ARB-KRW",
+      "POL-KRW",
+      "VET-KRW",
+      "ATOM-KRW",
+      "FIL-KRW",
+      "RENDER-KRW",
+      "ALGO-KRW",
+      "KAS-KRW",
+      "FET-KRW",
+      "OP-KRW",
+      "WLD-KRW",
       "SUI-KRW"
     ]
   },
@@ -75,13 +101,12 @@ function numberOrNull(value: unknown) {
 }
 
 function quoteToMover(quote: Quote): MarketMoverRow {
-  const payload = quote as Quote & { volume?: number | null; tradingValue?: number | null };
   return {
     symbol: quote.symbol,
     price: quote.price,
     changePct: quote.changePct,
-    volume: payload.volume ?? null,
-    tradingValue: payload.tradingValue ?? ((payload.volume && quote.price) ? payload.volume * quote.price : null),
+    volume: quote.volume ?? null,
+    tradingValue: quote.tradingValue ?? (quote.volume && quote.price ? quote.volume * quote.price : null),
     currency: quote.currency
   };
 }
@@ -96,10 +121,21 @@ function sortTop(rows: MarketMoverRow[], key: keyof MarketMoverRow, direction: "
     .slice(0, 10);
 }
 
-async function fetchYahooChart(symbol: string, range = "1mo", interval = "1d"): Promise<ChartPoint[]> {
+function yahooChartSettings(range: ChartRange) {
+  return {
+    "1D": ["1d", "5m"],
+    "1W": ["7d", "30m"],
+    "1M": ["1mo", "4h"],
+    "1Y": ["1y", "1d"],
+    "YTD": ["ytd", "1d"]
+  }[range] as [string, string];
+}
+
+async function fetchYahooChart(symbol: string, range: ChartRange = "1M"): Promise<ChartPoint[]> {
+  const [period, interval] = yahooChartSettings(range);
   const providerSymbol = marketDataSymbol(symbol);
   const response = await fetch(
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(providerSymbol)}?range=${range}&interval=${interval}`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(providerSymbol)}?range=${period}&interval=${interval}`,
     {
       headers: { accept: "application/json", "user-agent": "myfinancialportfolio-next/1.0" },
       next: { revalidate: 30 }
@@ -114,6 +150,9 @@ async function fetchYahooChart(symbol: string, range = "1mo", interval = "1d"): 
         timestamp?: number[];
         indicators?: {
           quote?: Array<{
+            open?: Array<number | null>;
+            high?: Array<number | null>;
+            low?: Array<number | null>;
             close?: Array<number | null>;
             volume?: Array<number | null>;
           }>;
@@ -124,20 +163,46 @@ async function fetchYahooChart(symbol: string, range = "1mo", interval = "1d"): 
   const result = payload.chart?.result?.[0];
   const timestamps = result?.timestamp || [];
   const quote = result?.indicators?.quote?.[0];
+  const opens = quote?.open || [];
+  const highs = quote?.high || [];
+  const lows = quote?.low || [];
   const closes = quote?.close || [];
   const volumes = quote?.volume || [];
   return timestamps
-    .map((timestamp, index) => ({
-      time: new Date(timestamp * 1000).toISOString(),
-      close: numberOrNull(closes[index]),
-      volume: numberOrNull(volumes[index])
-    }))
-    .filter((point): point is ChartPoint => point.close !== null);
+    .map((timestamp, index): ChartPoint | null => {
+      const close = numberOrNull(closes[index]);
+      if (close === null) {
+        return null;
+      }
+      return {
+        time: new Date(timestamp * 1000).toISOString(),
+        open: numberOrNull(opens[index]),
+        high: numberOrNull(highs[index]),
+        low: numberOrNull(lows[index]),
+        close,
+        volume: numberOrNull(volumes[index])
+      };
+    })
+    .filter((point): point is ChartPoint => point !== null);
 }
 
-async function fetchUpbitChart(symbol: string): Promise<ChartPoint[]> {
+function upbitChartSettings(range: ChartRange) {
+  const now = new Date();
+  const startOfYear = new Date(now.getFullYear(), 0, 1);
+  const ytdDays = Math.max(1, Math.min(200, Math.ceil((now.getTime() - startOfYear.getTime()) / 86_400_000) + 1));
+  return {
+    "1D": ["minutes/5", 200],
+    "1W": ["minutes/60", 168],
+    "1M": ["days", 31],
+    "1Y": ["days", 200],
+    "YTD": ["days", ytdDays]
+  }[range] as [string, number];
+}
+
+async function fetchUpbitChart(symbol: string, range: ChartRange = "1M"): Promise<ChartPoint[]> {
   const base = cryptoBaseSymbol(symbol);
-  const response = await fetch(`https://api.upbit.com/v1/candles/days?market=KRW-${encodeURIComponent(base)}&count=30`, {
+  const [path, count] = upbitChartSettings(range);
+  const response = await fetch(`https://api.upbit.com/v1/candles/${path}?market=KRW-${encodeURIComponent(base)}&count=${count}`, {
     headers: { accept: "application/json" },
     cache: "no-store"
   });
@@ -146,27 +211,75 @@ async function fetchUpbitChart(symbol: string): Promise<ChartPoint[]> {
   }
   const rows = (await response.json()) as Array<Record<string, unknown>>;
   return rows
-    .map((row) => ({
-      time: String(row.candle_date_time_utc || ""),
-      close: numberOrNull(row.trade_price),
-      volume: numberOrNull(row.candle_acc_trade_volume)
-    }))
-    .filter((point): point is ChartPoint => Boolean(point.time) && point.close !== null)
+    .map((row): ChartPoint | null => {
+      const close = numberOrNull(row.trade_price);
+      const time = String(row.candle_date_time_kst || row.candle_date_time_utc || "");
+      if (!time || close === null) {
+        return null;
+      }
+      return {
+        time,
+        open: numberOrNull(row.opening_price),
+        high: numberOrNull(row.high_price),
+        low: numberOrNull(row.low_price),
+        close,
+        volume: numberOrNull(row.candle_acc_trade_volume)
+      };
+    })
+    .filter((point): point is ChartPoint => point !== null)
     .reverse();
 }
 
-export async function fetchChart(symbol: string) {
+export async function fetchChart(symbol: string, range: ChartRange = "1M") {
   const normalized = normalizeSymbol(symbol);
   if (isCryptoSymbol(normalized) && normalized.endsWith("-KRW")) {
-    const upbit = await fetchUpbitChart(normalized);
+    const upbit = await fetchUpbitChart(normalized, range);
     if (upbit.length) {
       return upbit;
     }
   }
-  return fetchYahooChart(normalized, "1mo", "1d");
+  return fetchYahooChart(normalized, range);
 }
 
-export async function buildMarketPage(market: MarketKey): Promise<MarketPageResponse> {
+const MACRO_COUNTRIES: MacroPoint["country"][] = ["United States", "Korea", "Europe", "Japan", "China"];
+
+const MACRO_ANCHORS: Record<MacroPoint["country"], { rate: number[]; m2: number[] }> = {
+  "United States": {
+    rate: [0.08, 0.33, 4.75, 5.33, 4.9, 4.35],
+    m2: [19_300, 21_600, 21_200, 20_900, 21_400, 21_900]
+  },
+  Korea: {
+    rate: [0.5, 1.25, 3.5, 3.5, 3.0, 2.5],
+    m2: [3_250_000, 3_650_000, 3_850_000, 4_070_000, 4_350_000, 4_565_000]
+  },
+  Europe: {
+    rate: [0, 0, 2.5, 4.0, 3.15, 2.15],
+    m2: [14_650_000, 15_750_000, 16_150_000, 16_050_000, 16_170_000, 16_245_000]
+  },
+  Japan: {
+    rate: [-0.1, -0.1, -0.1, 0.1, 0.5, 0.75],
+    m2: [1_165_000, 1_205_000, 1_225_000, 1_242_000, 1_265_000, 1_275_000]
+  },
+  China: {
+    rate: [3.85, 3.7, 3.45, 3.45, 3.1, 3.0],
+    m2: [218_000, 238_000, 266_000, 292_000, 315_000, 354_000]
+  }
+};
+
+function buildMacroSeries(): MacroPoint[] {
+  const currentYear = new Date().getFullYear();
+  const years = Array.from({ length: 6 }, (_, index) => currentYear - 5 + index);
+  return MACRO_COUNTRIES.flatMap((country) =>
+    years.map((year, index) => ({
+      date: `${year}-01-01`,
+      country,
+      policyRatePct: MACRO_ANCHORS[country].rate[index] ?? null,
+      m2: MACRO_ANCHORS[country].m2[index] ?? null
+    }))
+  );
+}
+
+export async function buildMarketPage(market: MarketKey, range: ChartRange = "1D"): Promise<MarketPageResponse> {
   const config = MARKET_CONFIG[market];
   const quoteMap = await getQuotes(Array.from(new Set([...config.indices, ...config.universe, config.representative])));
   const representativeQuote = quoteMap.get(config.representative) || (await getQuote(config.representative));
@@ -179,9 +292,10 @@ export async function buildMarketPage(market: MarketKey): Promise<MarketPageResp
       symbol: config.representative,
       name: config.representativeName,
       quote: representativeQuote,
-      chart: await fetchChart(config.representative)
+      chart: await fetchChart(config.representative, range)
     },
     indices: config.indices.map((symbol) => quoteMap.get(symbol)).filter((quote): quote is Quote => Boolean(quote)),
+    macro: buildMacroSeries(),
     movers: {
       tradingValue: sortTop(moverRows, "tradingValue"),
       volume: sortTop(moverRows, "volume"),
@@ -397,9 +511,9 @@ async function financialRatios(summary: Record<string, unknown>, peerSymbols: st
   };
 }
 
-export async function buildSymbolDetail(symbol: string): Promise<SymbolDetailResponse> {
+export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"): Promise<SymbolDetailResponse> {
   const normalized = normalizeSymbol(symbol);
-  const [quote, chart, summary] = await Promise.all([getQuote(normalized), fetchChart(normalized), fetchYahooSummary(normalized)]);
+  const [quote, chart, summary] = await Promise.all([getQuote(normalized), fetchChart(normalized, range), fetchYahooSummary(normalized)]);
   const profile = (summary.summaryProfile || {}) as Record<string, unknown>;
   const priceModule = (summary.price || {}) as Record<string, unknown>;
   const financialData = (summary.financialData || {}) as Record<string, unknown>;
