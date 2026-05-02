@@ -4,10 +4,12 @@ import argparse
 import asyncio
 import json
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import websockets
@@ -60,6 +62,37 @@ ignore_dead_local_proxy()
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path not in {"/", "/healthz"}:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def start_health_server() -> None:
+    port_text = os.environ.get("PORT", "8080")
+    try:
+        port = int(port_text)
+    except ValueError:
+        port = 8080
+
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"{utc_now_iso()} health server listening on :{port}", flush=True)
 
 
 def read_streamlit_secrets() -> dict[str, object]:
@@ -251,6 +284,7 @@ def main() -> None:
     markets = discover_upbit_markets(args.symbols)
     if not markets:
         raise SystemExit("No requested symbols are supported by Upbit KRW markets.")
+    start_health_server()
     asyncio.run(stream_upbit(markets, args.flush_interval, args.reconnect_delay))
 
 
