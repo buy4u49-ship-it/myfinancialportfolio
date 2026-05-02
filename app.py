@@ -277,8 +277,10 @@ PAGE_OPTIONS = ["Coin Main", "US Stock Main", "Korea Stock Main", "Symbol Detail
 
 APP_DATA_DIR = Path(os.environ.get("PORTFOLIO_USER_DATA_DIR", "user_data"))
 USER_STORE_PATH = APP_DATA_DIR / "users.json"
+FINANCIAL_CACHE_PATH = APP_DATA_DIR / "financial_cache.json"
 SUPABASE_USER_TABLE = "app_user_records"
 SUPABASE_MARKET_QUOTE_TABLE = "market_quote_cache"
+SUPABASE_FINANCIAL_CACHE_TABLE = "financial_statement_cache"
 MARKET_QUOTE_CACHE_MAX_AGE_SECONDS = 60
 PASSWORD_HASH_ITERATIONS = 200_000
 REMEMBER_COOKIE_NAME = "portfolio_remember_token"
@@ -1790,6 +1792,161 @@ def get_statement(symbol: str, statement_type: str) -> pd.DataFrame:
     table = table.copy()
     table.columns = [pd.Timestamp(col).strftime("%Y-%m-%d") for col in table.columns]
     return table
+
+
+def financial_cache_date() -> str:
+    kst = timezone(timedelta(hours=9))
+    return datetime.now(kst).date().isoformat()
+
+
+def dataframe_to_cache_payload(frame: pd.DataFrame) -> dict[str, object]:
+    if frame.empty:
+        return {"index": [], "columns": [], "data": []}
+
+    def normalize_cell(value: object) -> object:
+        if pd.isna(value):
+            return None
+        number = safe_number(value)
+        if number is not None:
+            return number
+        if isinstance(value, (str, bool)):
+            return value
+        return str(value)
+
+    normalized = frame.copy()
+    normalized.index = [str(index) for index in normalized.index]
+    normalized.columns = [str(column) for column in normalized.columns]
+    rows = []
+    for _, row in normalized.iterrows():
+        rows.append([normalize_cell(value) for value in row.tolist()])
+    return {
+        "index": normalized.index.tolist(),
+        "columns": normalized.columns.tolist(),
+        "data": rows,
+    }
+
+
+def dataframe_from_cache_payload(payload: object) -> pd.DataFrame:
+    if not isinstance(payload, dict):
+        return pd.DataFrame()
+    columns = payload.get("columns")
+    index = payload.get("index")
+    data = payload.get("data")
+    if not isinstance(columns, list) or not isinstance(index, list) or not isinstance(data, list):
+        return pd.DataFrame()
+    frame = pd.DataFrame(data, index=[str(item) for item in index], columns=[str(item) for item in columns])
+    for column in frame.columns:
+        converted = pd.to_numeric(frame[column], errors="coerce")
+        if converted.notna().any():
+            frame[column] = converted
+    return frame
+
+
+def load_local_financial_cache() -> dict[str, object]:
+    if not FINANCIAL_CACHE_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(FINANCIAL_CACHE_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_local_financial_cache(cache: dict[str, object]) -> None:
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    FINANCIAL_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def financial_cache_key(symbol: str) -> str:
+    return market_data_symbol(symbol).upper()
+
+
+def load_cached_financial_payload(symbol: str) -> dict[str, object] | None:
+    cache_key = financial_cache_key(symbol)
+    today = financial_cache_date()
+    if supabase_is_configured():
+        symbol_filter = urllib.parse.quote(cache_key, safe="")
+        path = f"{SUPABASE_FINANCIAL_CACHE_TABLE}?select=symbol,cache_date,payload,updated_at&symbol=eq.{symbol_filter}&limit=1"
+        try:
+            rows = supabase_rest_request("GET", path)
+            if isinstance(rows, list) and rows:
+                row = rows[0]
+                if isinstance(row, dict) and str(row.get("cache_date") or "") == today and isinstance(row.get("payload"), dict):
+                    return row["payload"]
+        except Exception:
+            pass
+
+    local_cache = load_local_financial_cache()
+    row = local_cache.get(cache_key)
+    if isinstance(row, dict) and str(row.get("cache_date") or "") == today and isinstance(row.get("payload"), dict):
+        return row["payload"]
+    return None
+
+
+def save_cached_financial_payload(symbol: str, payload: dict[str, object]) -> None:
+    cache_key = financial_cache_key(symbol)
+    cache_date = financial_cache_date()
+    if supabase_is_configured():
+        try:
+            supabase_rest_request(
+                "POST",
+                SUPABASE_FINANCIAL_CACHE_TABLE,
+                {
+                    "symbol": cache_key,
+                    "cache_date": cache_date,
+                    "payload": payload,
+                    "updated_at": utc_now_iso(),
+                },
+            )
+            return
+        except Exception:
+            pass
+
+    local_cache = load_local_financial_cache()
+    local_cache[cache_key] = {"cache_date": cache_date, "payload": payload, "updated_at": utc_now_iso()}
+    save_local_financial_cache(local_cache)
+
+
+def build_financial_payload(symbol: str) -> dict[str, object]:
+    profile = get_profile(symbol)
+    ratios, peer_count = financial_ratio_table(symbol, profile)
+    statements = {
+        statement_type: dataframe_to_cache_payload(get_statement(symbol, statement_type))
+        for statement_type in ("balance", "income", "cashflow")
+    }
+    return {
+        "symbol": financial_cache_key(symbol),
+        "display_symbol": display_ticker(symbol),
+        "cache_date": financial_cache_date(),
+        "generated_at": utc_now_iso(),
+        "statements": statements,
+        "ratios": ratios.to_dict("records"),
+        "ratio_peer_count": peer_count,
+        "industry": str(profile.get("industry") or profile.get("sector") or "industry"),
+    }
+
+
+def get_financial_payload(symbol: str) -> tuple[dict[str, object], bool]:
+    cached = load_cached_financial_payload(symbol)
+    if cached is not None:
+        return cached, True
+    payload = build_financial_payload(symbol)
+    save_cached_financial_payload(symbol, payload)
+    return payload, False
+
+
+def statement_from_financial_payload(payload: dict[str, object], statement_type: str) -> pd.DataFrame:
+    statements = payload.get("statements") if isinstance(payload, dict) else {}
+    if not isinstance(statements, dict):
+        return pd.DataFrame()
+    return dataframe_from_cache_payload(statements.get(statement_type))
+
+
+def ratios_from_financial_payload(payload: dict[str, object]) -> pd.DataFrame:
+    rows = payload.get("ratios") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    return pd.DataFrame(rows)
 
 
 def readable_statement_label(label: object) -> str:
@@ -3334,45 +3491,72 @@ def render_statements(symbol: str):
         "income": "Income Statement",
         "cashflow": "Cashflow Statement",
     }
-    tabs = st.tabs(["Financial Position", "Income", "Cashflow", "Financial Ratio"])
+    payload_key = f"financial_payload_{financial_cache_key(symbol)}"
+    source_key = f"{payload_key}_source"
+    payload = st.session_state.get(payload_key)
+    if not isinstance(payload, dict) or payload.get("symbol") != financial_cache_key(symbol):
+        st.info("Financial statements and ratios are loaded on demand and cached once per day.")
+        if st.button("Load financial data", use_container_width=True, key=f"load_financial_data_{financial_cache_key(symbol)}"):
+            with st.spinner("Loading financial data..."):
+                payload, cached = get_financial_payload(symbol)
+            st.session_state[payload_key] = payload
+            st.session_state[source_key] = "daily cache" if cached else "fresh yfinance fetch"
+            st.rerun()
+        return
+
+    source = st.session_state.get(source_key) or "daily cache"
+    cache_date = str(payload.get("cache_date") or financial_cache_date())
+    generated_at = str(payload.get("generated_at") or "")
+    st.caption(f"Loaded from {source}. Cache date: {cache_date}" + (f" · Generated at: {generated_at}" if generated_at else ""))
+
+    tabs = st.tabs(
+        ["Financial Position", "Income", "Cashflow", "Financial Ratio"],
+        key=f"financial_statement_tabs_{financial_cache_key(symbol)}",
+        on_change="rerun",
+    )
     for tab, statement_type in zip(tabs[:3], ["balance", "income", "cashflow"]):
-        with tab:
-            statement = get_statement(symbol, statement_type)
-            st.subheader(labels[statement_type])
-            if statement.empty:
-                st.info("No statement data was returned for this symbol.")
-            else:
-                if statement_type == "balance":
-                    st.markdown(grouped_balance_statement_html(statement), unsafe_allow_html=True)
-                elif statement_type == "income":
-                    st.markdown(grouped_income_statement_html(statement), unsafe_allow_html=True)
+        if tab.open:
+            with tab:
+                statement = statement_from_financial_payload(payload, statement_type)
+                st.subheader(labels[statement_type])
+                if statement.empty:
+                    st.info("No statement data was returned for this symbol.")
                 else:
-                    formatted = format_statement_table(statement, statement_type)
-                    st.markdown(
-                        (
-                            '<div class="financial-table-wrap">'
-                            f'{formatted.to_html(classes="financial-table", escape=True, border=0, index=False)}'
-                            "</div>"
-                        ),
-                        unsafe_allow_html=True,
-                    )
-    with tabs[3]:
-        profile = get_profile(symbol)
-        ratios, peer_count = financial_ratio_table(symbol, profile)
-        st.subheader("Financial Ratio")
-        st.markdown(
-            (
-                '<div class="financial-table-wrap financial-ratio-wrap">'
-                f'{ratios.to_html(classes="financial-table financial-ratio-table", escape=True, border=0, index=False)}'
-                "</div>"
-            ),
-            unsafe_allow_html=True,
-        )
-        industry = str(profile.get("industry") or profile.get("sector") or "industry")
-        if peer_count:
-            st.caption(f"Industry average uses {peer_count} comparable companies from {industry}.")
-        else:
-            st.caption(f"Industry average is unavailable for {industry}.")
+                    if statement_type == "balance":
+                        st.markdown(grouped_balance_statement_html(statement), unsafe_allow_html=True)
+                    elif statement_type == "income":
+                        st.markdown(grouped_income_statement_html(statement), unsafe_allow_html=True)
+                    else:
+                        formatted = format_statement_table(statement, statement_type)
+                        st.markdown(
+                            (
+                                '<div class="financial-table-wrap">'
+                                f'{formatted.to_html(classes="financial-table", escape=True, border=0, index=False)}'
+                                "</div>"
+                            ),
+                            unsafe_allow_html=True,
+                        )
+    if tabs[3].open:
+        with tabs[3]:
+            ratios = ratios_from_financial_payload(payload)
+            st.subheader("Financial Ratio")
+            if ratios.empty:
+                st.info("Financial ratio data is unavailable for this symbol.")
+                return
+            st.markdown(
+                (
+                    '<div class="financial-table-wrap financial-ratio-wrap">'
+                    f'{ratios.to_html(classes="financial-table financial-ratio-table", escape=True, border=0, index=False)}'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            industry = str(payload.get("industry") or "industry")
+            peer_count = safe_number(payload.get("ratio_peer_count")) or 0
+            if peer_count:
+                st.caption(f"Industry average uses {int(peer_count)} comparable companies from {industry}.")
+            else:
+                st.caption(f"Industry average is unavailable for {industry}.")
 
 
 def render_symbol_search(default_symbol: str = "AAPL") -> str:
@@ -3881,40 +4065,46 @@ def render_my_page(benchmark: str, years: int, rolling_window: int, cookie_contr
 
 def render_symbol_detail(symbol: str, benchmark: str, years: int, rolling_window: int):
     render_focus_summary(symbol, benchmark, years, rolling_window)
-    render_metrics(symbol, benchmark, years, rolling_window)
 
     overview_tab, financials_tab, prices_tab, provider_tab = st.tabs(
-        ["Companies & Industries", "Financial Statements", "Price", "Realtime Provider Notes"]
+        ["Companies & Industries", "Financial Statements", "Price", "Realtime Provider Notes"],
+        key=f"symbol_detail_tabs_{market_data_symbol(symbol)}",
+        on_change="rerun",
     )
 
-    with overview_tab:
-        profile = render_profile(symbol)
-        st.subheader("Sector Watchlist Candidates")
-        st.caption("This is a comparable watchlist, not investment advice.")
-        render_peers(symbol, profile["sector"])
+    if overview_tab.open:
+        with overview_tab:
+            render_metrics(symbol, benchmark, years, rolling_window)
+            profile = render_profile(symbol)
+            st.subheader("Sector Watchlist Candidates")
+            st.caption("This is a comparable watchlist, not investment advice.")
+            render_peers(symbol, profile["sector"])
 
-    with financials_tab:
-        render_statements(symbol)
+    if financials_tab.open:
+        with financials_tab:
+            render_statements(symbol)
 
-    with prices_tab:
-        render_quote_cards([symbol])
+    if prices_tab.open:
+        with prices_tab:
+            render_quote_cards([symbol])
 
-    with provider_tab:
-        st.markdown(
-            """
-            **Speed hierarchy**
+    if provider_tab.open:
+        with provider_tab:
+            st.markdown(
+                """
+                **Speed hierarchy**
 
-            1. Direct exchange or licensed consolidated WebSocket feed: fastest and most reliable.
-            2. Broker/data-vendor WebSocket APIs: practical for apps and research.
-            3. REST polling and unofficial scrapers such as yfinance: convenient, but not true low-latency.
+                1. Direct exchange or licensed consolidated WebSocket feed: fastest and most reliable.
+                2. Broker/data-vendor WebSocket APIs: practical for apps and research.
+                3. REST polling and unofficial scrapers such as yfinance: convenient, but not true low-latency.
 
-            **Recommended provider split**
+                **Recommended provider split**
 
-            - US stocks: Alpaca IEX/SIP, Polygon, Finnhub, IEX Cloud, or a broker API.
-            - Crypto: Binance, Coinbase, Kraken, or CCXT-compatible exchange APIs.
-            - Fundamentals and statements: SEC companyfacts, Financial Modeling Prep, Finnhub, Polygon reference/fundamentals, or yfinance fallback.
-            """
-        )
+                - US stocks: Alpaca IEX/SIP, Polygon, Finnhub, IEX Cloud, or a broker API.
+                - Crypto: Binance, Coinbase, Kraken, or CCXT-compatible exchange APIs.
+                - Fundamentals and statements: SEC companyfacts, Financial Modeling Prep, Finnhub, Polygon reference/fundamentals, or yfinance fallback.
+                """
+            )
 
 
 def inject_styles():

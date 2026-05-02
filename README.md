@@ -109,6 +109,8 @@ This repo includes `Dockerfile`, `requirements-worker.txt`, and `fly.toml` so Fl
 
 Before deploying, create `public.market_quote_cache` by running `supabase_market_quote_cache.sql` in the Supabase SQL Editor.
 
+For daily financial statement and ratio caching, also run `supabase_financial_statement_cache.sql` in the Supabase SQL Editor. The Streamlit app uses this table to reuse the same financial data for a symbol for one calendar day instead of recalculating it on every page load.
+
 In Fly.io, add these secrets in the app's **Secrets** page:
 
 ```text
@@ -119,11 +121,11 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 If deploying with `flyctl`, use:
 
 ```powershell
-fly secrets set SUPABASE_URL="https://lwtlxlhnxznehomhlhif.supabase.co" SUPABASE_SERVICE_ROLE_KEY="your-service-role-key" -a app-wandering-night-1272
-fly deploy -a app-wandering-night-1272
+fly secrets set SUPABASE_URL="https://lwtlxlhnxznehomhlhif.supabase.co" SUPABASE_SERVICE_ROLE_KEY="your-service-role-key" -a myfinancialportfolio
+fly deploy -a myfinancialportfolio
 ```
 
-If the Fly.io app name is different, update `app = "app-wandering-night-1272"` in `fly.toml` and the `-a` value above to match the Fly.io app name. In the Fly.io deployment log, this is the value shown after `flyctl deploy ... -a`.
+If the Fly.io app name is different, update `app = "myfinancialportfolio"` in `fly.toml` and the `-a` value above to match the Fly.io app name.
 
 ## Deploy Online: Render
 
