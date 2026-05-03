@@ -33,6 +33,7 @@ type KoreaFinancialPayload = {
   source: "opendart";
   symbol: string;
   mappingVersion: number;
+  mappingSignature: string;
   refreshedAt: string;
   ratioValues: RatioValues;
   statements: {
@@ -42,10 +43,18 @@ type KoreaFinancialPayload = {
   };
   mappingCandidates: FinancialStatementMappingCandidate[];
 };
+type SavedOpenDartMapping = {
+  sjDiv: string;
+  accountId: string;
+  accountName: string;
+  lineKey: string;
+  updatedAt?: string;
+};
 
 const FINANCIAL_STATEMENT_CACHE_TABLE = "financial_statement_cache";
+const FINANCIAL_MAPPING_CACHE_SYMBOL = "__opendart_account_mappings__";
 const FINANCIAL_STATEMENT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const KOREA_FINANCIAL_MAPPING_VERSION = 3;
+const KOREA_FINANCIAL_MAPPING_VERSION = 4;
 const MONTHLY_VOLATILITY_WINDOW_MONTHS = 12;
 const OPENDART_ANNUAL_REPORT_CODE = "11011";
 
@@ -1222,6 +1231,7 @@ function isKoreaFinancialPayload(payload: unknown): payload is KoreaFinancialPay
     record.source === "opendart" &&
     typeof record.symbol === "string" &&
     record.mappingVersion === KOREA_FINANCIAL_MAPPING_VERSION &&
+    typeof record.mappingSignature === "string" &&
     record.statements !== null &&
     typeof record.statements === "object" &&
     record.ratioValues !== null &&
@@ -1238,7 +1248,7 @@ function hasKoreaFinancialValues(payload: KoreaFinancialPayload) {
   );
 }
 
-async function readCachedKoreaFinancial(symbol: string) {
+async function readCachedKoreaFinancial(symbol: string, mappingSignature: string) {
   try {
     const response = await supabaseAdmin()
       .from(FINANCIAL_STATEMENT_CACHE_TABLE)
@@ -1249,7 +1259,7 @@ async function readCachedKoreaFinancial(symbol: string) {
       return null;
     }
     const payload = response.data?.payload;
-    return isKoreaFinancialPayload(payload) && hasKoreaFinancialValues(payload) ? payload : null;
+    return isKoreaFinancialPayload(payload) && payload.mappingSignature === mappingSignature && hasKoreaFinancialValues(payload) ? payload : null;
   } catch {
     return null;
   }
@@ -1268,6 +1278,76 @@ async function writeCachedKoreaFinancial(symbol: string, payload: KoreaFinancial
   } catch {
     // Cache writes should never block the symbol page.
   }
+}
+
+async function readSavedOpenDartMappings() {
+  try {
+    const response = await supabaseAdmin()
+      .from(FINANCIAL_STATEMENT_CACHE_TABLE)
+      .select("payload")
+      .eq("symbol", FINANCIAL_MAPPING_CACHE_SYMBOL)
+      .maybeSingle();
+    if (response.error) {
+      return [];
+    }
+    const payload = response.data?.payload;
+    const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    return cleanSavedDartMappings(record.mappings);
+  } catch {
+    return [];
+  }
+}
+
+async function writeSavedOpenDartMappings(mappings: SavedOpenDartMapping[]) {
+  await supabaseAdmin()
+    .from(FINANCIAL_STATEMENT_CACHE_TABLE)
+    .upsert(
+      {
+        symbol: FINANCIAL_MAPPING_CACHE_SYMBOL,
+        cache_date: new Date().toISOString().slice(0, 10),
+        payload: { mappings },
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: "symbol" }
+    );
+}
+
+async function clearKoreaFinancialCaches() {
+  try {
+    await supabaseAdmin().from(FINANCIAL_STATEMENT_CACHE_TABLE).delete().neq("symbol", FINANCIAL_MAPPING_CACHE_SYMBOL);
+  } catch {
+    // A saved mapping can still be applied after the weekly cache naturally refreshes.
+  }
+}
+
+export async function saveOpenDartAccountMapping(input: {
+  statementDiv: string;
+  accountId: string;
+  accountName: string;
+  lineKey: string;
+}) {
+  const sjDiv = String(input.statementDiv || "").trim().toUpperCase();
+  const accountId = String(input.accountId || "").trim();
+  const accountName = String(input.accountName || "").trim();
+  const lineKey = String(input.lineKey || "").trim();
+  if (!sjDiv || !accountName) {
+    throw new Error("OpenDART account information is incomplete.");
+  }
+  if (!FINANCIAL_LINE_KEYS.has(lineKey)) {
+    throw new Error("Unknown financial statement line item.");
+  }
+  const existing = await readSavedOpenDartMappings();
+  const nextMapping: SavedOpenDartMapping = {
+    sjDiv,
+    accountId,
+    accountName,
+    lineKey,
+    updatedAt: new Date().toISOString()
+  };
+  const next = [...existing.filter((mapping) => savedDartMappingKey(mapping) !== savedDartMappingKey(nextMapping)), nextMapping];
+  await writeSavedOpenDartMappings(next);
+  await clearKoreaFinancialCaches();
+  return { mappings: next };
 }
 
 function openDartYears() {
@@ -1340,15 +1420,23 @@ function normalizeDartAccountName(value: unknown) {
 }
 
 type DartLineMatch = {
-  sjDiv?: string;
+  sjDiv?: string | string[];
   accountIds?: string[];
   accountNames?: string[];
   aggregation?: "first" | "sum";
 };
 
+function dartSjDivMatches(actual: string, expected?: string | string[]) {
+  if (!expected) {
+    return true;
+  }
+  const expectedValues = (Array.isArray(expected) ? expected : [expected]).map((item) => item.toUpperCase());
+  return expectedValues.includes(actual) || (actual === "CIS" && expectedValues.includes("IS"));
+}
+
 function dartRowMatches(row: OpenDartRow, match: DartLineMatch) {
   const sjDiv = String(row.sj_div || "").toUpperCase();
-  if (match.sjDiv && sjDiv !== match.sjDiv) {
+  if (!dartSjDivMatches(sjDiv, match.sjDiv)) {
     return false;
   }
   const accountId = String(row.account_id || "").toLowerCase();
@@ -1432,13 +1520,88 @@ const DART_LINE_MATCHES: Record<string, DartLineMatch> = {
   dividends: { sjDiv: "CF", accountIds: ["ifrs-full_DividendsPaidClassifiedAsFinancingActivities"], accountNames: ["배당금지급"] }
 };
 
-function dartValue(rows: OpenDartRow[], year: string, key: string) {
+const FINANCIAL_LINE_KEYS = new Set([...BALANCE_LINES, ...INCOME_LINES, ...CASHFLOW_LINES].map((line) => line.key));
+
+function normalizeDartMappingText(value: unknown) {
+  return normalizeDartAccountName(value).toLowerCase();
+}
+
+function cleanSavedDartMappings(value: unknown): SavedOpenDartMapping[] {
+  const rows = Array.isArray(value) ? value : [];
+  return rows
+    .map((item): SavedOpenDartMapping | null => {
+      const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+      const sjDiv = String(record.sjDiv || "").trim().toUpperCase();
+      const accountId = String(record.accountId || "").trim();
+      const accountName = String(record.accountName || "").trim();
+      const lineKey = String(record.lineKey || "").trim();
+      if (!sjDiv || !accountName || !lineKey || !FINANCIAL_LINE_KEYS.has(lineKey)) {
+        return null;
+      }
+      return {
+        sjDiv,
+        accountId,
+        accountName,
+        lineKey,
+        updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : undefined
+      };
+    })
+    .filter((item): item is SavedOpenDartMapping => item !== null);
+}
+
+function savedDartMappingKey(mapping: Pick<SavedOpenDartMapping, "sjDiv" | "accountId" | "accountName">) {
+  return [mapping.sjDiv.toUpperCase(), mapping.accountId.toLowerCase(), normalizeDartMappingText(mapping.accountName)].join("|");
+}
+
+function dartMappingSignature(mappings: SavedOpenDartMapping[]) {
+  return mappings
+    .map((mapping) => `${savedDartMappingKey(mapping)}=>${mapping.lineKey}`)
+    .sort()
+    .join(";");
+}
+
+function dartRowMatchesSavedMapping(row: OpenDartRow, mapping: SavedOpenDartMapping) {
+  const sjDiv = String(row.sj_div || "").toUpperCase();
+  const accountId = String(row.account_id || "").trim().toLowerCase();
+  const accountName = normalizeDartMappingText(row.account_nm);
+  return (
+    sjDiv === mapping.sjDiv.toUpperCase() &&
+    (!mapping.accountId || accountId === mapping.accountId.toLowerCase()) &&
+    accountName === normalizeDartMappingText(mapping.accountName)
+  );
+}
+
+function uniqueDartRows(rows: OpenDartRow[]) {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = [
+      row.bsns_year || "",
+      row.fs_div || "",
+      row.sj_div || "",
+      row.account_id || "",
+      row.account_nm || "",
+      row.thstrm_amount || "",
+      row.thstrm_add_amount || ""
+    ].join("|");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function dartValue(rows: OpenDartRow[], year: string, key: string, savedMappings: SavedOpenDartMapping[] = []) {
   const match = DART_LINE_MATCHES[key];
-  if (!match) {
+  const customRows = rows.filter(
+    (item) => item.bsns_year === year && savedMappings.some((mapping) => mapping.lineKey === key && dartRowMatchesSavedMapping(item, mapping))
+  );
+  if (!match && !customRows.length) {
     return null;
   }
-  const matchedRows = rows.filter((item) => item.bsns_year === year && dartRowMatches(item, match));
-  if (match.aggregation === "sum") {
+  const builtInRows = match ? rows.filter((item) => item.bsns_year === year && dartRowMatches(item, match)) : [];
+  const matchedRows = uniqueDartRows([...customRows, ...builtInRows]);
+  if (match?.aggregation === "sum" || customRows.length > 1) {
     const values = matchedRows
       .map((row) => dartNumber(row.thstrm_add_amount) ?? dartNumber(row.thstrm_amount))
       .filter((value): value is number => value !== null);
@@ -1473,17 +1636,20 @@ function dartStatementName(row: OpenDartRow) {
   return sjDiv || "Unknown Statement";
 }
 
-function isMappedDartRow(row: OpenDartRow) {
-  return Object.values(DART_LINE_MATCHES).some((match) => dartRowMatches(row, match));
+function isMappedDartRow(row: OpenDartRow, savedMappings: SavedOpenDartMapping[] = []) {
+  return (
+    Object.values(DART_LINE_MATCHES).some((match) => dartRowMatches(row, match)) ||
+    savedMappings.some((mapping) => dartRowMatchesSavedMapping(row, mapping))
+  );
 }
 
-function dartUnmappedAccounts(rows: OpenDartRow[]): FinancialStatementMappingCandidate[] {
+function dartUnmappedAccounts(rows: OpenDartRow[], savedMappings: SavedOpenDartMapping[] = []): FinancialStatementMappingCandidate[] {
   const grouped = new Map<string, FinancialStatementMappingCandidate>();
   for (const row of rows) {
     const accountId = String(row.account_id || "").trim();
     const accountName = String(row.account_nm || "").trim();
     const sampleValue = String(row.thstrm_add_amount || row.thstrm_amount || "").trim();
-    if (!accountName || !sampleValue || sampleValue === "-" || isMappedDartRow(row)) {
+    if (!accountName || !sampleValue || sampleValue === "-" || isMappedDartRow(row, savedMappings)) {
       continue;
     }
     const key = `${row.sj_div || ""}|${accountId}|${accountName}`;
@@ -1497,6 +1663,7 @@ function dartUnmappedAccounts(rows: OpenDartRow[]): FinancialStatementMappingCan
     }
     grouped.set(key, {
       statement: dartStatementName(row),
+      statementDiv: String(row.sj_div || "").toUpperCase(),
       accountId,
       accountName,
       sampleValue,
@@ -1509,12 +1676,12 @@ function dartUnmappedAccounts(rows: OpenDartRow[]): FinancialStatementMappingCan
     .slice(0, 80);
 }
 
-function buildOpenDartStatement(rows: OpenDartRow[], definitions: LineDefinition[]): FinancialStatement {
+function buildOpenDartStatement(rows: OpenDartRow[], definitions: LineDefinition[], savedMappings: SavedOpenDartMapping[] = []): FinancialStatement {
   const years = dartYears(rows);
   const rowsByYear = years.map((year) => {
     const values: Record<string, number | null> = {};
     for (const definition of definitions) {
-      values[definition.key] = dartValue(rows, year, definition.key);
+      values[definition.key] = dartValue(rows, year, definition.key, savedMappings);
     }
     for (const definition of definitions) {
       if (values[definition.key] === null) {
@@ -1533,17 +1700,17 @@ function buildOpenDartStatement(rows: OpenDartRow[], definitions: LineDefinition
   };
 }
 
-function openDartRatioValues(rows: OpenDartRow[], marketPrice: number | null): RatioValues {
+function openDartRatioValues(rows: OpenDartRow[], marketPrice: number | null, savedMappings: SavedOpenDartMapping[] = []): RatioValues {
   const years = dartYears(rows);
   const latestYear = years[0];
   if (!latestYear) {
     return emptyRatioValues();
   }
-  const revenue = dartValue(rows, latestYear, "revenue");
-  const operatingIncome = dartValue(rows, latestYear, "operating_income");
-  const netIncome = dartValue(rows, latestYear, "net_income");
-  const equity = dartValue(rows, latestYear, "total_equity");
-  const previousEquity = years[1] ? dartValue(rows, years[1], "total_equity") : null;
+  const revenue = dartValue(rows, latestYear, "revenue", savedMappings);
+  const operatingIncome = dartValue(rows, latestYear, "operating_income", savedMappings);
+  const netIncome = dartValue(rows, latestYear, "net_income", savedMappings);
+  const equity = dartValue(rows, latestYear, "total_equity", savedMappings);
+  const previousEquity = years[1] ? dartValue(rows, years[1], "total_equity", savedMappings) : null;
   const epsRow = rows.find((row) =>
     row.bsns_year === latestYear &&
     dartRowMatches(row, {
@@ -1568,7 +1735,9 @@ async function koreaOpenDartFinancial(symbol: string, marketPrice: number | null
   if (!isKoreaSymbol(normalized)) {
     return null;
   }
-  const cached = await readCachedKoreaFinancial(normalized);
+  const savedMappings = await readSavedOpenDartMappings();
+  const mappingSignature = dartMappingSignature(savedMappings);
+  const cached = await readCachedKoreaFinancial(normalized, mappingSignature);
   if (cached) {
     return cached;
   }
@@ -1580,14 +1749,15 @@ async function koreaOpenDartFinancial(symbol: string, marketPrice: number | null
     source: "opendart",
     symbol: normalized,
     mappingVersion: KOREA_FINANCIAL_MAPPING_VERSION,
+    mappingSignature,
     refreshedAt: new Date().toISOString(),
-    ratioValues: openDartRatioValues(rows, marketPrice),
+    ratioValues: openDartRatioValues(rows, marketPrice, savedMappings),
     statements: {
-      income: buildOpenDartStatement(rows, INCOME_LINES),
-      balance: buildOpenDartStatement(rows, BALANCE_LINES),
-      cashflow: buildOpenDartStatement(rows, CASHFLOW_LINES)
+      income: buildOpenDartStatement(rows, INCOME_LINES, savedMappings),
+      balance: buildOpenDartStatement(rows, BALANCE_LINES, savedMappings),
+      cashflow: buildOpenDartStatement(rows, CASHFLOW_LINES, savedMappings)
     },
-    mappingCandidates: dartUnmappedAccounts(rows)
+    mappingCandidates: dartUnmappedAccounts(rows, savedMappings)
   };
   await writeCachedKoreaFinancial(normalized, payload);
   return payload;

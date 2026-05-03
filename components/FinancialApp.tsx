@@ -27,6 +27,8 @@ type PageKey = "coin" | "us" | "korea" | "symbol" | "my";
 type TradeMode = "BUY" | "SELL";
 type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type MyTab = "portfolio" | "alerts" | "account";
+type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
+type MappingOption = { statement: string; lineKey: string; label: string };
 
 const PAGES: Array<{ key: PageKey; label: string }> = [
   { key: "coin", label: "Coin Main" },
@@ -363,6 +365,31 @@ export default function FinancialApp() {
     }
   }
 
+  async function saveFinancialMapping(candidate: MappingCandidate, lineKey: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await parseJsonResponse<{ ok: boolean; mappingCount: number }>(
+        await fetch("/api/financial-mappings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            statementDiv: candidate.statementDiv,
+            accountId: candidate.accountId,
+            accountName: candidate.accountName,
+            lineKey
+          })
+        })
+      );
+      await loadSymbol(symbol, symbolRange);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Mapping save failed.");
+      throw err;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function patchPortfolio(body: Record<string, unknown>) {
     setBusy(true);
     setError("");
@@ -527,6 +554,7 @@ export default function FinancialApp() {
           onTab={setSymbolTab}
           onRange={changeSymbolRange}
           onOpenSymbol={openSymbol}
+          onSaveMapping={saveFinancialMapping}
         />
       ) : null}
 
@@ -815,7 +843,8 @@ function SymbolDetail({
   range,
   onTab,
   onRange,
-  onOpenSymbol
+  onOpenSymbol,
+  onSaveMapping
 }: {
   data: SymbolDetailResponse | null;
   activeTab: "overview" | "financials" | "price" | "provider";
@@ -823,10 +852,12 @@ function SymbolDetail({
   onTab: (tab: "overview" | "financials" | "price" | "provider") => void;
   onRange: (range: ChartRange) => void;
   onOpenSymbol: (symbol: string) => void;
+  onSaveMapping: (candidate: MappingCandidate, lineKey: string) => Promise<void>;
 }) {
   if (!data) {
     return <div className="loading-panel">Search a symbol to load detail.</div>;
   }
+  const mappingOptions = financialMappingOptions(data.statements);
 
   return (
     <>
@@ -931,6 +962,8 @@ function SymbolDetail({
             source={data.statements.dataSource}
             notes={data.statements.dataNotes}
             candidates={data.statements.mappingCandidates}
+            mappingOptions={mappingOptions}
+            onSaveMapping={onSaveMapping}
           />
           <FinancialPositionPanel statement={data.statements.balance} />
           <IncomeStatementPanel statement={data.statements.income} />
@@ -1221,18 +1254,52 @@ function RiskLineChart({
   );
 }
 
+function financialMappingOptions(statements: SymbolDetailResponse["statements"]): MappingOption[] {
+  return [
+    ...statements.balance.lines.map((line) => ({
+      statement: "Financial Position Statement",
+      lineKey: line.key,
+      label: `${line.label}`
+    })),
+    ...statements.income.lines.map((line) => ({
+      statement: "Income Statement",
+      lineKey: line.key,
+      label: `${line.label}`
+    })),
+    ...statements.cashflow.lines.map((line) => ({
+      statement: "Cashflow Statement",
+      lineKey: line.key,
+      label: `${line.label}`
+    }))
+  ];
+}
+
+function candidateKey(candidate: MappingCandidate) {
+  return [candidate.statementDiv, candidate.accountId, candidate.accountName].join("|");
+}
+
 function FinancialDataNotes({
   source,
   notes,
-  candidates
+  candidates,
+  mappingOptions,
+  onSaveMapping
 }: {
   source: string;
   notes: string[];
   candidates: SymbolDetailResponse["statements"]["mappingCandidates"];
+  mappingOptions: MappingOption[];
+  onSaveMapping: (candidate: MappingCandidate, lineKey: string) => Promise<void>;
 }) {
+  const [mappingTargets, setMappingTargets] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState("");
   if (!notes.length && !candidates.length) {
     return null;
   }
+  const optionsForCandidate = (candidate: MappingCandidate) => {
+    const sameStatement = mappingOptions.filter((option) => option.statement === candidate.statement);
+    return sameStatement.length ? sameStatement : mappingOptions;
+  };
   return (
     <section className="panel financial-data-notes">
       <strong>{source}</strong>
@@ -1251,18 +1318,56 @@ function FinancialDataNotes({
                   <th className="text-cell">Account ID</th>
                   <th className="number-cell">Sample Value</th>
                   <th className="text-cell">Years</th>
+                  <th className="text-cell">Map To</th>
+                  <th className="text-cell">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {candidates.map((candidate) => (
-                  <tr key={`${candidate.statement}-${candidate.accountId}-${candidate.accountName}`}>
-                    <td className="text-cell">{candidate.statement}</td>
-                    <td className="text-cell strong">{candidate.accountName}</td>
-                    <td className="text-cell">{candidate.accountId || "N/A"}</td>
-                    <td className="number-cell">{candidate.sampleValue}</td>
-                    <td className="text-cell">{candidate.years.join(", ")}</td>
-                  </tr>
-                ))}
+                {candidates.map((candidate) => {
+                  const key = candidateKey(candidate);
+                  const options = optionsForCandidate(candidate);
+                  const selectedLineKey = mappingTargets[key] || "";
+                  const isSaving = savingKey === key;
+                  return (
+                    <tr key={key}>
+                      <td className="text-cell">{candidate.statement}</td>
+                      <td className="text-cell strong">{candidate.accountName}</td>
+                      <td className="text-cell">{candidate.accountId || "N/A"}</td>
+                      <td className="number-cell">{candidate.sampleValue}</td>
+                      <td className="text-cell">{candidate.years.join(", ")}</td>
+                      <td className="text-cell">
+                        <select
+                          className="mapping-target-select"
+                          value={selectedLineKey}
+                          onChange={(event) => setMappingTargets((prev) => ({ ...prev, [key]: event.target.value }))}
+                        >
+                          <option value="">Select line item</option>
+                          {options.map((option) => (
+                            <option key={`${option.statement}-${option.lineKey}`} value={option.lineKey}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="text-cell">
+                        <button
+                          className="mini-ghost"
+                          disabled={!selectedLineKey || isSaving}
+                          onClick={async () => {
+                            setSavingKey(key);
+                            try {
+                              await onSaveMapping(candidate, selectedLineKey);
+                            } finally {
+                              setSavingKey("");
+                            }
+                          }}
+                        >
+                          {isSaving ? "Saving" : "Save"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

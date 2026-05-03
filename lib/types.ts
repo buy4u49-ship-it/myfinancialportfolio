@@ -207,6 +207,7 @@ export type FinancialRatioRow = {
 
 export type FinancialStatementMappingCandidate = {
   statement: string;
+  statementDiv: string;
   accountId: string;
   accountName: string;
   sampleValue: string;
