@@ -1639,14 +1639,14 @@ function chartXTicks(points: ChartPoint[]) {
     return [];
   }
   const targetTickCount = 8;
-  const step = Math.max(1, Math.floor((points.length - 1) / targetTickCount));
+  const lastTickIndex = Math.max(0, points.length - 2);
+  const step = Math.max(1, Math.ceil(lastTickIndex / targetTickCount));
   const indexes = new Set<number>();
-  for (let index = 0; index < points.length; index += step) {
+  for (let index = 0; index <= lastTickIndex; index += step) {
     indexes.add(index);
   }
   return Array.from(indexes)
     .sort((a, b) => a - b)
-    .slice(0, 9)
     .map((index) => ({ point: points[index], index }));
 }
 
