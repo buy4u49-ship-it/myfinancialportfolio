@@ -364,6 +364,22 @@ select {
   padding: 18px 22px 22px;
 }
 
+.benchmark-comparison-panel {
+  margin-top: 0;
+  margin-bottom: 18px;
+}
+
+.comparison-benchmark {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.comparison-table th,
+.comparison-table td {
+  padding: 13px 16px;
+}
+
 .indices-panel .panel-heading {
   border-bottom: 1px solid var(--line);
   padding-bottom: 16px;
@@ -530,6 +546,34 @@ select {
   height: clamp(340px, 28vw, 620px);
   display: block;
   overflow: visible;
+}
+
+.historical-analytics {
+  display: grid;
+  gap: 18px;
+}
+
+.historical-chart-shell {
+  min-height: 330px;
+  padding: 16px 18px 20px;
+}
+
+.historical-chart-shell svg {
+  height: clamp(330px, 24vw, 520px);
+}
+
+.chart-empty {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+}
+
+.blue-axis {
+  fill: #2563eb;
+}
+
+.red-axis {
+  fill: #dc2626;
 }
 
 .chart-grid-line {

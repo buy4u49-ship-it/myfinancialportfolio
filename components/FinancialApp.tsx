@@ -192,8 +192,15 @@ export default function FinancialApp() {
   }
 
   async function loadSymbol(targetSymbol = symbol, range = symbolRange) {
+    const params = new URLSearchParams({
+      symbol: targetSymbol,
+      range,
+      benchmark,
+      historyYears: String(historyYears),
+      rollingWindow: String(rollingWindow)
+    });
     const data = await parseJsonResponse<SymbolDetailResponse>(
-      await fetch(`/api/symbol?symbol=${encodeURIComponent(targetSymbol)}&range=${range}`, { cache: "no-store" })
+      await fetch(`/api/symbol?${params.toString()}`, { cache: "no-store" })
     );
     setSymbolDetail(data);
   }
@@ -842,6 +849,8 @@ function SymbolDetail({
         <SummaryCard label="1M Volatility" value={formatPct(data.metrics.volatilityPct)} />
       </section>
 
+      <BenchmarkComparisonPanel rows={data.benchmark.comparisons} industry={data.statements.ratioIndustry} benchmark={data.benchmark.symbol} />
+
       <section className="panel">
         <div className="panel-heading">
           <div>
@@ -857,6 +866,8 @@ function SymbolDetail({
         <TimeRangeSelector label="Bar range" ranges={SYMBOL_BAR_RANGES} active={range} onChange={onRange} />
         <PriceBarChart points={data.chart} currency={data.quote.currency} range={range} />
       </section>
+
+      <HistoricalAnalyticsCharts data={data} />
 
       <nav className="subtabs">
         {[
@@ -954,6 +965,257 @@ function SymbolDetail({
         </section>
       ) : null}
     </>
+  );
+}
+
+function BenchmarkComparisonPanel({
+  rows,
+  industry,
+  benchmark
+}: {
+  rows: SymbolDetailResponse["benchmark"]["comparisons"];
+  industry: string;
+  benchmark: string;
+}) {
+  return (
+    <section className="panel benchmark-comparison-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Valuation & Risk Comparison</h2>
+        </div>
+        <span className="comparison-benchmark">Benchmark: {benchmark}</span>
+      </div>
+      <div className="table-wrap">
+        <table className="comparison-table">
+          <thead>
+            <tr>
+              <th className="text-cell">Metric</th>
+              <th className="number-cell">Company</th>
+              <th className="number-cell">{industry || "Sector"} Average</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.metric}>
+                <td className="text-cell strong">{row.metric}</td>
+                <td className="number-cell">{row.company}</td>
+                <td className="number-cell">{row.industryAverage}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function HistoricalAnalyticsCharts({ data }: { data: SymbolDetailResponse }) {
+  return (
+    <section className="historical-analytics">
+      <article className="panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Monthly Log Return</h2>
+          </div>
+        </div>
+        <MetricLineChart points={data.benchmark.monthlyLogReturns} yLabel="Monthly Log Return (%)" />
+      </article>
+      <article className="panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Monthly Volatility and Rolling Beta</h2>
+          </div>
+        </div>
+        <RiskLineChart points={data.benchmark.monthlyRisk} rollingWindow={data.benchmark.rollingWindowMonths} />
+      </article>
+    </section>
+  );
+}
+
+function historicalXTicks(points: Array<{ time: string }>, targetTickCount = 10) {
+  if (!points.length) {
+    return [];
+  }
+  const lastIndex = points.length - 1;
+  const step = Math.max(1, Math.ceil(lastIndex / targetTickCount));
+  const indexes = new Set<number>();
+  for (let index = 0; index <= lastIndex; index += step) {
+    indexes.add(index);
+  }
+  if (lastIndex > 0 && !indexes.has(lastIndex) && lastIndex - Math.max(...indexes) > step * 0.65) {
+    indexes.add(lastIndex);
+  }
+  return Array.from(indexes)
+    .sort((a, b) => a - b)
+    .map((index) => ({ point: points[index], index }));
+}
+
+function formatHistoricalTick(time: string) {
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) {
+    return time.slice(0, 7);
+  }
+  return String(date.getUTCFullYear());
+}
+
+function finiteValues(values: Array<number | null | undefined>) {
+  return values.filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value));
+}
+
+function chartExtent(values: number[]) {
+  if (!values.length) {
+    return { min: -1, max: 1 };
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || Math.max(Math.abs(max), 1);
+  const padding = span * 0.12;
+  return { min: min - padding, max: max + padding };
+}
+
+function axisTicks(min: number, max: number, count = 5) {
+  if (max === min) {
+    return [min];
+  }
+  return Array.from({ length: count }, (_, index) => min + ((max - min) * index) / (count - 1));
+}
+
+function metricPath<T>(
+  points: T[],
+  value: (point: T) => number | null | undefined,
+  x: (index: number) => number,
+  y: (value: number) => number
+) {
+  let started = false;
+  return points
+    .map((point, index) => {
+      const current = value(point);
+      if (current === null || current === undefined || !Number.isFinite(current)) {
+        started = false;
+        return "";
+      }
+      const command = started ? "L" : "M";
+      started = true;
+      return `${command} ${x(index).toFixed(2)} ${y(current).toFixed(2)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
+function MetricLineChart({ points, yLabel }: { points: SymbolDetailResponse["benchmark"]["monthlyLogReturns"]; yLabel: string }) {
+  const width = 1280;
+  const height = 320;
+  const margin = { top: 24, right: 42, bottom: 58, left: 88 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const values = finiteValues(points.map((point) => point.value));
+  const { min, max } = chartExtent(values);
+  const x = (index: number) => margin.left + (points.length <= 1 ? 0 : (index / (points.length - 1)) * plotWidth);
+  const y = (value: number) => margin.top + ((max - value) / (max - min || 1)) * plotHeight;
+  const ticks = historicalXTicks(points);
+  const path = metricPath(points, (point) => point.value, x, y);
+
+  if (!values.length) {
+    return <div className="empty-cell chart-empty">Monthly history is unavailable for this symbol.</div>;
+  }
+
+  return (
+    <div className="chart-shell historical-chart-shell">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+        {axisTicks(min, max).map((tick) => (
+          <g key={tick}>
+            <line className="chart-grid-line" x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} />
+            <text className="chart-axis-label" x={margin.left - 18} y={y(tick) + 4} textAnchor="end">
+              {tick.toFixed(1)}
+            </text>
+          </g>
+        ))}
+        {ticks.map((tick) => (
+          <text key={`${tick.index}-${tick.point.time}`} className="chart-axis-label" x={x(tick.index)} y={height - 28} textAnchor="middle">
+            {formatHistoricalTick(tick.point.time)}
+          </text>
+        ))}
+        <text className="chart-axis-title" x={width / 2} y={height - 8} textAnchor="middle">
+          Month
+        </text>
+        <text className="chart-axis-title blue-axis" x={18} y={height / 2} textAnchor="middle" transform={`rotate(-90 18 ${height / 2})`}>
+          {yLabel}
+        </text>
+        <path d={path} fill="none" stroke="#2563eb" strokeWidth="2.4" />
+      </svg>
+    </div>
+  );
+}
+
+function RiskLineChart({
+  points,
+  rollingWindow
+}: {
+  points: SymbolDetailResponse["benchmark"]["monthlyRisk"];
+  rollingWindow: number;
+}) {
+  const width = 1280;
+  const height = 340;
+  const margin = { top: 26, right: 88, bottom: 58, left: 88 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const betaValues = finiteValues(points.map((point) => point.rollingBeta));
+  const volatilityValues = finiteValues(points.map((point) => point.monthlyVolatilityPct));
+  const betaExtent = chartExtent(betaValues);
+  const rawVolatilityExtent = chartExtent(volatilityValues);
+  const volatilityExtent = { min: Math.max(0, rawVolatilityExtent.min), max: rawVolatilityExtent.max };
+  const x = (index: number) => margin.left + (points.length <= 1 ? 0 : (index / (points.length - 1)) * plotWidth);
+  const betaY = (value: number) => margin.top + ((betaExtent.max - value) / (betaExtent.max - betaExtent.min || 1)) * plotHeight;
+  const volatilityY = (value: number) =>
+    margin.top + ((volatilityExtent.max - value) / (volatilityExtent.max - volatilityExtent.min || 1)) * plotHeight;
+  const ticks = historicalXTicks(points);
+  const betaPath = metricPath(points, (point) => point.rollingBeta, x, betaY);
+  const volatilityPath = metricPath(points, (point) => point.monthlyVolatilityPct, x, volatilityY);
+
+  if (!betaValues.length && !volatilityValues.length) {
+    return <div className="empty-cell chart-empty">Risk history is unavailable for this symbol.</div>;
+  }
+
+  return (
+    <div className="chart-shell historical-chart-shell">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+        {axisTicks(betaExtent.min, betaExtent.max).map((tick) => (
+          <g key={tick}>
+            <line className="chart-grid-line" x1={margin.left} x2={width - margin.right} y1={betaY(tick)} y2={betaY(tick)} />
+            <text className="chart-axis-label" x={margin.left - 18} y={betaY(tick) + 4} textAnchor="end">
+              {tick.toFixed(1)}
+            </text>
+          </g>
+        ))}
+        {axisTicks(volatilityExtent.min, volatilityExtent.max).map((tick) => (
+          <text key={tick} className="chart-axis-label" x={width - margin.right + 18} y={volatilityY(tick) + 4} textAnchor="start">
+            {tick.toFixed(1)}
+          </text>
+        ))}
+        {ticks.map((tick) => (
+          <text key={`${tick.index}-${tick.point.time}`} className="chart-axis-label" x={x(tick.index)} y={height - 28} textAnchor="middle">
+            {formatHistoricalTick(tick.point.time)}
+          </text>
+        ))}
+        <text className="chart-axis-title" x={width / 2} y={height - 8} textAnchor="middle">
+          Month
+        </text>
+        <text className="chart-axis-title" x={18} y={height / 2} textAnchor="middle" transform={`rotate(-90 18 ${height / 2})`}>
+          Rolling Beta ({rollingWindow}M)
+        </text>
+        <text className="chart-axis-title red-axis" x={width - 18} y={height / 2} textAnchor="middle" transform={`rotate(90 ${width - 18} ${height / 2})`}>
+          Monthly Volatility (%)
+        </text>
+        <path d={betaPath} fill="none" stroke="#16a34a" strokeWidth="2.4" />
+        <path d={volatilityPath} fill="none" stroke="#dc2626" strokeWidth="2.4" />
+        <g className="chart-legend">
+          <line x1={width - 228} x2={width - 202} y1={margin.top + 4} y2={margin.top + 4} stroke="#16a34a" strokeWidth="2.4" />
+          <text x={width - 194} y={margin.top + 9}>Rolling Beta</text>
+          <line x1={width - 112} x2={width - 86} y1={margin.top + 4} y2={margin.top + 4} stroke="#dc2626" strokeWidth="2.4" />
+          <text x={width - 78} y={margin.top + 9}>Volatility</text>
+        </g>
+      </svg>
+    </div>
   );
 }
 

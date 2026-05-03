@@ -151,6 +151,18 @@ export type SymbolDetailResponse = {
     volume: number | null;
   };
   peers: Quote[];
+  benchmark: {
+    symbol: string;
+    historyYears: number;
+    rollingWindowMonths: number;
+    rollingBeta: number | null;
+    fullPeriodBeta: number | null;
+    industryRollingBeta: number | null;
+    industryFullPeriodBeta: number | null;
+    comparisons: FinancialRatioRow[];
+    monthlyLogReturns: HistoricalMetricPoint[];
+    monthlyRisk: HistoricalRiskPoint[];
+  };
   statements: {
     income: FinancialStatement;
     balance: FinancialStatement;
@@ -160,6 +172,17 @@ export type SymbolDetailResponse = {
     ratioIndustry: string;
   };
   refreshedAt: string;
+};
+
+export type HistoricalMetricPoint = {
+  time: string;
+  value: number | null;
+};
+
+export type HistoricalRiskPoint = {
+  time: string;
+  monthlyVolatilityPct: number | null;
+  rollingBeta: number | null;
 };
 
 export type FinancialLine = {

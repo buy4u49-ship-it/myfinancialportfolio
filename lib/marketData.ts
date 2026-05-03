@@ -2,10 +2,23 @@ import { cryptoBaseSymbol, isCryptoSymbol, isKoreaSymbol, marketDataSymbol, norm
 import { getQuote, getQuotes } from "./prices";
 import { supabaseAdmin } from "./supabaseAdmin";
 import type { ChartPoint, FinancialRatioRow, FinancialStatement, MacroPoint, MarketMoverRow, MarketPageResponse, Quote, SymbolDetailResponse } from "./types";
+import { inflateRawSync } from "node:zlib";
 
 type MarketKey = "crypto" | "us" | "korea";
 export type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type RatioValues = { eps: number | null; per: number | null; netMargin: number | null; operatingMargin: number | null; roe: number | null };
+type MonthlyReturnPoint = { time: string; month: string; value: number };
+type BenchmarkAnalyticsResult = {
+  symbol: string;
+  historyYears: number;
+  rollingWindowMonths: number;
+  rollingBeta: number | null;
+  fullPeriodBeta: number | null;
+  industryRollingBeta: number | null;
+  industryFullPeriodBeta: number | null;
+  monthlyLogReturns: Array<{ time: string; value: number | null }>;
+  monthlyRisk: Array<{ time: string; monthlyVolatilityPct: number | null; rollingBeta: number | null }>;
+};
 type KoreaFinancialPayload = {
   source: "opendart";
   symbol: string;
@@ -402,6 +415,191 @@ export async function fetchChart(symbol: string, range: ChartRange = "1M") {
   return fetchYahooChart(normalized, range);
 }
 
+async function fetchYahooHistoricalMonthlyChart(symbol: string, years: number): Promise<ChartPoint[]> {
+  const providerSymbol = marketDataSymbol(symbol);
+  const safeYears = Math.max(1, Math.min(20, Math.round(years)));
+  try {
+    const response = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(providerSymbol)}?range=${safeYears}y&interval=1mo`,
+      {
+        headers: { accept: "application/json", "user-agent": "myfinancialportfolio-next/1.0" },
+        next: { revalidate: 86_400 }
+      }
+    );
+    if (!response.ok) {
+      return [];
+    }
+    const payload = (await response.json()) as {
+      chart?: {
+        result?: Array<{
+          timestamp?: number[];
+          indicators?: { quote?: Array<{ close?: Array<number | null>; volume?: Array<number | null> }> };
+        }>;
+      };
+    };
+    const result = payload.chart?.result?.[0];
+    const timestamps = result?.timestamp || [];
+    const quote = result?.indicators?.quote?.[0];
+    const closes = quote?.close || [];
+    const volumes = quote?.volume || [];
+    return timestamps
+      .map((timestamp, index): ChartPoint | null => {
+        const close = numberOrNull(closes[index]);
+        if (close === null) {
+          return null;
+        }
+        return {
+          time: new Date(timestamp * 1000).toISOString(),
+          close,
+          volume: numberOrNull(volumes[index])
+        };
+      })
+      .filter((point): point is ChartPoint => point !== null);
+  } catch {
+    return [];
+  }
+}
+
+function monthKey(time: string) {
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) {
+    return time.slice(0, 7);
+  }
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthlyReturnPoints(points: ChartPoint[]): MonthlyReturnPoint[] {
+  return points
+    .slice()
+    .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+    .reduce<MonthlyReturnPoint[]>((returns, point, index, sorted) => {
+      if (index === 0) {
+        return returns;
+      }
+      const previous = sorted[index - 1]?.close;
+      if (!previous || previous <= 0 || point.close <= 0) {
+        return returns;
+      }
+      returns.push({
+        time: point.time,
+        month: monthKey(point.time),
+        value: Math.log(point.close / previous)
+      });
+      return returns;
+    }, []);
+}
+
+function sampleVariance(values: number[]) {
+  if (values.length < 2) {
+    return null;
+  }
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return values.reduce((sum, value) => sum + (value - avg) ** 2, 0) / (values.length - 1);
+}
+
+function covariance(valuesA: number[], valuesB: number[]) {
+  if (valuesA.length !== valuesB.length || valuesA.length < 2) {
+    return null;
+  }
+  const avgA = valuesA.reduce((sum, value) => sum + value, 0) / valuesA.length;
+  const avgB = valuesB.reduce((sum, value) => sum + value, 0) / valuesB.length;
+  return valuesA.reduce((sum, value, index) => sum + (value - avgA) * (valuesB[index] - avgB), 0) / (valuesA.length - 1);
+}
+
+function betaFromReturns(assetReturns: number[], benchmarkReturns: number[]) {
+  const benchmarkVariance = sampleVariance(benchmarkReturns);
+  const cov = covariance(assetReturns, benchmarkReturns);
+  if (benchmarkVariance === null || benchmarkVariance === 0 || cov === null) {
+    return null;
+  }
+  return cov / benchmarkVariance;
+}
+
+function alignReturns(assetReturns: MonthlyReturnPoint[], benchmarkReturns: MonthlyReturnPoint[]) {
+  const benchmarkByMonth = new Map(benchmarkReturns.map((point) => [point.month, point]));
+  return assetReturns
+    .map((asset) => {
+      const benchmark = benchmarkByMonth.get(asset.month);
+      return benchmark ? { time: asset.time, month: asset.month, asset: asset.value, benchmark: benchmark.value } : null;
+    })
+    .filter((point): point is { time: string; month: string; asset: number; benchmark: number } => point !== null);
+}
+
+function monthlyRiskSeries(assetReturns: MonthlyReturnPoint[], benchmarkReturns: MonthlyReturnPoint[], rollingWindowMonths: number) {
+  const aligned = alignReturns(assetReturns, benchmarkReturns);
+  const windowSize = Math.max(6, Math.min(60, Math.round(rollingWindowMonths)));
+  return aligned.map((point, index) => {
+    const start = Math.max(0, index - windowSize + 1);
+    const window = aligned.slice(start, index + 1);
+    const assetWindow = window.map((item) => item.asset);
+    const benchmarkWindow = window.map((item) => item.benchmark);
+    const variance = window.length >= windowSize ? sampleVariance(assetWindow) : null;
+    return {
+      time: point.time,
+      monthlyVolatilityPct: variance === null ? null : Math.sqrt(variance) * 100,
+      rollingBeta: window.length >= windowSize ? betaFromReturns(assetWindow, benchmarkWindow) : null
+    };
+  });
+}
+
+function fullPeriodBeta(assetReturns: MonthlyReturnPoint[], benchmarkReturns: MonthlyReturnPoint[]) {
+  const aligned = alignReturns(assetReturns, benchmarkReturns);
+  return betaFromReturns(
+    aligned.map((point) => point.asset),
+    aligned.map((point) => point.benchmark)
+  );
+}
+
+function lastFinite(values: Array<number | null>) {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const value = values[index];
+    if (value !== null && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+async function benchmarkAnalytics(
+  symbol: string,
+  benchmarkSymbol: string,
+  historyYears: number,
+  rollingWindowMonths: number,
+  peerSymbols: string[]
+): Promise<BenchmarkAnalyticsResult> {
+  const normalizedBenchmark = normalizeSymbol(benchmarkSymbol || "SPY");
+  const safeYears = Math.max(1, Math.min(20, Math.round(historyYears || 20)));
+  const safeWindow = Math.max(6, Math.min(60, Math.round(rollingWindowMonths || 36)));
+  const [assetHistory, benchmarkHistory] = await Promise.all([
+    fetchYahooHistoricalMonthlyChart(symbol, safeYears),
+    fetchYahooHistoricalMonthlyChart(normalizedBenchmark, safeYears)
+  ]);
+  const assetReturns = monthlyReturnPoints(assetHistory);
+  const benchmarkReturns = monthlyReturnPoints(benchmarkHistory);
+  const monthlyRisk = monthlyRiskSeries(assetReturns, benchmarkReturns, safeWindow);
+  const peerBetas = await Promise.all(
+    peerSymbols.slice(0, 5).map(async (peer) => {
+      const peerReturns = monthlyReturnPoints(await fetchYahooHistoricalMonthlyChart(peer, safeYears));
+      const peerRisk = monthlyRiskSeries(peerReturns, benchmarkReturns, safeWindow);
+      return {
+        rollingBeta: lastFinite(peerRisk.map((point) => point.rollingBeta)),
+        fullPeriodBeta: fullPeriodBeta(peerReturns, benchmarkReturns)
+      };
+    })
+  );
+  return {
+    symbol: normalizedBenchmark,
+    historyYears: safeYears,
+    rollingWindowMonths: safeWindow,
+    rollingBeta: lastFinite(monthlyRisk.map((point) => point.rollingBeta)),
+    fullPeriodBeta: fullPeriodBeta(assetReturns, benchmarkReturns),
+    industryRollingBeta: average(peerBetas.map((peer) => peer.rollingBeta)),
+    industryFullPeriodBeta: average(peerBetas.map((peer) => peer.fullPeriodBeta)),
+    monthlyLogReturns: assetReturns.map((point) => ({ time: point.time, value: point.value * 100 })),
+    monthlyRisk
+  };
+}
+
 const MACRO_COUNTRIES: MacroPoint["country"][] = ["United States", "Korea", "Europe", "Japan", "China"];
 
 const MACRO_ANCHORS: Record<MacroPoint["country"], { rate: number[]; m2: number[] }> = {
@@ -782,8 +980,17 @@ function derivedSecValue(key: string, values: Record<string, number | null>) {
   if (key === "noncurrent_assets" && values.total_assets !== null && values.current_assets !== null) {
     return values.total_assets - values.current_assets;
   }
+  if (key === "noncurrent_liabilities" && values.total_liabilities !== null && values.current_liabilities !== null) {
+    return values.total_liabilities - values.current_liabilities;
+  }
+  if (key === "total_equity" && values.total_assets !== null && values.total_liabilities !== null) {
+    return values.total_assets - values.total_liabilities;
+  }
   if (key === "gross_profit" && values.revenue !== null && values.cost_of_revenue !== null) {
     return values.revenue - values.cost_of_revenue;
+  }
+  if (key === "non_operating" && values.pretax_income !== null && values.operating_income !== null) {
+    return values.pretax_income - values.operating_income;
   }
   if (key === "pretax_income" && values.net_income !== null && values.tax !== null) {
     return values.net_income + values.tax;
@@ -847,6 +1054,48 @@ function openDartApiKey() {
   return process.env.DART_API_KEY || process.env.OPENDART_API_KEY || process.env.OPEN_DART_API_KEY || "";
 }
 
+function readZipXml(bytes: Uint8Array) {
+  const decoder = new TextDecoder("utf-8");
+  let offset = 0;
+  while (offset + 30 <= bytes.length) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset);
+    if (view.getUint32(0, true) !== 0x04034b50) {
+      break;
+    }
+    const compressionMethod = view.getUint16(8, true);
+    const compressedSize = view.getUint32(18, true);
+    const fileNameLength = view.getUint16(26, true);
+    const extraLength = view.getUint16(28, true);
+    const nameStart = offset + 30;
+    const dataStart = nameStart + fileNameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    const fileName = decoder.decode(bytes.subarray(nameStart, nameStart + fileNameLength));
+    if (dataEnd > bytes.length || compressedSize === 0) {
+      break;
+    }
+    if (fileName.toLowerCase().endsWith(".xml")) {
+      const compressed = bytes.subarray(dataStart, dataEnd);
+      const xmlBytes = compressionMethod === 8 ? inflateRawSync(Buffer.from(compressed)) : Buffer.from(compressed);
+      return decoder.decode(xmlBytes);
+    }
+    offset = dataEnd;
+  }
+  return "";
+}
+
+function parseOpenDartCorpCodes(xml: string) {
+  const rows = new Map<string, string>();
+  for (const item of xml.matchAll(/<list>([\s\S]*?)<\/list>/g)) {
+    const block = item[1];
+    const stockCode = block.match(/<stock_code>(.*?)<\/stock_code>/)?.[1]?.trim();
+    const corpCode = block.match(/<corp_code>(.*?)<\/corp_code>/)?.[1]?.trim();
+    if (stockCode && corpCode && /^\d{6}$/.test(stockCode)) {
+      rows.set(stockCode, corpCode);
+    }
+  }
+  return rows;
+}
+
 async function resolveOpenDartCorpCode(symbol: string) {
   const normalized = normalizeSymbol(symbol);
   const direct = KOREA_DART_CORP_CODES[normalized];
@@ -865,22 +1114,17 @@ async function resolveOpenDartCorpCode(symbol: string) {
     return null;
   }
   try {
-    const url = new URL("https://engopendart.fss.or.kr/engapi/corpCode.json");
+    const url = new URL("https://opendart.fss.or.kr/api/corpCode.xml");
     url.searchParams.set("crtfc_key", key);
     const response = await fetch(url, {
-      headers: { accept: "application/json" },
+      headers: { accept: "application/zip, application/octet-stream" },
       next: { revalidate: 604800 }
     });
     if (!response.ok) {
       return null;
     }
-    const payload = (await response.json()) as { list?: Array<{ stock_code?: string; corp_code?: string }>; result?: Array<{ stock_code?: string; corp_code?: string }> };
-    const rows = Array.isArray(payload.list) ? payload.list : Array.isArray(payload.result) ? payload.result : [];
-    openDartCorpCodeCache = new Map(
-      rows
-        .filter((row) => row.stock_code && row.corp_code)
-        .map((row) => [String(row.stock_code).trim(), String(row.corp_code).trim()])
-    );
+    const xml = readZipXml(new Uint8Array(await response.arrayBuffer()));
+    openDartCorpCodeCache = parseOpenDartCorpCodes(xml);
     return openDartCorpCodeCache.get(stockCode) || null;
   } catch {
     return null;
@@ -904,6 +1148,15 @@ function isKoreaFinancialPayload(payload: unknown): payload is KoreaFinancialPay
   );
 }
 
+function hasKoreaFinancialValues(payload: KoreaFinancialPayload) {
+  return (
+    hasStatementValues(payload.statements.income) ||
+    hasStatementValues(payload.statements.balance) ||
+    hasStatementValues(payload.statements.cashflow) ||
+    Object.values(payload.ratioValues).some((value) => value !== null)
+  );
+}
+
 async function readCachedKoreaFinancial(symbol: string) {
   try {
     const response = await supabaseAdmin()
@@ -914,7 +1167,8 @@ async function readCachedKoreaFinancial(symbol: string) {
     if (response.error || cacheAgeMs(response.data?.updated_at) > FINANCIAL_STATEMENT_CACHE_MAX_AGE_MS) {
       return null;
     }
-    return isKoreaFinancialPayload(response.data?.payload) ? response.data.payload : null;
+    const payload = response.data?.payload;
+    return isKoreaFinancialPayload(payload) && hasKoreaFinancialValues(payload) ? payload : null;
   } catch {
     return null;
   }
@@ -929,7 +1183,7 @@ async function writeCachedKoreaFinancial(symbol: string, payload: KoreaFinancial
         cache_date: new Date().toISOString().slice(0, 10),
         payload,
         updated_at: new Date().toISOString()
-      });
+      }, { onConflict: "symbol" });
   } catch {
     // Cache writes should never block the symbol page.
   }
@@ -984,7 +1238,9 @@ async function fetchOpenDartRows(symbol: string) {
 }
 
 function dartNumber(value: unknown) {
-  const text = String(value || "")
+  const rawText = String(value || "").trim();
+  const parenthesized = /^\(.+\)$/.test(rawText);
+  const text = rawText
     .replace(/,/g, "")
     .replace(/[()]/g, "")
     .trim();
@@ -992,7 +1248,14 @@ function dartNumber(value: unknown) {
     return null;
   }
   const num = Number(text);
-  return Number.isFinite(num) ? num : null;
+  return Number.isFinite(num) ? (parenthesized ? -num : num) : null;
+}
+
+function normalizeDartAccountName(value: unknown) {
+  return String(value || "")
+    .replace(/\s+/g, "")
+    .replace(/^[0-9IVXLCDMⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ.\-]+/i, "")
+    .replace(/[()[\]{}（）]/g, "");
 }
 
 function dartRowMatches(row: OpenDartRow, match: { sjDiv?: string; accountIds?: string[]; accountNames?: string[] }) {
@@ -1004,26 +1267,47 @@ function dartRowMatches(row: OpenDartRow, match: { sjDiv?: string; accountIds?: 
   if (match.accountIds?.some((id) => accountId === id.toLowerCase() || accountId.endsWith(id.toLowerCase()))) {
     return true;
   }
-  const accountName = String(row.account_nm || "").replace(/\s+/g, "");
-  return Boolean(match.accountNames?.some((name) => accountName.includes(name.replace(/\s+/g, ""))));
+  const accountName = normalizeDartAccountName(row.account_nm);
+  return Boolean(match.accountNames?.some((name) => accountName === normalizeDartAccountName(name)));
 }
 
 const DART_LINE_MATCHES: Record<string, { sjDiv?: string; accountIds?: string[]; accountNames?: string[] }> = {
   total_assets: { sjDiv: "BS", accountIds: ["ifrs-full_Assets"], accountNames: ["자산총계"] },
   current_assets: { sjDiv: "BS", accountIds: ["ifrs-full_CurrentAssets"], accountNames: ["유동자산"] },
+  cash_short_investments: { sjDiv: "BS", accountIds: ["ifrs-full_CashAndCashEquivalents", "ifrs-full_CashAndCashEquivalentsAtCarryingValue"], accountNames: ["현금및현금성자산"] },
+  receivables: { sjDiv: "BS", accountIds: ["ifrs-full_TradeAndOtherCurrentReceivables", "ifrs-full_TradeAndOtherReceivables"], accountNames: ["매출채권및기타채권", "매출채권"] },
+  inventory: { sjDiv: "BS", accountIds: ["ifrs-full_Inventories"], accountNames: ["재고자산"] },
+  noncurrent_assets: { sjDiv: "BS", accountIds: ["ifrs-full_NoncurrentAssets"], accountNames: ["비유동자산"] },
+  long_term_investments: { sjDiv: "BS", accountIds: ["ifrs-full_OtherNoncurrentFinancialAssets", "ifrs-full_NoncurrentFinancialAssets"], accountNames: ["비유동금융자산", "장기금융자산"] },
+  ppe: { sjDiv: "BS", accountIds: ["ifrs-full_PropertyPlantAndEquipment"], accountNames: ["유형자산"] },
+  intangibles: { sjDiv: "BS", accountIds: ["ifrs-full_IntangibleAssetsOtherThanGoodwill", "ifrs-full_IntangibleAssets"], accountNames: ["무형자산"] },
   total_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_Liabilities"], accountNames: ["부채총계"] },
   current_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_CurrentLiabilities"], accountNames: ["유동부채"] },
+  accounts_payable: { sjDiv: "BS", accountIds: ["ifrs-full_TradeAndOtherCurrentPayables", "ifrs-full_TradeAndOtherPayables"], accountNames: ["매입채무및기타채무", "매입채무"] },
+  short_term_debt: { sjDiv: "BS", accountIds: ["ifrs-full_ShorttermBorrowings", "ifrs-full_CurrentBorrowings"], accountNames: ["단기차입금"] },
+  noncurrent_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_NoncurrentLiabilities"], accountNames: ["비유동부채"] },
+  long_term_debt: { sjDiv: "BS", accountIds: ["ifrs-full_LongtermBorrowings", "ifrs-full_NoncurrentBorrowings"], accountNames: ["장기차입금"] },
   total_equity: { sjDiv: "BS", accountIds: ["ifrs-full_Equity"], accountNames: ["자본총계"] },
+  common_stock: { sjDiv: "BS", accountIds: ["ifrs-full_IssuedCapital"], accountNames: ["자본금"] },
+  capital_surplus: { sjDiv: "BS", accountIds: ["ifrs-full_SharePremium"], accountNames: ["주식발행초과금", "자본잉여금"] },
+  retained_earnings: { sjDiv: "BS", accountIds: ["ifrs-full_RetainedEarnings"], accountNames: ["이익잉여금"] },
+  treasury_stock: { sjDiv: "BS", accountIds: ["ifrs-full_TreasuryShares"], accountNames: ["자기주식"] },
   revenue: { sjDiv: "IS", accountIds: ["ifrs-full_Revenue"], accountNames: ["수익", "매출액", "영업수익"] },
   cost_of_revenue: { sjDiv: "IS", accountIds: ["ifrs-full_CostOfSales"], accountNames: ["매출원가"] },
   gross_profit: { sjDiv: "IS", accountIds: ["ifrs-full_GrossProfit"], accountNames: ["매출총이익"] },
+  sga: { sjDiv: "IS", accountIds: ["dart_TotalSellingGeneralAdministrativeExpenses"], accountNames: ["판매비와관리비", "판매비와관리비합계"] },
+  depreciation: { sjDiv: "IS", accountIds: ["ifrs-full_DepreciationAndAmortisationExpense", "dart_DepreciationAndAmortizationExpense"], accountNames: ["감가상각비", "감가상각비및무형자산상각비"] },
+  research: { sjDiv: "IS", accountIds: ["dart_ResearchAndDevelopmentExpenses"], accountNames: ["연구개발비"] },
   operating_income: { sjDiv: "IS", accountIds: ["dart_OperatingIncomeLoss"], accountNames: ["영업이익"] },
   pretax_income: { sjDiv: "IS", accountIds: ["ifrs-full_ProfitLossBeforeTax"], accountNames: ["법인세비용차감전순이익"] },
   tax: { sjDiv: "IS", accountIds: ["ifrs-full_IncomeTaxExpenseContinuingOperations"], accountNames: ["법인세비용"] },
   net_income: { sjDiv: "IS", accountIds: ["ifrs-full_ProfitLoss"], accountNames: ["당기순이익"] },
+  oci: { sjDiv: "CIS", accountIds: ["ifrs-full_OtherComprehensiveIncome"], accountNames: ["기타포괄손익"] },
   comprehensive_income: { sjDiv: "CIS", accountIds: ["ifrs-full_ComprehensiveIncome"], accountNames: ["총포괄손익"] },
   operating_cashflow: { sjDiv: "CF", accountIds: ["ifrs-full_CashFlowsFromUsedInOperatingActivities"], accountNames: ["영업활동현금흐름"] },
+  investing_cashflow: { sjDiv: "CF", accountIds: ["ifrs-full_CashFlowsFromUsedInInvestingActivities"], accountNames: ["투자활동현금흐름"] },
   capex: { sjDiv: "CF", accountIds: ["ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"], accountNames: ["유형자산의취득"] },
+  financing_cashflow: { sjDiv: "CF", accountIds: ["ifrs-full_CashFlowsFromUsedInFinancingActivities"], accountNames: ["재무활동현금흐름"] },
   dividends: { sjDiv: "CF", accountIds: ["ifrs-full_DividendsPaidClassifiedAsFinancingActivities"], accountNames: ["배당금지급"] }
 };
 
@@ -1245,7 +1529,42 @@ async function financialRatios(
   };
 }
 
-export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"): Promise<SymbolDetailResponse> {
+function formatBeta(value: number | null) {
+  return value === null ? "N/A" : value.toFixed(4);
+}
+
+function benchmarkComparisonRows(ratioRows: FinancialRatioRow[], analytics: BenchmarkAnalyticsResult): FinancialRatioRow[] {
+  const per = ratioRows.find((row) => row.metric === "PER");
+  const roe = ratioRows.find((row) => row.metric === "ROE");
+  return [
+    {
+      metric: "PER",
+      company: per?.company || "N/A",
+      industryAverage: per?.industryAverage || "N/A"
+    },
+    {
+      metric: "ROE",
+      company: roe?.company || "N/A",
+      industryAverage: roe?.industryAverage || "N/A"
+    },
+    {
+      metric: `Rolling Beta (${analytics.rollingWindowMonths}M)`,
+      company: formatBeta(analytics.rollingBeta),
+      industryAverage: formatBeta(analytics.industryRollingBeta)
+    },
+    {
+      metric: `Full Period Beta (${analytics.historyYears}Y)`,
+      company: formatBeta(analytics.fullPeriodBeta),
+      industryAverage: formatBeta(analytics.industryFullPeriodBeta)
+    }
+  ];
+}
+
+export async function buildSymbolDetail(
+  symbol: string,
+  range: ChartRange = "1M",
+  options: { benchmark?: string; historyYears?: number; rollingWindow?: number } = {}
+): Promise<SymbolDetailResponse> {
   const normalized = normalizeSymbol(symbol);
   const [quote, chart, summary] = await Promise.all([getQuote(normalized), fetchChart(normalized, range), fetchYahooSummary(normalized)]);
   const profile = {
@@ -1269,10 +1588,14 @@ export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"
   const koreaFinancial = isKoreaSymbol(normalized) ? await koreaOpenDartFinancial(normalized, quote.price) : null;
   const needsSecStatements =
     !hasStatementValues(yahooStatements.income) || !hasStatementValues(yahooStatements.balance) || !hasStatementValues(yahooStatements.cashflow);
-  const [peers, ratios, secStatements] = await Promise.all([
+  const benchmarkSymbol = normalizeSymbol(options.benchmark || "SPY");
+  const historyYears = Math.max(1, Math.min(20, Math.round(options.historyYears || 20)));
+  const rollingWindow = Math.max(6, Math.min(60, Math.round(options.rollingWindow || 36)));
+  const [peers, ratios, secStatements, benchmarkData] = await Promise.all([
     getQuotes(comparablePeers),
     financialRatios(normalized, summary, comparablePeers, quote.price, koreaFinancial),
-    needsSecStatements ? fetchSecStatements(normalized) : Promise.resolve(null)
+    needsSecStatements ? fetchSecStatements(normalized) : Promise.resolve(null),
+    benchmarkAnalytics(normalized, benchmarkSymbol, historyYears, rollingWindow, comparablePeers)
   ]);
   const enrichedPeers = Array.from(peers.values())
     .slice(0, 8)
@@ -1301,6 +1624,10 @@ export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"
       volume: numberOrNull(financialData.totalRevenue) ?? chart.at(-1)?.volume ?? null
     },
     peers: enrichedPeers,
+    benchmark: {
+      ...benchmarkData,
+      comparisons: benchmarkComparisonRows(ratios.rows, benchmarkData)
+    },
     statements: {
       income: hasStatementValues(yahooStatements.income) ? yahooStatements.income : secStatements?.income ?? koreaFinancial?.statements.income ?? yahooStatements.income,
       balance: hasStatementValues(yahooStatements.balance) ? yahooStatements.balance : secStatements?.balance ?? koreaFinancial?.statements.balance ?? yahooStatements.balance,
