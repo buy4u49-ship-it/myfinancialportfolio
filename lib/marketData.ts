@@ -1,9 +1,34 @@
 import { cryptoBaseSymbol, isCryptoSymbol, isKoreaSymbol, marketDataSymbol, normalizeSymbol } from "./symbols";
 import { getQuote, getQuotes } from "./prices";
+import { supabaseAdmin } from "./supabaseAdmin";
 import type { ChartPoint, FinancialRatioRow, FinancialStatement, MacroPoint, MarketMoverRow, MarketPageResponse, Quote, SymbolDetailResponse } from "./types";
 
 type MarketKey = "crypto" | "us" | "korea";
 export type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
+type RatioValues = { eps: number | null; per: number | null; netMargin: number | null; operatingMargin: number | null; roe: number | null };
+type KoreaFinancialPayload = {
+  source: "opendart";
+  symbol: string;
+  refreshedAt: string;
+  ratioValues: RatioValues;
+  statements: {
+    income: FinancialStatement;
+    balance: FinancialStatement;
+    cashflow: FinancialStatement;
+  };
+};
+
+const FINANCIAL_STATEMENT_CACHE_TABLE = "financial_statement_cache";
+const FINANCIAL_STATEMENT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const OPENDART_ANNUAL_REPORT_CODE = "11011";
+
+const KOREA_DART_CORP_CODES: Record<string, string> = {
+  "005930.KS": "00126380",
+  "000660.KS": "00164779",
+  "035420.KS": "00266961",
+  "035720.KS": "00401731"
+};
+let openDartCorpCodeCache: Map<string, string> | null = null;
 
 const MARKET_CONFIG: Record<
   MarketKey,
@@ -713,7 +738,12 @@ async function fetchSecCompanyFacts(symbol: string): Promise<SecCompanyFacts | n
 }
 
 function secFactRows(facts: SecCompanyFacts | null, concept: string) {
-  const rows = facts?.facts?.["us-gaap"]?.[concept]?.units?.USD || [];
+  return secFactRowsByUnits(facts, concept, ["USD"]);
+}
+
+function secFactRowsByUnits(facts: SecCompanyFacts | null, concept: string, units: string[]) {
+  const unitMap = facts?.facts?.["us-gaap"]?.[concept]?.units || {};
+  const rows = units.flatMap((unit) => unitMap[unit] || []);
   return rows
     .filter((row) => row.form?.startsWith("10-K") && row.fp === "FY" && Number.isFinite(row.val) && row.fy)
     .sort((a, b) => String(b.filed || b.end || "").localeCompare(String(a.filed || a.end || "")));
@@ -735,8 +765,12 @@ function secPeriods(facts: SecCompanyFacts | null) {
 }
 
 function secValue(facts: SecCompanyFacts | null, concepts: string[], fiscalYear: number) {
+  return secValueByUnits(facts, concepts, fiscalYear, ["USD"]);
+}
+
+function secValueByUnits(facts: SecCompanyFacts | null, concepts: string[], fiscalYear: number, units: string[]) {
   for (const concept of concepts) {
-    const row = secFactRows(facts, concept).find((item) => item.fy === fiscalYear);
+    const row = secFactRowsByUnits(facts, concept, units).find((item) => item.fy === fiscalYear);
     if (row && Number.isFinite(row.val)) {
       return Number(row.val);
     }
@@ -799,6 +833,297 @@ async function fetchSecStatements(symbol: string) {
   };
 }
 
+type OpenDartRow = {
+  bsns_year?: string;
+  fs_div?: string;
+  sj_div?: string;
+  account_id?: string;
+  account_nm?: string;
+  thstrm_amount?: string;
+  thstrm_add_amount?: string;
+};
+
+function openDartApiKey() {
+  return process.env.DART_API_KEY || process.env.OPENDART_API_KEY || process.env.OPEN_DART_API_KEY || "";
+}
+
+async function resolveOpenDartCorpCode(symbol: string) {
+  const normalized = normalizeSymbol(symbol);
+  const direct = KOREA_DART_CORP_CODES[normalized];
+  if (direct) {
+    return direct;
+  }
+  const stockCode = normalized.replace(/\.(KS|KQ)$/i, "");
+  if (!/^\d{6}$/.test(stockCode)) {
+    return null;
+  }
+  if (openDartCorpCodeCache?.has(stockCode)) {
+    return openDartCorpCodeCache.get(stockCode) || null;
+  }
+  const key = openDartApiKey();
+  if (!key) {
+    return null;
+  }
+  try {
+    const url = new URL("https://engopendart.fss.or.kr/engapi/corpCode.json");
+    url.searchParams.set("crtfc_key", key);
+    const response = await fetch(url, {
+      headers: { accept: "application/json" },
+      next: { revalidate: 604800 }
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as { list?: Array<{ stock_code?: string; corp_code?: string }>; result?: Array<{ stock_code?: string; corp_code?: string }> };
+    const rows = Array.isArray(payload.list) ? payload.list : Array.isArray(payload.result) ? payload.result : [];
+    openDartCorpCodeCache = new Map(
+      rows
+        .filter((row) => row.stock_code && row.corp_code)
+        .map((row) => [String(row.stock_code).trim(), String(row.corp_code).trim()])
+    );
+    return openDartCorpCodeCache.get(stockCode) || null;
+  } catch {
+    return null;
+  }
+}
+
+function cacheAgeMs(updatedAt: unknown) {
+  const timestamp = Date.parse(String(updatedAt || ""));
+  return Number.isFinite(timestamp) ? Date.now() - timestamp : Number.POSITIVE_INFINITY;
+}
+
+function isKoreaFinancialPayload(payload: unknown): payload is KoreaFinancialPayload {
+  const record = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return (
+    record.source === "opendart" &&
+    typeof record.symbol === "string" &&
+    record.statements !== null &&
+    typeof record.statements === "object" &&
+    record.ratioValues !== null &&
+    typeof record.ratioValues === "object"
+  );
+}
+
+async function readCachedKoreaFinancial(symbol: string) {
+  try {
+    const response = await supabaseAdmin()
+      .from(FINANCIAL_STATEMENT_CACHE_TABLE)
+      .select("payload,updated_at")
+      .eq("symbol", symbol)
+      .maybeSingle();
+    if (response.error || cacheAgeMs(response.data?.updated_at) > FINANCIAL_STATEMENT_CACHE_MAX_AGE_MS) {
+      return null;
+    }
+    return isKoreaFinancialPayload(response.data?.payload) ? response.data.payload : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedKoreaFinancial(symbol: string, payload: KoreaFinancialPayload) {
+  try {
+    await supabaseAdmin()
+      .from(FINANCIAL_STATEMENT_CACHE_TABLE)
+      .upsert({
+        symbol,
+        cache_date: new Date().toISOString().slice(0, 10),
+        payload,
+        updated_at: new Date().toISOString()
+      });
+  } catch {
+    // Cache writes should never block the symbol page.
+  }
+}
+
+function openDartYears() {
+  const latestLikelyAnnualYear = new Date().getFullYear() - 1;
+  return Array.from({ length: 4 }, (_, index) => String(latestLikelyAnnualYear - index));
+}
+
+async function fetchOpenDartRowsForYear(corpCode: string, year: string, fsDiv: "CFS" | "OFS") {
+  const key = openDartApiKey();
+  if (!key) {
+    return [];
+  }
+  const url = new URL("https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json");
+  url.searchParams.set("crtfc_key", key);
+  url.searchParams.set("corp_code", corpCode);
+  url.searchParams.set("bsns_year", year);
+  url.searchParams.set("reprt_code", OPENDART_ANNUAL_REPORT_CODE);
+  url.searchParams.set("fs_div", fsDiv);
+  try {
+    const response = await fetch(url, {
+      headers: { accept: "application/json" },
+      next: { revalidate: 604800 }
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = (await response.json()) as { status?: string; list?: OpenDartRow[] };
+    if (payload.status !== "000" || !Array.isArray(payload.list)) {
+      return [];
+    }
+    return payload.list.map((row) => ({ ...row, bsns_year: year }));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchOpenDartRows(symbol: string) {
+  const corpCode = await resolveOpenDartCorpCode(symbol);
+  if (!corpCode) {
+    return [];
+  }
+  const rows: OpenDartRow[] = [];
+  for (const year of openDartYears()) {
+    const consolidated = await fetchOpenDartRowsForYear(corpCode, year, "CFS");
+    const annualRows = consolidated.length ? consolidated : await fetchOpenDartRowsForYear(corpCode, year, "OFS");
+    rows.push(...annualRows);
+  }
+  return rows;
+}
+
+function dartNumber(value: unknown) {
+  const text = String(value || "")
+    .replace(/,/g, "")
+    .replace(/[()]/g, "")
+    .trim();
+  if (!text || text === "-") {
+    return null;
+  }
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+}
+
+function dartRowMatches(row: OpenDartRow, match: { sjDiv?: string; accountIds?: string[]; accountNames?: string[] }) {
+  const sjDiv = String(row.sj_div || "").toUpperCase();
+  if (match.sjDiv && sjDiv !== match.sjDiv) {
+    return false;
+  }
+  const accountId = String(row.account_id || "").toLowerCase();
+  if (match.accountIds?.some((id) => accountId === id.toLowerCase() || accountId.endsWith(id.toLowerCase()))) {
+    return true;
+  }
+  const accountName = String(row.account_nm || "").replace(/\s+/g, "");
+  return Boolean(match.accountNames?.some((name) => accountName.includes(name.replace(/\s+/g, ""))));
+}
+
+const DART_LINE_MATCHES: Record<string, { sjDiv?: string; accountIds?: string[]; accountNames?: string[] }> = {
+  total_assets: { sjDiv: "BS", accountIds: ["ifrs-full_Assets"], accountNames: ["자산총계"] },
+  current_assets: { sjDiv: "BS", accountIds: ["ifrs-full_CurrentAssets"], accountNames: ["유동자산"] },
+  total_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_Liabilities"], accountNames: ["부채총계"] },
+  current_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_CurrentLiabilities"], accountNames: ["유동부채"] },
+  total_equity: { sjDiv: "BS", accountIds: ["ifrs-full_Equity"], accountNames: ["자본총계"] },
+  revenue: { sjDiv: "IS", accountIds: ["ifrs-full_Revenue"], accountNames: ["수익", "매출액", "영업수익"] },
+  cost_of_revenue: { sjDiv: "IS", accountIds: ["ifrs-full_CostOfSales"], accountNames: ["매출원가"] },
+  gross_profit: { sjDiv: "IS", accountIds: ["ifrs-full_GrossProfit"], accountNames: ["매출총이익"] },
+  operating_income: { sjDiv: "IS", accountIds: ["dart_OperatingIncomeLoss"], accountNames: ["영업이익"] },
+  pretax_income: { sjDiv: "IS", accountIds: ["ifrs-full_ProfitLossBeforeTax"], accountNames: ["법인세비용차감전순이익"] },
+  tax: { sjDiv: "IS", accountIds: ["ifrs-full_IncomeTaxExpenseContinuingOperations"], accountNames: ["법인세비용"] },
+  net_income: { sjDiv: "IS", accountIds: ["ifrs-full_ProfitLoss"], accountNames: ["당기순이익"] },
+  comprehensive_income: { sjDiv: "CIS", accountIds: ["ifrs-full_ComprehensiveIncome"], accountNames: ["총포괄손익"] },
+  operating_cashflow: { sjDiv: "CF", accountIds: ["ifrs-full_CashFlowsFromUsedInOperatingActivities"], accountNames: ["영업활동현금흐름"] },
+  capex: { sjDiv: "CF", accountIds: ["ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"], accountNames: ["유형자산의취득"] },
+  dividends: { sjDiv: "CF", accountIds: ["ifrs-full_DividendsPaidClassifiedAsFinancingActivities"], accountNames: ["배당금지급"] }
+};
+
+function dartValue(rows: OpenDartRow[], year: string, key: string) {
+  const match = DART_LINE_MATCHES[key];
+  if (!match) {
+    return null;
+  }
+  const row = rows.find((item) => item.bsns_year === year && dartRowMatches(item, match));
+  return dartNumber(row?.thstrm_add_amount) ?? dartNumber(row?.thstrm_amount);
+}
+
+function dartYears(rows: OpenDartRow[]) {
+  return Array.from(new Set(rows.map((row) => String(row.bsns_year || "")).filter(Boolean)))
+    .sort((a, b) => Number(b) - Number(a))
+    .slice(0, 4);
+}
+
+function buildOpenDartStatement(rows: OpenDartRow[], definitions: LineDefinition[]): FinancialStatement {
+  const years = dartYears(rows);
+  const rowsByYear = years.map((year) => {
+    const values: Record<string, number | null> = {};
+    for (const definition of definitions) {
+      values[definition.key] = dartValue(rows, year, definition.key);
+    }
+    for (const definition of definitions) {
+      if (values[definition.key] === null) {
+        values[definition.key] = derivedSecValue(definition.key, values);
+      }
+    }
+    return values;
+  });
+  return {
+    columns: years,
+    lines: definitions.map((definition) => ({
+      key: definition.key,
+      label: definition.label,
+      values: rowsByYear.map((row) => row[definition.key] ?? null)
+    }))
+  };
+}
+
+function openDartRatioValues(rows: OpenDartRow[], marketPrice: number | null): RatioValues {
+  const years = dartYears(rows);
+  const latestYear = years[0];
+  if (!latestYear) {
+    return emptyRatioValues();
+  }
+  const revenue = dartValue(rows, latestYear, "revenue");
+  const operatingIncome = dartValue(rows, latestYear, "operating_income");
+  const netIncome = dartValue(rows, latestYear, "net_income");
+  const equity = dartValue(rows, latestYear, "total_equity");
+  const previousEquity = years[1] ? dartValue(rows, years[1], "total_equity") : null;
+  const epsRow = rows.find((row) =>
+    row.bsns_year === latestYear &&
+    dartRowMatches(row, {
+      sjDiv: "IS",
+      accountIds: ["ifrs-full_BasicEarningsLossPerShare", "ifrs-full_DilutedEarningsLossPerShare"],
+      accountNames: ["기본주당이익", "희석주당이익"]
+    })
+  );
+  const eps = dartNumber(epsRow?.thstrm_amount);
+  const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
+  return {
+    eps,
+    per: eps !== null && eps !== 0 && marketPrice !== null ? marketPrice / eps : null,
+    netMargin: revenue !== null && revenue !== 0 && netIncome !== null ? netIncome / revenue : null,
+    operatingMargin: revenue !== null && revenue !== 0 && operatingIncome !== null ? operatingIncome / revenue : null,
+    roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null
+  };
+}
+
+async function koreaOpenDartFinancial(symbol: string, marketPrice: number | null): Promise<KoreaFinancialPayload | null> {
+  const normalized = normalizeSymbol(symbol);
+  if (!isKoreaSymbol(normalized)) {
+    return null;
+  }
+  const cached = await readCachedKoreaFinancial(normalized);
+  if (cached) {
+    return cached;
+  }
+  const rows = await fetchOpenDartRows(normalized);
+  if (!rows.length) {
+    return null;
+  }
+  const payload: KoreaFinancialPayload = {
+    source: "opendart",
+    symbol: normalized,
+    refreshedAt: new Date().toISOString(),
+    ratioValues: openDartRatioValues(rows, marketPrice),
+    statements: {
+      income: buildOpenDartStatement(rows, INCOME_LINES),
+      balance: buildOpenDartStatement(rows, BALANCE_LINES),
+      cashflow: buildOpenDartStatement(rows, CASHFLOW_LINES)
+    }
+  };
+  await writeCachedKoreaFinancial(normalized, payload);
+  return payload;
+}
+
 function formatRatio(value: number | null, type: "number" | "percent") {
   if (value === null) {
     return "N/A";
@@ -809,7 +1134,11 @@ function formatRatio(value: number | null, type: "number" | "percent") {
   return value.toFixed(2);
 }
 
-function ratioValues(summary: Record<string, unknown>) {
+function emptyRatioValues(): RatioValues {
+  return { eps: null, per: null, netMargin: null, operatingMargin: null, roe: null };
+}
+
+function ratioValues(summary: Record<string, unknown>): RatioValues {
   const price = (summary.price || {}) as Record<string, unknown>;
   const financialData = (summary.financialData || {}) as Record<string, unknown>;
   const stats = (summary.defaultKeyStatistics || {}) as Record<string, unknown>;
@@ -825,15 +1154,64 @@ function ratioValues(summary: Record<string, unknown>) {
   };
 }
 
+async function secRatioValues(symbol: string, marketPrice: number | null): Promise<RatioValues> {
+  const facts = await fetchSecCompanyFacts(symbol);
+  const periods = secPeriods(facts);
+  const latestYear = periods[0]?.fy;
+  if (!latestYear) {
+    return emptyRatioValues();
+  }
+  const revenue = secValue(facts, SEC_FACT_FIELDS.revenue, latestYear);
+  const operatingIncome = secValue(facts, SEC_FACT_FIELDS.operating_income, latestYear);
+  const netIncome = secValue(facts, SEC_FACT_FIELDS.net_income, latestYear);
+  const equity = secValue(facts, SEC_FACT_FIELDS.total_equity, latestYear);
+  const previousEquity = periods[1]?.fy ? secValue(facts, SEC_FACT_FIELDS.total_equity, periods[1].fy) : null;
+  const eps =
+    secValueByUnits(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], latestYear, ["USD/shares", "USD / shares"]) ??
+    null;
+  const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
+  return {
+    eps,
+    per: eps !== null && eps !== 0 && marketPrice !== null ? marketPrice / eps : null,
+    netMargin: revenue !== null && revenue !== 0 && netIncome !== null ? netIncome / revenue : null,
+    operatingMargin: revenue !== null && revenue !== 0 && operatingIncome !== null ? operatingIncome / revenue : null,
+    roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null
+  };
+}
+
+function mergeRatioValues(primary: RatioValues, fallback: RatioValues) {
+  return {
+    eps: primary.eps ?? fallback.eps,
+    per: primary.per ?? fallback.per,
+    netMargin: primary.netMargin ?? fallback.netMargin,
+    operatingMargin: primary.operatingMargin ?? fallback.operatingMargin,
+    roe: primary.roe ?? fallback.roe
+  };
+}
+
 function average(values: Array<number | null>) {
   const valid = values.filter((value): value is number => value !== null && Number.isFinite(value));
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null;
 }
 
-async function financialRatios(summary: Record<string, unknown>, peerSymbols: string[]): Promise<{ rows: FinancialRatioRow[]; peerCount: number }> {
-  const company = ratioValues(summary);
-  const peerSummaries = await Promise.all(peerSymbols.slice(0, 5).map((peer) => fetchYahooSummary(peer)));
-  const peers = peerSummaries.map(ratioValues);
+async function financialRatios(
+  symbol: string,
+  summary: Record<string, unknown>,
+  peerSymbols: string[],
+  marketPrice: number | null,
+  koreaFinancial: KoreaFinancialPayload | null = null
+): Promise<{ rows: FinancialRatioRow[]; peerCount: number }> {
+  const companyFallback = isKoreaSymbol(symbol) ? koreaFinancial?.ratioValues ?? emptyRatioValues() : await secRatioValues(symbol, marketPrice);
+  const company = mergeRatioValues(ratioValues(summary), companyFallback);
+  const peers = await Promise.all(
+    peerSymbols.slice(0, 5).map(async (peer) => {
+      const [peerSummary, peerQuote] = await Promise.all([fetchYahooSummary(peer), getQuote(peer)]);
+      const peerFallback = isKoreaSymbol(peer)
+        ? (await koreaOpenDartFinancial(peer, peerQuote.price))?.ratioValues ?? emptyRatioValues()
+        : await secRatioValues(peer, peerQuote.price);
+      return mergeRatioValues(ratioValues(peerSummary), peerFallback);
+    })
+  );
   const peerCount = peers.filter((peer) => peer.eps !== null || peer.per !== null || peer.netMargin !== null || peer.operatingMargin !== null || peer.roe !== null).length;
   return {
     peerCount,
@@ -888,11 +1266,12 @@ export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"
     balance: bestFinancialStatement(summary.balanceSheetHistory, summary.balanceSheetHistoryQuarterly, "balanceSheetStatements", BALANCE_LINES),
     cashflow: bestFinancialStatement(summary.cashflowStatementHistory, summary.cashflowStatementHistoryQuarterly, "cashflowStatements", CASHFLOW_LINES)
   };
+  const koreaFinancial = isKoreaSymbol(normalized) ? await koreaOpenDartFinancial(normalized, quote.price) : null;
   const needsSecStatements =
     !hasStatementValues(yahooStatements.income) || !hasStatementValues(yahooStatements.balance) || !hasStatementValues(yahooStatements.cashflow);
   const [peers, ratios, secStatements] = await Promise.all([
     getQuotes(comparablePeers),
-    financialRatios(summary, comparablePeers),
+    financialRatios(normalized, summary, comparablePeers, quote.price, koreaFinancial),
     needsSecStatements ? fetchSecStatements(normalized) : Promise.resolve(null)
   ]);
   const enrichedPeers = Array.from(peers.values())
@@ -923,9 +1302,9 @@ export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"
     },
     peers: enrichedPeers,
     statements: {
-      income: hasStatementValues(yahooStatements.income) ? yahooStatements.income : secStatements?.income ?? yahooStatements.income,
-      balance: hasStatementValues(yahooStatements.balance) ? yahooStatements.balance : secStatements?.balance ?? yahooStatements.balance,
-      cashflow: hasStatementValues(yahooStatements.cashflow) ? yahooStatements.cashflow : secStatements?.cashflow ?? yahooStatements.cashflow,
+      income: hasStatementValues(yahooStatements.income) ? yahooStatements.income : secStatements?.income ?? koreaFinancial?.statements.income ?? yahooStatements.income,
+      balance: hasStatementValues(yahooStatements.balance) ? yahooStatements.balance : secStatements?.balance ?? koreaFinancial?.statements.balance ?? yahooStatements.balance,
+      cashflow: hasStatementValues(yahooStatements.cashflow) ? yahooStatements.cashflow : secStatements?.cashflow ?? koreaFinancial?.statements.cashflow ?? yahooStatements.cashflow,
       ratios: ratios.rows,
       ratioPeerCount: ratios.peerCount,
       ratioIndustry: String(resolvedProfile.industry || sector || "industry")

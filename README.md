@@ -80,6 +80,7 @@ Required Vercel environment variables:
 SUPABASE_URL=https://lwtlxlhnxznehomhlhif.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SESSION_SECRET=your-long-random-session-secret
+DART_API_KEY=your-opendart-api-key
 ```
 
 Do not expose `SUPABASE_SERVICE_ROLE_KEY` as a `NEXT_PUBLIC_...` variable. It is used only by Next.js server routes.
@@ -147,13 +148,14 @@ The Fly.io app is configured with `auto_stop_machines = "off"` and `min_machines
 
 Before deploying, create `public.market_quote_cache` by running `supabase_market_quote_cache.sql` in the Supabase SQL Editor.
 
-For daily financial statement and ratio caching, also run `supabase_financial_statement_cache.sql` in the Supabase SQL Editor. The Streamlit app uses this table to reuse the same financial data for a symbol for one calendar day instead of recalculating it on every page load.
+For weekly financial statement and ratio caching, also run `supabase_financial_statement_cache.sql` in the Supabase SQL Editor. The Next.js app stores OpenDART Korean-stock financial data in this table and reuses it for seven days instead of calling OpenDART on every page load.
 
 In Fly.io, add these secrets in the app's **Secrets** page:
 
 ```text
 SUPABASE_URL=https://lwtlxlhnxznehomhlhif.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+DART_API_KEY=your-opendart-api-key
 ```
 
 If deploying with `flyctl`, use:

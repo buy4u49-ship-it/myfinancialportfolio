@@ -1644,10 +1644,9 @@ function chartXTicks(points: ChartPoint[]) {
   for (let index = 0; index < points.length; index += step) {
     indexes.add(index);
   }
-  indexes.add(points.length - 1);
   return Array.from(indexes)
     .sort((a, b) => a - b)
-    .slice(-9)
+    .slice(0, 9)
     .map((index) => ({ point: points[index], index }));
 }
 
