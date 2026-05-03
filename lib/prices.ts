@@ -139,18 +139,31 @@ async function fetchUpbitKrwQuote(symbol: string): Promise<Quote> {
   };
 }
 
-async function fetchUpbitKrwQuotes(symbols: string[]) {
+async function fetchUpbitKrwQuotes(symbols: string[]): Promise<Map<string, Quote>> {
   const normalized = Array.from(new Set(symbols.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)));
   const markets = normalized.map((symbol) => `KRW-${cryptoBaseSymbol(symbol)}`);
   if (!markets.length) {
     return new Map<string, Quote>();
   }
-  const response = await fetch(`https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(markets.join(","))}`, {
-    headers: { accept: "application/json" },
-    cache: "no-store"
-  });
+  let response: Response;
+  try {
+    response = await fetch(`https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(markets.join(","))}`, {
+      headers: { accept: "application/json" },
+      cache: "no-store"
+    });
+  } catch {
+    response = new Response(null, { status: 500 });
+  }
   if (!response.ok) {
-    return new Map<string, Quote>();
+    if (normalized.length <= 1) {
+      return new Map<string, Quote>();
+    }
+    const midpoint = Math.ceil(normalized.length / 2);
+    const [left, right] = await Promise.all([
+      fetchUpbitKrwQuotes(normalized.slice(0, midpoint)),
+      fetchUpbitKrwQuotes(normalized.slice(midpoint))
+    ]);
+    return new Map([...left, ...right]);
   }
   const data = (await response.json()) as Array<Record<string, unknown>>;
   const quotes = new Map<string, Quote>();
