@@ -15,6 +15,7 @@ import type {
   Quote,
   SymbolDetailResponse
 } from "@/lib/types";
+import { KOREA_STOCK_NAMES } from "@/lib/symbols";
 
 type User = {
   username: string;
@@ -110,8 +111,15 @@ function signedClass(value: number | null | undefined) {
 
 function displayIndexLabel(symbol: string) {
   const normalized = symbol.toUpperCase();
+  if (KOREA_STOCK_NAMES[normalized]) {
+    return KOREA_STOCK_NAMES[normalized];
+  }
   const label = INDEX_LABELS[normalized];
   return label ? `${label} (${normalized})` : normalized;
+}
+
+function displayMarketSymbol(symbol: string) {
+  return KOREA_STOCK_NAMES[symbol.toUpperCase()] || symbol;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
@@ -1860,6 +1868,7 @@ function MoverTable({
   rows: MarketMoverRow[];
   onOpenSymbol: (symbol: string) => void;
 }) {
+  const usesKoreaNames = rows.some((row) => Boolean(KOREA_STOCK_NAMES[row.symbol.toUpperCase()]));
   return (
     <section className="panel mover-panel">
       <div className="panel-heading compact-heading">
@@ -1869,7 +1878,7 @@ function MoverTable({
         <table>
           <thead>
             <tr>
-              <th className="text-cell">Symbol</th>
+              <th className="text-cell">{usesKoreaNames ? "Name" : "Symbol"}</th>
               <th className="number-cell">Price</th>
               <th className="number-cell">Change</th>
               <th className="number-cell">Volume</th>
@@ -1878,7 +1887,9 @@ function MoverTable({
           <tbody>
             {rows.map((row) => (
               <tr key={`${title}-${row.symbol}`} onClick={() => onOpenSymbol(row.symbol)} className="click-row">
-                <td className="text-cell strong">{row.symbol}</td>
+                <td className="text-cell strong" title={row.symbol}>
+                  {displayMarketSymbol(row.symbol)}
+                </td>
                 <td className="number-cell">{formatMoney(row.price, row.currency)}</td>
                 <td className={`number-cell ${signedClass(row.changePct)}`}>{formatPct(row.changePct)}</td>
                 <td className="number-cell">{formatCompact(row.volume)}</td>

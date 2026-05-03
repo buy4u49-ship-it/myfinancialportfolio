@@ -57,6 +57,24 @@ export const POPULAR_SYMBOLS = [
   "000660.KS"
 ];
 
+export const KOREA_STOCK_NAMES: Record<string, string> = {
+  "005930.KS": "삼성전자",
+  "000660.KS": "SK하이닉스",
+  "373220.KS": "LG에너지솔루션",
+  "207940.KS": "삼성바이오로직스",
+  "005380.KS": "현대차",
+  "000270.KS": "기아",
+  "068270.KS": "셀트리온",
+  "035420.KS": "NAVER",
+  "105560.KS": "KB금융",
+  "012450.KS": "한화에어로스페이스",
+  "035720.KS": "카카오",
+  "066570.KS": "LG전자",
+  "012330.KS": "현대모비스",
+  "055550.KS": "신한지주",
+  "032830.KS": "삼성생명"
+};
+
 export function normalizeUsername(username: string) {
   return username.trim().toLowerCase();
 }
