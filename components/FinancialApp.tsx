@@ -782,7 +782,7 @@ function MarketPage({
           <QuotePill quote={data.representative.quote} showSymbol={false} />
         </div>
         <TimeRangeSelector ranges={MARKET_CHART_RANGES} active={range} onChange={onRange} />
-        <LineChart points={data.representative.chart} currency={data.representative.quote.currency} />
+        <LineChart points={data.representative.chart} currency={data.representative.quote.currency} range={range} />
       </section>
 
       <section className="panel indices-panel">
@@ -855,7 +855,7 @@ function SymbolDetail({
           <QuotePill quote={data.quote} />
         </div>
         <TimeRangeSelector label="Bar range" ranges={SYMBOL_BAR_RANGES} active={range} onChange={onRange} />
-        <PriceBarChart points={data.chart} currency={data.quote.currency} />
+        <PriceBarChart points={data.chart} currency={data.quote.currency} range={range} />
       </section>
 
       <nav className="subtabs">
@@ -1620,23 +1620,21 @@ function chartStats(points: ChartPoint[]) {
   return { min, max, span, ticks };
 }
 
-function chartXLabel(point: ChartPoint, index: number, total: number) {
+function chartXLabel(point: ChartPoint, range: ChartRange) {
   const date = new Date(point.time);
   if (!Number.isFinite(date.getTime())) {
     return "";
   }
-  if (total > 80) {
+  if (range === "1D") {
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
-  if (total > 35) {
-    return date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
+  if (range === "1Y" || range === "YTD") {
+    return date.toLocaleDateString([], { year: "2-digit", month: "2-digit", day: "2-digit" });
   }
-  return index % 2 === 0
-    ? date.toLocaleDateString([], { month: "2-digit", day: "2-digit" })
-    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
 }
 
-function LineChart({ points, currency }: { points: ChartPoint[]; currency: string }) {
+function LineChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
   const width = 1280;
   const height = 340;
   const margin = { top: 26, right: 28, bottom: 54, left: 142 };
@@ -1667,7 +1665,7 @@ function LineChart({ points, currency }: { points: ChartPoint[]; currency: strin
               const index = points.indexOf(point);
               return (
                 <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={height - 18} className="chart-axis-label" textAnchor="middle">
-                  {chartXLabel(point, index, points.length)}
+                  {chartXLabel(point, range)}
                 </text>
               );
             })}
@@ -1691,7 +1689,7 @@ function LineChart({ points, currency }: { points: ChartPoint[]; currency: strin
   );
 }
 
-function PriceBarChart({ points, currency }: { points: ChartPoint[]; currency: string }) {
+function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
   const width = 1280;
   const height = 340;
   const margin = { top: 26, right: 28, bottom: 54, left: 142 };
@@ -1742,7 +1740,7 @@ function PriceBarChart({ points, currency }: { points: ChartPoint[]; currency: s
               const index = points.indexOf(point);
               return (
                 <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={height - 18} className="chart-axis-label" textAnchor="middle">
-                  {chartXLabel(point, index, points.length)}
+                  {chartXLabel(point, range)}
                 </text>
               );
             })}
