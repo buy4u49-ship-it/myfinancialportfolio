@@ -77,9 +77,11 @@ export type PortfolioSummary = {
   currentValue: number;
   costBasis: number;
   unrealizedGainLoss: number;
+  totalReturnPct: number | null;
   realizedGainLoss: number;
   cumulativeGainLoss: number;
   cumulativeReturnPct: number | null;
+  cumulativeInvestmentValue: number;
   totalBuyAmount: number;
   currency: string;
 };

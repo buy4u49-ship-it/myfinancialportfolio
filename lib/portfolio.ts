@@ -197,17 +197,23 @@ function buildPortfolioSummary(rows: PortfolioRow[], transactions: PortfolioTran
   const costBasis = rows.reduce((sum, row) => sum + row.costBasis, 0);
   const unrealizedGainLoss = rows.reduce((sum, row) => sum + (row.gainLoss ?? 0), 0);
   const realizedGainLoss = transactions.reduce((sum, tx) => sum + numberOrZero(tx.realized_gain_loss), 0);
+  const realizedCostBasis = transactions
+    .filter((tx) => tx.type === "SELL")
+    .reduce((sum, tx) => sum + numberOrZero(tx.cost_basis), 0);
   const totalBuyAmount = transactions
     .filter((tx) => tx.type === "BUY")
     .reduce((sum, tx) => sum + numberOrZero(tx.value), 0);
   const cumulativeGainLoss = realizedGainLoss + unrealizedGainLoss;
+  const cumulativeInvestmentValue = Math.max(costBasis + realizedCostBasis, totalBuyAmount, costBasis);
   return {
     currentValue,
     costBasis,
     unrealizedGainLoss,
+    totalReturnPct: costBasis > 0 ? (unrealizedGainLoss / costBasis) * 100 : null,
     realizedGainLoss,
     cumulativeGainLoss,
-    cumulativeReturnPct: totalBuyAmount > 0 ? (cumulativeGainLoss / totalBuyAmount) * 100 : null,
+    cumulativeReturnPct: cumulativeInvestmentValue > 0 ? (cumulativeGainLoss / cumulativeInvestmentValue) * 100 : null,
+    cumulativeInvestmentValue,
     totalBuyAmount,
     currency: rows.find((row) => row.currency)?.currency || "KRW"
   };

@@ -39,6 +39,21 @@ const moneyFormatters = new Map<string, Intl.NumberFormat>();
 const numberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 });
 const MARKET_CHART_RANGES: ChartRange[] = ["1D", "1W", "1M", "1Y"];
 const SYMBOL_BAR_RANGES: ChartRange[] = ["1W", "1M", "1Y", "YTD"];
+const INDEX_LABELS: Record<string, string> = {
+  "BTC-KRW": "Bitcoin",
+  "ETH-KRW": "Ethereum",
+  "SOL-KRW": "Solana",
+  "BNB-KRW": "BNB",
+  "^GSPC": "S&P 500 Index",
+  "^IXIC": "Nasdaq Composite",
+  "^DJI": "Dow Jones Industrial Average",
+  "^RUT": "Russell 2000",
+  "^VIX": "CBOE Volatility Index",
+  "^KS11": "KOSPI Composite Index",
+  "^KQ11": "KOSDAQ Composite Index",
+  "005930.KS": "Samsung Electronics",
+  "000660.KS": "SK Hynix"
+};
 
 function currencyFormatter(currency: string) {
   const key = currency || "USD";
@@ -91,6 +106,12 @@ function signedClass(value: number | null | undefined) {
     return "neutral";
   }
   return value > 0 ? "positive" : "negative";
+}
+
+function displayIndexLabel(symbol: string) {
+  const normalized = symbol.toUpperCase();
+  const label = INDEX_LABELS[normalized];
+  return label ? `${label} (${normalized})` : normalized;
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
@@ -428,7 +449,6 @@ export default function FinancialApp() {
         <div>
           <p className="eyebrow">My Financial Portfolio</p>
           <h1>{pageTitle}</h1>
-          <p className="muted clean-subtitle">Supabase account data / Fly.io Upbit cache / Vercel Next.js interface</p>
         </div>
         <div className="topbar-actions">
           <button className="ghost-button" onClick={refreshCurrentPage} disabled={busy}>
@@ -606,8 +626,8 @@ function Sidebar({
         <section className="side-section side-summary">
           <MiniMetric label="Current Wealth" value={formatMoney(portfolio.summary.currentValue, currency)} />
           <MiniMetric label="Total Investment" value={formatMoney(portfolio.summary.costBasis, currency)} />
-          <MiniMetric label="Total Gain/Loss" value={formatMoney(portfolio.summary.cumulativeGainLoss, currency)} tone={signedClass(portfolio.summary.cumulativeGainLoss)} />
-          <MiniMetric label="Total Return" value={formatPct(portfolio.summary.cumulativeReturnPct)} tone={signedClass(portfolio.summary.cumulativeReturnPct)} />
+          <MiniMetric label="Total Gain/Loss" value={formatMoney(portfolio.summary.unrealizedGainLoss, currency)} tone={signedClass(portfolio.summary.unrealizedGainLoss)} />
+          <MiniMetric label="Total Return" value={formatPct(portfolio.summary.totalReturnPct)} tone={signedClass(portfolio.summary.totalReturnPct)} />
           <button className="ghost-button" onClick={onGoMyPage}>My Page</button>
           <button className="ghost-button" onClick={onLogout}>Logout</button>
         </section>
@@ -750,27 +770,25 @@ function MarketPage({
         <div className="panel-heading">
           <div>
             <h2>{data.representative.name}</h2>
-            <p className="muted">Representative market chart</p>
           </div>
-          <QuotePill quote={data.representative.quote} />
+          <QuotePill quote={data.representative.quote} showSymbol={false} />
         </div>
         <TimeRangeSelector ranges={MARKET_CHART_RANGES} active={range} onChange={onRange} />
         <LineChart points={data.representative.chart} currency={data.representative.quote.currency} />
       </section>
 
-      <section className="panel">
+      <section className="panel indices-panel">
         <div className="panel-heading">
           <div>
             <h2>Major Indices</h2>
-            <p className="muted">Core market signals from the Streamlit dashboard.</p>
           </div>
         </div>
-        <div className="quote-grid">
+        <div className="index-strip-grid">
           {data.indices.map((quote) => (
-            <button key={quote.symbol} className="quote-card" onClick={() => onOpenSymbol(quote.symbol)}>
-              <span>{quote.symbol}</span>
-              <strong>{formatMoney(quote.price, quote.currency)}</strong>
-              <em className={signedClass(quote.changePct)}>{formatPct(quote.changePct)}</em>
+            <button key={quote.symbol} className="index-metric" onClick={() => onOpenSymbol(quote.symbol)}>
+              <span className="index-metric-label">{displayIndexLabel(quote.symbol)}</span>
+              <strong className="index-metric-value">{formatMoney(quote.price, quote.currency)}</strong>
+              <IndexDeltaPill value={quote.changePct} />
             </button>
           ))}
         </div>
@@ -848,12 +866,11 @@ function SymbolDetail({
       {activeTab === "overview" ? (
         <section className="two-column">
           <article className="panel">
-            <div className="panel-heading">
-              <div>
-                <h2>Company Profile</h2>
-                <p className="muted">{data.profile.website || "Website unavailable"}</p>
-              </div>
-            </div>
+        <div className="panel-heading">
+          <div>
+            <h2>Company Profile</h2>
+          </div>
+        </div>
             <div className="profile-facts">
               <MiniMetric label="Sector" value={data.profile.sector || "N/A"} />
               <MiniMetric label="Industry" value={data.profile.industry || "N/A"} />
@@ -863,12 +880,11 @@ function SymbolDetail({
             <p className="profile-copy">{data.profile.summary || "Company profile data is unavailable for this symbol."}</p>
           </article>
           <article className="panel">
-            <div className="panel-heading">
-              <div>
-                <h2>Sector Watchlist Candidates</h2>
-                <p className="muted">Comparable watchlist, not investment advice.</p>
-              </div>
-            </div>
+        <div className="panel-heading">
+          <div>
+            <h2>Sector Watchlist Candidates</h2>
+          </div>
+        </div>
             <div className="table-wrap peer-table-wrap">
               <table className="peer-table">
                 <thead>
@@ -908,12 +924,11 @@ function SymbolDetail({
 
       {activeTab === "price" ? (
         <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Price Snapshot</h2>
-              <p className="muted">Source: {data.quote.source || data.quote.exchange}</p>
-            </div>
+        <div className="panel-heading">
+          <div>
+            <h2>Price Snapshot</h2>
           </div>
+        </div>
           <div className="quote-grid">
             <SummaryCard label="High" value={formatMoney(data.metrics.high, data.quote.currency)} />
             <SummaryCard label="Low" value={formatMoney(data.metrics.low, data.quote.currency)} />
@@ -1038,7 +1053,6 @@ function MyPage({
         <div className="panel-heading">
           <div>
             <h2>Current Portfolio</h2>
-            <p className="muted">Signed in as {user.displayName}. Numbers are right-aligned; text is left-aligned.</p>
           </div>
           <div className="add-position">
             <input placeholder="Symbol, e.g. BTC-KRW" value={newSymbol} onChange={(event) => setNewSymbol(event.target.value)} />
@@ -1142,13 +1156,13 @@ function PortfolioAnalytics({
         <MiniMetric label="Total Investment Value" value={formatMoney(portfolio?.summary.costBasis, currency)} />
         <MiniMetric
           label="Total Gain/Loss"
-          value={formatMoney(portfolio?.summary.cumulativeGainLoss, currency)}
-          tone={signedClass(portfolio?.summary.cumulativeGainLoss)}
+          value={formatMoney(portfolio?.summary.unrealizedGainLoss, currency)}
+          tone={signedClass(portfolio?.summary.unrealizedGainLoss)}
         />
         <MiniMetric
           label="Total Return"
-          value={formatPct(portfolio?.summary.cumulativeReturnPct)}
-          tone={signedClass(portfolio?.summary.cumulativeReturnPct)}
+          value={formatPct(portfolio?.summary.totalReturnPct)}
+          tone={signedClass(portfolio?.summary.totalReturnPct)}
         />
       </article>
       <article className="portfolio-card-stack">
@@ -1165,7 +1179,6 @@ function PortfolioAnalytics({
           value={formatMoney(projection?.expectedGainLoss, currency)}
           tone={signedClass(projection?.expectedGainLoss)}
         />
-        {projection?.betaCoveragePct ? <p className="muted">Beta coverage: {projection.betaCoveragePct.toFixed(1)}% of current portfolio value.</p> : null}
       </article>
     </section>
   );
@@ -1260,7 +1273,6 @@ function PriceAlertsPanel({
       <div className="panel-heading">
         <div>
           <h2>Price Alerts</h2>
-          <p className="muted">Alerts are checked whenever My Page refreshes.</p>
         </div>
         <div className="alert-form">
           <input placeholder="Symbol" value={symbol} onChange={(event) => onSymbol(event.target.value)} />
@@ -1340,7 +1352,6 @@ function AccountPanel({
       <div className="panel-heading">
         <div>
           <h2>Account</h2>
-          <p className="muted">Signed in as {user.username}.</p>
         </div>
       </div>
       <div className="account-form">
@@ -1543,13 +1554,24 @@ function SummaryCard({ label, value, tone = "neutral" }: { label: string; value:
   );
 }
 
-function QuotePill({ quote }: { quote: Quote }) {
+function QuotePill({ quote, showSymbol = true }: { quote: Quote; showSymbol?: boolean }) {
   return (
     <div className="quote-pill">
-      <span>{quote.symbol}</span>
+      {showSymbol ? <span>{quote.symbol}</span> : null}
       <strong>{formatMoney(quote.price, quote.currency)}</strong>
       <em className={signedClass(quote.changePct)}>{formatPct(quote.changePct)}</em>
     </div>
+  );
+}
+
+function IndexDeltaPill({ value }: { value: number | null | undefined }) {
+  const hasValue = value !== null && value !== undefined && Number.isFinite(value);
+  const arrow = hasValue ? (value < 0 ? "\u2193" : "\u2191") : "";
+  return (
+    <em className={`index-delta ${signedClass(value)}`}>
+      {arrow ? <span aria-hidden="true">{arrow}</span> : null}
+      {formatPct(value)}
+    </em>
   );
 }
 
@@ -1746,7 +1768,6 @@ function MacroPanel({ points }: { points: MacroPoint[] }) {
       <div className="panel-heading">
         <div>
           <h2>Rates and M2</h2>
-          <p className="muted">Policy rates and M2 liquidity over the recent five-year window. M2 is normalized to USD billions.</p>
         </div>
         <select className="macro-country-select" value={country} onChange={(event) => setCountry(event.target.value as MacroPoint["country"])}>
           {countries.map((item) => (
@@ -2082,7 +2103,6 @@ function FinancialRatioPanel({
       <div className="panel-heading compact-heading">
         <div>
           <h2>Financial Ratio</h2>
-          <p className="muted">{peerCount ? `Industry average uses ${peerCount} comparable companies from ${industry}.` : `Industry average is unavailable for ${industry}.`}</p>
         </div>
       </div>
       <div className="table-wrap financial-ratio-wrap">
@@ -2197,7 +2217,6 @@ function TransactionPanel({
       <div className="panel-heading">
         <div>
           <h2>Transaction History</h2>
-          <p className="muted">Every recorded Buy/Sell trade is listed here.</p>
         </div>
         <div className="history-highlight">
           <span>Recorded Realized P/L</span>
