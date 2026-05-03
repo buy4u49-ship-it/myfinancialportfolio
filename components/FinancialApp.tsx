@@ -1634,10 +1634,39 @@ function chartXLabel(point: ChartPoint, range: ChartRange) {
   return date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
 }
 
+function chartXTicks(points: ChartPoint[]) {
+  if (!points.length) {
+    return [];
+  }
+  const targetTickCount = 8;
+  const step = Math.max(1, Math.floor((points.length - 1) / targetTickCount));
+  const indexes = new Set<number>();
+  for (let index = 0; index < points.length; index += step) {
+    indexes.add(index);
+  }
+  indexes.add(points.length - 1);
+  return Array.from(indexes)
+    .sort((a, b) => a - b)
+    .slice(-9)
+    .map((index) => ({ point: points[index], index }));
+}
+
+function chartTickAnchor(tickIndex: number, totalTicks: number) {
+  if (tickIndex === 0) {
+    return "start";
+  }
+  if (tickIndex === totalTicks - 1) {
+    return "end";
+  }
+  return "middle";
+}
+
 function LineChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
   const width = 1280;
-  const height = 340;
-  const margin = { top: 26, right: 28, bottom: 54, left: 142 };
+  const height = 360;
+  const margin = { top: 26, right: 28, bottom: 74, left: 142 };
+  const xTickY = height - 42;
+  const xTitleY = height - 8;
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
   const { min, span, ticks } = chartStats(points);
@@ -1646,7 +1675,7 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
   const path = points
     .map((point, index) => `${index === 0 ? "M" : "L"}${xFor(index).toFixed(2)},${yFor(point.close).toFixed(2)}`)
     .join(" ");
-  const xTicks = points.filter((_, index) => index % Math.max(1, Math.floor(points.length / 8)) === 0).slice(0, 9);
+  const xTicks = chartXTicks(points);
 
   return (
     <div className="chart-shell full-chart">
@@ -1661,10 +1690,9 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
                 </text>
               </g>
             ))}
-            {xTicks.map((point, tickIndex) => {
-              const index = points.indexOf(point);
+            {xTicks.map(({ point, index }, tickIndex) => {
               return (
-                <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={height - 18} className="chart-axis-label" textAnchor="middle">
+                <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={xTickY} className="chart-axis-label" textAnchor={chartTickAnchor(tickIndex, xTicks.length)}>
                   {chartXLabel(point, range)}
                 </text>
               );
@@ -1672,7 +1700,7 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
             <text x={28} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 28 ${margin.top + innerHeight / 2})`}>
               Price
             </text>
-            <text x={margin.left + innerWidth / 2} y={height - 2} className="chart-axis-title" textAnchor="middle">
+            <text x={margin.left + innerWidth / 2} y={xTitleY} className="chart-axis-title" textAnchor="middle">
               Time
             </text>
             <path d={path} fill="none" stroke="#2563eb" strokeWidth="1.8" vectorEffect="non-scaling-stroke" />
@@ -1691,15 +1719,17 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
 
 function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
   const width = 1280;
-  const height = 340;
-  const margin = { top: 26, right: 28, bottom: 54, left: 142 };
+  const height = 360;
+  const margin = { top: 26, right: 28, bottom: 74, left: 142 };
+  const xTickY = height - 42;
+  const xTitleY = height - 8;
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
   const { min, span, ticks } = chartStats(points);
   const xFor = (index: number) => margin.left + (index / Math.max(points.length - 1, 1)) * innerWidth;
   const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
   const barWidth = Math.max(3, Math.min(13, innerWidth / Math.max(points.length, 1) * 0.62));
-  const xTicks = points.filter((_, index) => index % Math.max(1, Math.floor(points.length / 8)) === 0).slice(0, 9);
+  const xTicks = chartXTicks(points);
 
   return (
     <div className="chart-shell full-chart">
@@ -1736,10 +1766,9 @@ function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; curr
                 </g>
               );
             })}
-            {xTicks.map((point, tickIndex) => {
-              const index = points.indexOf(point);
+            {xTicks.map(({ point, index }, tickIndex) => {
               return (
-                <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={height - 18} className="chart-axis-label" textAnchor="middle">
+                <text key={`${point.time}-${tickIndex}`} x={xFor(index)} y={xTickY} className="chart-axis-label" textAnchor={chartTickAnchor(tickIndex, xTicks.length)}>
                   {chartXLabel(point, range)}
                 </text>
               );
@@ -1747,7 +1776,7 @@ function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; curr
             <text x={28} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 28 ${margin.top + innerHeight / 2})`}>
               Price
             </text>
-            <text x={margin.left + innerWidth / 2} y={height - 2} className="chart-axis-title" textAnchor="middle">
+            <text x={margin.left + innerWidth / 2} y={xTitleY} className="chart-axis-title" textAnchor="middle">
               Time
             </text>
           </svg>
