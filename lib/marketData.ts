@@ -369,15 +369,24 @@ async function fetchYahooChart(symbol: string, range: ChartRange = "1M"): Promis
   const volumes = quote?.volume || [];
   return timestamps
     .map((timestamp, index): ChartPoint | null => {
+      const open = numberOrNull(opens[index]);
+      const high = numberOrNull(highs[index]);
+      const low = numberOrNull(lows[index]);
       const close = numberOrNull(closes[index]);
-      if (close === null) {
+      if (
+        close === null ||
+        close <= 0 ||
+        (open !== null && open <= 0) ||
+        (high !== null && high <= 0) ||
+        (low !== null && low <= 0)
+      ) {
         return null;
       }
       return {
         time: new Date(timestamp * 1000).toISOString(),
-        open: numberOrNull(opens[index]),
-        high: numberOrNull(highs[index]),
-        low: numberOrNull(lows[index]),
+        open,
+        high,
+        low,
         close,
         volume: numberOrNull(volumes[index])
       };
@@ -411,16 +420,19 @@ async function fetchUpbitChart(symbol: string, range: ChartRange = "1M"): Promis
   const rows = (await response.json()) as Array<Record<string, unknown>>;
   return rows
     .map((row): ChartPoint | null => {
+      const open = numberOrNull(row.opening_price);
+      const high = numberOrNull(row.high_price);
+      const low = numberOrNull(row.low_price);
       const close = numberOrNull(row.trade_price);
       const time = String(row.candle_date_time_kst || row.candle_date_time_utc || "");
-      if (!time || close === null) {
+      if (!time || close === null || close <= 0 || (open !== null && open <= 0) || (high !== null && high <= 0) || (low !== null && low <= 0)) {
         return null;
       }
       return {
         time,
-        open: numberOrNull(row.opening_price),
-        high: numberOrNull(row.high_price),
-        low: numberOrNull(row.low_price),
+        open,
+        high,
+        low,
         close,
         volume: numberOrNull(row.candle_acc_trade_volume)
       };
@@ -470,7 +482,7 @@ async function fetchYahooHistoricalMonthlyChart(symbol: string, years: number): 
     return timestamps
       .map((timestamp, index): ChartPoint | null => {
         const close = numberOrNull(closes[index]);
-        if (close === null) {
+        if (close === null || close <= 0) {
           return null;
         }
         return {
