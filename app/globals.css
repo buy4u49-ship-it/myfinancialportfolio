@@ -365,21 +365,15 @@ select {
 }
 
 .indices-panel .panel-heading {
-  border-bottom: 0;
-  padding-bottom: 6px;
-}
-
-.indices-panel .panel-heading h2 {
-  color: var(--muted);
-  font-size: 18px;
-  font-weight: 850;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 16px;
 }
 
 .index-strip-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 22px;
-  padding: 8px 22px 22px;
+  padding: 18px 22px 22px;
 }
 
 .index-metric {
