@@ -170,6 +170,9 @@ export type SymbolDetailResponse = {
     ratios: FinancialRatioRow[];
     ratioPeerCount: number;
     ratioIndustry: string;
+    dataSource: string;
+    dataNotes: string[];
+    mappingCandidates: FinancialStatementMappingCandidate[];
   };
   refreshedAt: string;
 };
@@ -200,6 +203,14 @@ export type FinancialRatioRow = {
   metric: string;
   company: string;
   industryAverage: string;
+};
+
+export type FinancialStatementMappingCandidate = {
+  statement: string;
+  accountId: string;
+  accountName: string;
+  sampleValue: string;
+  years: string[];
 };
 
 export type PortfolioProjection = {

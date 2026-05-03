@@ -266,6 +266,19 @@ export default function FinancialApp() {
   }, [page]);
 
   useEffect(() => {
+    if (page !== "symbol" || !symbolDetail) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setBusy(true);
+      loadSymbol(symbol, symbolRange)
+        .catch((err) => setError(err instanceof Error ? err.message : "Benchmark settings update failed."))
+        .finally(() => setBusy(false));
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [page, benchmark, historyYears, rollingWindow]);
+
+  useEffect(() => {
     if (!autoRefresh) {
       return;
     }
@@ -934,6 +947,11 @@ function SymbolDetail({
 
       {activeTab === "financials" ? (
         <section className="financial-panels">
+          <FinancialDataNotes
+            source={data.statements.dataSource}
+            notes={data.statements.dataNotes}
+            candidates={data.statements.mappingCandidates}
+          />
           <FinancialPositionPanel statement={data.statements.balance} />
           <IncomeStatementPanel statement={data.statements.income} />
           <CashflowPanel statement={data.statements.cashflow} />
@@ -1216,6 +1234,57 @@ function RiskLineChart({
         </g>
       </svg>
     </div>
+  );
+}
+
+function FinancialDataNotes({
+  source,
+  notes,
+  candidates
+}: {
+  source: string;
+  notes: string[];
+  candidates: SymbolDetailResponse["statements"]["mappingCandidates"];
+}) {
+  if (!notes.length && !candidates.length) {
+    return null;
+  }
+  return (
+    <section className="panel financial-data-notes">
+      <strong>{source}</strong>
+      {notes.map((note) => (
+        <p key={note}>{note}</p>
+      ))}
+      {candidates.length ? (
+        <div className="mapping-candidate-wrap">
+          <h3>Mapping Required</h3>
+          <div className="table-wrap">
+            <table className="mapping-candidate-table">
+              <thead>
+                <tr>
+                  <th className="text-cell">Statement</th>
+                  <th className="text-cell">OpenDART Account</th>
+                  <th className="text-cell">Account ID</th>
+                  <th className="number-cell">Sample Value</th>
+                  <th className="text-cell">Years</th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidates.map((candidate) => (
+                  <tr key={`${candidate.statement}-${candidate.accountId}-${candidate.accountName}`}>
+                    <td className="text-cell">{candidate.statement}</td>
+                    <td className="text-cell strong">{candidate.accountName}</td>
+                    <td className="text-cell">{candidate.accountId || "N/A"}</td>
+                    <td className="number-cell">{candidate.sampleValue}</td>
+                    <td className="text-cell">{candidate.years.join(", ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

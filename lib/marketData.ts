@@ -1,7 +1,17 @@
 import { cryptoBaseSymbol, isCryptoSymbol, isKoreaSymbol, marketDataSymbol, normalizeSymbol } from "./symbols";
 import { getQuote, getQuotes } from "./prices";
 import { supabaseAdmin } from "./supabaseAdmin";
-import type { ChartPoint, FinancialRatioRow, FinancialStatement, MacroPoint, MarketMoverRow, MarketPageResponse, Quote, SymbolDetailResponse } from "./types";
+import type {
+  ChartPoint,
+  FinancialRatioRow,
+  FinancialStatement,
+  FinancialStatementMappingCandidate,
+  MacroPoint,
+  MarketMoverRow,
+  MarketPageResponse,
+  Quote,
+  SymbolDetailResponse
+} from "./types";
 import { inflateRawSync } from "node:zlib";
 
 type MarketKey = "crypto" | "us" | "korea";
@@ -22,6 +32,7 @@ type BenchmarkAnalyticsResult = {
 type KoreaFinancialPayload = {
   source: "opendart";
   symbol: string;
+  mappingVersion: number;
   refreshedAt: string;
   ratioValues: RatioValues;
   statements: {
@@ -29,10 +40,12 @@ type KoreaFinancialPayload = {
     balance: FinancialStatement;
     cashflow: FinancialStatement;
   };
+  mappingCandidates: FinancialStatementMappingCandidate[];
 };
 
 const FINANCIAL_STATEMENT_CACHE_TABLE = "financial_statement_cache";
 const FINANCIAL_STATEMENT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const KOREA_FINANCIAL_MAPPING_VERSION = 2;
 const OPENDART_ANNUAL_REPORT_CODE = "11011";
 
 const KOREA_DART_CORP_CODES: Record<string, string> = {
@@ -977,11 +990,40 @@ function secValueByUnits(facts: SecCompanyFacts | null, concepts: string[], fisc
 }
 
 function derivedSecValue(key: string, values: Record<string, number | null>) {
+  function residual(total: number | null, parts: Array<number | null>) {
+    if (total === null) {
+      return null;
+    }
+    const known = parts.filter((value): value is number => value !== null);
+    return known.length ? total - known.reduce((sum, value) => sum + value, 0) : null;
+  }
   if (key === "noncurrent_assets" && values.total_assets !== null && values.current_assets !== null) {
     return values.total_assets - values.current_assets;
   }
+  if (key === "other_current_assets") {
+    return residual(values.current_assets, [
+      values.cash_short_investments,
+      values.receivables,
+      values.inventory,
+      values.prepaid
+    ]);
+  }
+  if (key === "other_noncurrent_assets") {
+    return residual(values.noncurrent_assets, [
+      values.long_term_investments,
+      values.ppe,
+      values.intangibles,
+      values.deferred_assets
+    ]);
+  }
   if (key === "noncurrent_liabilities" && values.total_liabilities !== null && values.current_liabilities !== null) {
     return values.total_liabilities - values.current_liabilities;
+  }
+  if (key === "other_current_liabilities") {
+    return residual(values.current_liabilities, [values.accounts_payable, values.short_term_debt]);
+  }
+  if (key === "other_liabilities") {
+    return residual(values.noncurrent_liabilities, [values.long_term_debt]);
   }
   if (key === "total_equity" && values.total_assets !== null && values.total_liabilities !== null) {
     return values.total_assets - values.total_liabilities;
@@ -1141,6 +1183,7 @@ function isKoreaFinancialPayload(payload: unknown): payload is KoreaFinancialPay
   return (
     record.source === "opendart" &&
     typeof record.symbol === "string" &&
+    record.mappingVersion === KOREA_FINANCIAL_MAPPING_VERSION &&
     record.statements !== null &&
     typeof record.statements === "object" &&
     record.ratioValues !== null &&
@@ -1258,7 +1301,14 @@ function normalizeDartAccountName(value: unknown) {
     .replace(/[()[\]{}（）]/g, "");
 }
 
-function dartRowMatches(row: OpenDartRow, match: { sjDiv?: string; accountIds?: string[]; accountNames?: string[] }) {
+type DartLineMatch = {
+  sjDiv?: string;
+  accountIds?: string[];
+  accountNames?: string[];
+  aggregation?: "first" | "sum";
+};
+
+function dartRowMatches(row: OpenDartRow, match: DartLineMatch) {
   const sjDiv = String(row.sj_div || "").toUpperCase();
   if (match.sjDiv && sjDiv !== match.sjDiv) {
     return false;
@@ -1271,33 +1321,66 @@ function dartRowMatches(row: OpenDartRow, match: { sjDiv?: string; accountIds?: 
   return Boolean(match.accountNames?.some((name) => accountName === normalizeDartAccountName(name)));
 }
 
-const DART_LINE_MATCHES: Record<string, { sjDiv?: string; accountIds?: string[]; accountNames?: string[] }> = {
+const DART_LINE_MATCHES: Record<string, DartLineMatch> = {
   total_assets: { sjDiv: "BS", accountIds: ["ifrs-full_Assets"], accountNames: ["자산총계"] },
   current_assets: { sjDiv: "BS", accountIds: ["ifrs-full_CurrentAssets"], accountNames: ["유동자산"] },
-  cash_short_investments: { sjDiv: "BS", accountIds: ["ifrs-full_CashAndCashEquivalents", "ifrs-full_CashAndCashEquivalentsAtCarryingValue"], accountNames: ["현금및현금성자산"] },
-  receivables: { sjDiv: "BS", accountIds: ["ifrs-full_TradeAndOtherCurrentReceivables", "ifrs-full_TradeAndOtherReceivables"], accountNames: ["매출채권및기타채권", "매출채권"] },
+  cash_short_investments: {
+    sjDiv: "BS",
+    aggregation: "sum",
+    accountIds: [
+      "ifrs-full_CashAndCashEquivalents",
+      "ifrs-full_CashAndCashEquivalentsAtCarryingValue",
+      "dart_ShortTermDepositsNotClassifiedAsCashEquivalents",
+      "dart_ShortTermFinancialInstruments"
+    ],
+    accountNames: ["현금및현금성자산", "단기금융상품", "단기금융자산", "단기상각후원가금융자산", "단기당기손익-공정가치금융자산"]
+  },
+  receivables: {
+    sjDiv: "BS",
+    aggregation: "sum",
+    accountIds: ["ifrs-full_TradeAndOtherCurrentReceivables", "ifrs-full_TradeAndOtherReceivables", "dart_ShortTermTradeReceivable"],
+    accountNames: ["매출채권및기타채권", "매출채권", "미수금", "미수수익"]
+  },
   inventory: { sjDiv: "BS", accountIds: ["ifrs-full_Inventories"], accountNames: ["재고자산"] },
+  prepaid: { sjDiv: "BS", aggregation: "sum", accountIds: ["ifrs-full_Prepayments"], accountNames: ["선급금", "선급비용", "선급법인세"] },
+  other_current_assets: { sjDiv: "BS", accountIds: ["ifrs-full_OtherCurrentAssets"], accountNames: ["기타유동자산"] },
   noncurrent_assets: { sjDiv: "BS", accountIds: ["ifrs-full_NoncurrentAssets"], accountNames: ["비유동자산"] },
-  long_term_investments: { sjDiv: "BS", accountIds: ["ifrs-full_OtherNoncurrentFinancialAssets", "ifrs-full_NoncurrentFinancialAssets"], accountNames: ["비유동금융자산", "장기금융자산"] },
+  long_term_investments: {
+    sjDiv: "BS",
+    aggregation: "sum",
+    accountIds: ["ifrs-full_OtherNoncurrentFinancialAssets", "ifrs-full_NoncurrentFinancialAssets", "ifrs-full_InvestmentsAccountedForUsingEquityMethod"],
+    accountNames: ["비유동금융자산", "장기금융자산", "관계기업및공동기업투자", "관계기업투자", "종속기업투자"]
+  },
   ppe: { sjDiv: "BS", accountIds: ["ifrs-full_PropertyPlantAndEquipment"], accountNames: ["유형자산"] },
-  intangibles: { sjDiv: "BS", accountIds: ["ifrs-full_IntangibleAssetsOtherThanGoodwill", "ifrs-full_IntangibleAssets"], accountNames: ["무형자산"] },
+  intangibles: { sjDiv: "BS", aggregation: "sum", accountIds: ["ifrs-full_IntangibleAssetsOtherThanGoodwill", "ifrs-full_IntangibleAssets", "ifrs-full_Goodwill"], accountNames: ["무형자산", "영업권"] },
+  deferred_assets: { sjDiv: "BS", accountIds: ["ifrs-full_DeferredTaxAssets"], accountNames: ["이연법인세자산"] },
+  other_noncurrent_assets: { sjDiv: "BS", accountIds: ["ifrs-full_OtherNoncurrentAssets"], accountNames: ["기타비유동자산"] },
   total_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_Liabilities"], accountNames: ["부채총계"] },
   current_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_CurrentLiabilities"], accountNames: ["유동부채"] },
-  accounts_payable: { sjDiv: "BS", accountIds: ["ifrs-full_TradeAndOtherCurrentPayables", "ifrs-full_TradeAndOtherPayables"], accountNames: ["매입채무및기타채무", "매입채무"] },
-  short_term_debt: { sjDiv: "BS", accountIds: ["ifrs-full_ShorttermBorrowings", "ifrs-full_CurrentBorrowings"], accountNames: ["단기차입금"] },
+  accounts_payable: { sjDiv: "BS", aggregation: "sum", accountIds: ["ifrs-full_TradeAndOtherCurrentPayables", "ifrs-full_TradeAndOtherPayables"], accountNames: ["매입채무및기타채무", "매입채무", "미지급금", "미지급비용"] },
+  short_term_debt: { sjDiv: "BS", aggregation: "sum", accountIds: ["ifrs-full_ShorttermBorrowings", "ifrs-full_CurrentBorrowings", "ifrs-full_CurrentPortionOfLongtermBorrowings"], accountNames: ["단기차입금", "유동성장기부채", "유동성사채", "유동리스부채"] },
+  other_current_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_OtherCurrentLiabilities"], accountNames: ["기타유동부채"] },
   noncurrent_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_NoncurrentLiabilities"], accountNames: ["비유동부채"] },
-  long_term_debt: { sjDiv: "BS", accountIds: ["ifrs-full_LongtermBorrowings", "ifrs-full_NoncurrentBorrowings"], accountNames: ["장기차입금"] },
+  long_term_debt: { sjDiv: "BS", aggregation: "sum", accountIds: ["ifrs-full_LongtermBorrowings", "ifrs-full_NoncurrentBorrowings", "ifrs-full_Debentures"], accountNames: ["장기차입금", "사채", "비유동리스부채"] },
+  other_liabilities: { sjDiv: "BS", accountIds: ["ifrs-full_OtherNoncurrentLiabilities"], accountNames: ["기타비유동부채"] },
   total_equity: { sjDiv: "BS", accountIds: ["ifrs-full_Equity"], accountNames: ["자본총계"] },
   common_stock: { sjDiv: "BS", accountIds: ["ifrs-full_IssuedCapital"], accountNames: ["자본금"] },
   capital_surplus: { sjDiv: "BS", accountIds: ["ifrs-full_SharePremium"], accountNames: ["주식발행초과금", "자본잉여금"] },
-  retained_earnings: { sjDiv: "BS", accountIds: ["ifrs-full_RetainedEarnings"], accountNames: ["이익잉여금"] },
+  retained_earnings: { sjDiv: "BS", accountIds: ["ifrs-full_RetainedEarnings"], accountNames: ["이익잉여금", "결손금"] },
   treasury_stock: { sjDiv: "BS", accountIds: ["ifrs-full_TreasuryShares"], accountNames: ["자기주식"] },
   revenue: { sjDiv: "IS", accountIds: ["ifrs-full_Revenue"], accountNames: ["수익", "매출액", "영업수익"] },
   cost_of_revenue: { sjDiv: "IS", accountIds: ["ifrs-full_CostOfSales"], accountNames: ["매출원가"] },
   gross_profit: { sjDiv: "IS", accountIds: ["ifrs-full_GrossProfit"], accountNames: ["매출총이익"] },
   sga: { sjDiv: "IS", accountIds: ["dart_TotalSellingGeneralAdministrativeExpenses"], accountNames: ["판매비와관리비", "판매비와관리비합계"] },
+  salary: { sjDiv: "IS", aggregation: "sum", accountIds: ["dart_EmployeeBenefitsExpense"], accountNames: ["급여", "종업원급여", "퇴직급여"] },
+  rent: { sjDiv: "IS", aggregation: "sum", accountIds: ["ifrs-full_LeaseExpense"], accountNames: ["임차료", "사용권자산상각비"] },
   depreciation: { sjDiv: "IS", accountIds: ["ifrs-full_DepreciationAndAmortisationExpense", "dart_DepreciationAndAmortizationExpense"], accountNames: ["감가상각비", "감가상각비및무형자산상각비"] },
+  advertising: { sjDiv: "IS", accountIds: ["dart_AdvertisingExpense"], accountNames: ["광고선전비", "광고비"] },
+  fees: { sjDiv: "IS", aggregation: "sum", accountIds: ["dart_ServiceFees"], accountNames: ["지급수수료", "수수료비용"] },
+  freight: { sjDiv: "IS", accountNames: ["운반비", "운송비"] },
   research: { sjDiv: "IS", accountIds: ["dart_ResearchAndDevelopmentExpenses"], accountNames: ["연구개발비"] },
+  bad_debt: { sjDiv: "IS", accountIds: ["dart_BadDebtExpenses"], accountNames: ["대손상각비", "대손충당금환입"] },
+  other_sga: { sjDiv: "IS", accountIds: ["ifrs-full_OtherExpensesByNature"], accountNames: ["기타판매비와관리비", "기타영업비용"] },
   operating_income: { sjDiv: "IS", accountIds: ["dart_OperatingIncomeLoss"], accountNames: ["영업이익"] },
   pretax_income: { sjDiv: "IS", accountIds: ["ifrs-full_ProfitLossBeforeTax"], accountNames: ["법인세비용차감전순이익"] },
   tax: { sjDiv: "IS", accountIds: ["ifrs-full_IncomeTaxExpenseContinuingOperations"], accountNames: ["법인세비용"] },
@@ -1316,14 +1399,76 @@ function dartValue(rows: OpenDartRow[], year: string, key: string) {
   if (!match) {
     return null;
   }
-  const row = rows.find((item) => item.bsns_year === year && dartRowMatches(item, match));
-  return dartNumber(row?.thstrm_add_amount) ?? dartNumber(row?.thstrm_amount);
+  const matchedRows = rows.filter((item) => item.bsns_year === year && dartRowMatches(item, match));
+  if (match.aggregation === "sum") {
+    const values = matchedRows
+      .map((row) => dartNumber(row.thstrm_add_amount) ?? dartNumber(row.thstrm_amount))
+      .filter((value): value is number => value !== null);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  }
+  for (const row of matchedRows) {
+    const value = dartNumber(row.thstrm_add_amount) ?? dartNumber(row.thstrm_amount);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
 }
 
 function dartYears(rows: OpenDartRow[]) {
   return Array.from(new Set(rows.map((row) => String(row.bsns_year || "")).filter(Boolean)))
     .sort((a, b) => Number(b) - Number(a))
     .slice(0, 4);
+}
+
+function dartStatementName(row: OpenDartRow) {
+  const sjDiv = String(row.sj_div || "").toUpperCase();
+  if (sjDiv === "BS") {
+    return "Financial Position Statement";
+  }
+  if (sjDiv === "IS" || sjDiv === "CIS") {
+    return "Income Statement";
+  }
+  if (sjDiv === "CF") {
+    return "Cashflow Statement";
+  }
+  return sjDiv || "Unknown Statement";
+}
+
+function isMappedDartRow(row: OpenDartRow) {
+  return Object.values(DART_LINE_MATCHES).some((match) => dartRowMatches(row, match));
+}
+
+function dartUnmappedAccounts(rows: OpenDartRow[]): FinancialStatementMappingCandidate[] {
+  const grouped = new Map<string, FinancialStatementMappingCandidate>();
+  for (const row of rows) {
+    const accountId = String(row.account_id || "").trim();
+    const accountName = String(row.account_nm || "").trim();
+    const sampleValue = String(row.thstrm_add_amount || row.thstrm_amount || "").trim();
+    if (!accountName || !sampleValue || sampleValue === "-" || isMappedDartRow(row)) {
+      continue;
+    }
+    const key = `${row.sj_div || ""}|${accountId}|${accountName}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      const year = String(row.bsns_year || "").trim();
+      if (year && !existing.years.includes(year)) {
+        existing.years.push(year);
+      }
+      continue;
+    }
+    grouped.set(key, {
+      statement: dartStatementName(row),
+      accountId,
+      accountName,
+      sampleValue,
+      years: String(row.bsns_year || "").trim() ? [String(row.bsns_year).trim()] : []
+    });
+  }
+  return Array.from(grouped.values())
+    .map((item) => ({ ...item, years: item.years.sort((a, b) => Number(b) - Number(a)) }))
+    .sort((a, b) => a.statement.localeCompare(b.statement) || a.accountName.localeCompare(b.accountName))
+    .slice(0, 80);
 }
 
 function buildOpenDartStatement(rows: OpenDartRow[], definitions: LineDefinition[]): FinancialStatement {
@@ -1396,13 +1541,15 @@ async function koreaOpenDartFinancial(symbol: string, marketPrice: number | null
   const payload: KoreaFinancialPayload = {
     source: "opendart",
     symbol: normalized,
+    mappingVersion: KOREA_FINANCIAL_MAPPING_VERSION,
     refreshedAt: new Date().toISOString(),
     ratioValues: openDartRatioValues(rows, marketPrice),
     statements: {
       income: buildOpenDartStatement(rows, INCOME_LINES),
       balance: buildOpenDartStatement(rows, BALANCE_LINES),
       cashflow: buildOpenDartStatement(rows, CASHFLOW_LINES)
-    }
+    },
+    mappingCandidates: dartUnmappedAccounts(rows)
   };
   await writeCachedKoreaFinancial(normalized, payload);
   return payload;
@@ -1560,6 +1707,46 @@ function benchmarkComparisonRows(ratioRows: FinancialRatioRow[], analytics: Benc
   ];
 }
 
+function financialStatementNotes(symbol: string, koreaFinancial: KoreaFinancialPayload | null, secStatements: { income: FinancialStatement; balance: FinancialStatement; cashflow: FinancialStatement } | null) {
+  if (isKoreaSymbol(symbol)) {
+    if (koreaFinancial && hasKoreaFinancialValues(koreaFinancial)) {
+    return {
+      dataSource: "OpenDART weekly cache",
+      dataNotes: koreaFinancial.mappingCandidates.length
+        ? [
+            "OpenDART annual financial statements are loaded and cached for up to one week.",
+            "Some OpenDART accounts are not mapped to the current page line items yet. Review the mapping-required rows below."
+          ]
+        : ["OpenDART annual financial statements are loaded and cached for up to one week."]
+    };
+    }
+    if (!openDartApiKey()) {
+      return {
+        dataSource: "OpenDART unavailable",
+        dataNotes: [
+          "OpenDART financial statements are unavailable because DART_API_KEY, OPENDART_API_KEY, or OPEN_DART_API_KEY is not configured in this environment."
+        ]
+      };
+    }
+    return {
+      dataSource: "OpenDART unavailable",
+      dataNotes: [
+        "OpenDART did not return usable annual financial statement rows for this symbol. This means the issue is before account-line matching, because no fiscal-year columns were available."
+      ]
+    };
+  }
+  if (secStatements && (hasStatementValues(secStatements.income) || hasStatementValues(secStatements.balance) || hasStatementValues(secStatements.cashflow))) {
+    return {
+      dataSource: "SEC company facts",
+      dataNotes: ["SEC company facts are used as the fallback source when Yahoo financial statement modules are incomplete."]
+    };
+  }
+  return {
+    dataSource: "Yahoo Finance",
+    dataNotes: ["Yahoo quoteSummary modules are used first for financial statement data."]
+  };
+}
+
 export async function buildSymbolDetail(
   symbol: string,
   range: ChartRange = "1M",
@@ -1597,6 +1784,7 @@ export async function buildSymbolDetail(
     needsSecStatements ? fetchSecStatements(normalized) : Promise.resolve(null),
     benchmarkAnalytics(normalized, benchmarkSymbol, historyYears, rollingWindow, comparablePeers)
   ]);
+  const statementMeta = financialStatementNotes(normalized, koreaFinancial, secStatements);
   const enrichedPeers = Array.from(peers.values())
     .slice(0, 8)
     .map((peer) => {
@@ -1634,7 +1822,10 @@ export async function buildSymbolDetail(
       cashflow: hasStatementValues(yahooStatements.cashflow) ? yahooStatements.cashflow : secStatements?.cashflow ?? koreaFinancial?.statements.cashflow ?? yahooStatements.cashflow,
       ratios: ratios.rows,
       ratioPeerCount: ratios.peerCount,
-      ratioIndustry: String(resolvedProfile.industry || sector || "industry")
+      ratioIndustry: String(resolvedProfile.industry || sector || "industry"),
+      dataSource: statementMeta.dataSource,
+      dataNotes: statementMeta.dataNotes,
+      mappingCandidates: koreaFinancial?.mappingCandidates ?? []
     },
     refreshedAt: new Date().toISOString()
   };

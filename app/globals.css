@@ -847,6 +847,43 @@ select {
   grid-template-columns: 1fr;
 }
 
+.financial-data-notes {
+  margin-top: 0;
+  padding: 16px 18px;
+  color: #374151;
+}
+
+.financial-data-notes strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.financial-data-notes p {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.mapping-candidate-wrap {
+  margin-top: 14px;
+}
+
+.mapping-candidate-wrap h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.mapping-candidate-table {
+  min-width: 860px;
+}
+
+.mapping-candidate-table th,
+.mapping-candidate-table td {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
 .financial-grid-wrap {
   width: 100%;
   overflow-x: auto;
