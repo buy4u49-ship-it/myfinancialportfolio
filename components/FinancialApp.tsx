@@ -149,6 +149,7 @@ export default function FinancialApp() {
   const [symbolRange, setSymbolRange] = useState<ChartRange>("1M");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [error, setError] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [activeTrade, setActiveTrade] = useState<{ symbol: string; mode: TradeMode } | null>(null);
@@ -351,14 +352,14 @@ export default function FinancialApp() {
     if (page !== "symbol") {
       setPage("symbol");
     }
-    setBusy(true);
+    setSettingsBusy(true);
     setError("");
     try {
       await loadSymbol(symbol, symbolRange);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Settings update failed.");
     } finally {
-      setBusy(false);
+      setSettingsBusy(false);
     }
   }
 
@@ -442,6 +443,7 @@ export default function FinancialApp() {
         authMode={authMode}
         credentials={credentials}
         busy={busy}
+        settingsBusy={settingsBusy}
         onSymbolDraft={setSymbolDraft}
         onBenchmark={setBenchmark}
         onHistoryYears={setHistoryYears}
@@ -584,6 +586,7 @@ function Sidebar({
   authMode,
   credentials,
   busy,
+  settingsBusy,
   onSymbolDraft,
   onBenchmark,
   onHistoryYears,
@@ -605,6 +608,7 @@ function Sidebar({
   authMode: "login" | "register";
   credentials: { username: string; password: string; displayName: string; email: string };
   busy: boolean;
+  settingsBusy: boolean;
   onSymbolDraft: (value: string) => void;
   onBenchmark: (value: string) => void;
   onHistoryYears: (value: number) => void;
@@ -717,8 +721,8 @@ function Sidebar({
           Rolling beta window in months
           <input type="number" min="6" max="60" value={rollingWindow} onChange={(event) => onRollingWindow(Number(event.target.value))} />
         </label>
-        <button className="primary-button" onClick={onConfirmSettings} disabled={busy}>
-          Confirm
+        <button className="primary-button" onClick={onConfirmSettings} disabled={settingsBusy}>
+          {settingsBusy ? "Applying..." : "Confirm"}
         </button>
       </section>
     </aside>
