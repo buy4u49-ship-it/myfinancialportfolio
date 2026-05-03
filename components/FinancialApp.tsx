@@ -1923,8 +1923,15 @@ function TimeRangeSelector({
   );
 }
 
+function validPricePoint(point: ChartPoint) {
+  const values = [point.open, point.high, point.low, point.close].filter((value): value is number => value !== null && value !== undefined);
+  return point.close > 0 && values.every((value) => Number.isFinite(value) && value > 0);
+}
+
 function chartStats(points: ChartPoint[]) {
-  const values = points.flatMap((point) => [point.low ?? point.close, point.high ?? point.close, point.close]).filter(Number.isFinite);
+  const values = points
+    .flatMap((point) => [point.low ?? point.close, point.high ?? point.close, point.close])
+    .filter((value) => Number.isFinite(value) && value > 0);
   const minRaw = values.length ? Math.min(...values) : 0;
   const maxRaw = values.length ? Math.max(...values) : 1;
   const padding = Math.max((maxRaw - minRaw) * 0.08, Math.abs(maxRaw || 1) * 0.002);
@@ -1976,6 +1983,7 @@ function chartTickAnchor(tickIndex: number, totalTicks: number) {
 }
 
 function LineChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
+  const pricePoints = points.filter(validPricePoint);
   const width = 1280;
   const height = 360;
   const margin = { top: 26, right: 28, bottom: 74, left: 142 };
@@ -1983,17 +1991,17 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
   const xTitleY = height - 8;
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
-  const { min, span, ticks } = chartStats(points);
-  const xFor = (index: number) => margin.left + (index / Math.max(points.length - 1, 1)) * innerWidth;
+  const { min, span, ticks } = chartStats(pricePoints);
+  const xFor = (index: number) => margin.left + (index / Math.max(pricePoints.length - 1, 1)) * innerWidth;
   const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
-  const path = points
+  const path = pricePoints
     .map((point, index) => `${index === 0 ? "M" : "L"}${xFor(index).toFixed(2)},${yFor(point.close).toFixed(2)}`)
     .join(" ");
-  const xTicks = chartXTicks(points);
+  const xTicks = chartXTicks(pricePoints);
 
   return (
     <div className="chart-shell full-chart">
-      {points.length ? (
+      {pricePoints.length ? (
         <>
           <svg viewBox={`0 0 ${width} ${height}`} role="img">
             {ticks.map((tick) => (
@@ -2032,6 +2040,7 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
 }
 
 function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
+  const pricePoints = points.filter(validPricePoint);
   const width = 1280;
   const height = 360;
   const margin = { top: 26, right: 28, bottom: 74, left: 142 };
@@ -2039,15 +2048,15 @@ function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; curr
   const xTitleY = height - 8;
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
-  const { min, span, ticks } = chartStats(points);
-  const xFor = (index: number) => margin.left + (index / Math.max(points.length - 1, 1)) * innerWidth;
+  const { min, span, ticks } = chartStats(pricePoints);
+  const xFor = (index: number) => margin.left + (index / Math.max(pricePoints.length - 1, 1)) * innerWidth;
   const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
-  const barWidth = Math.max(3, Math.min(13, innerWidth / Math.max(points.length, 1) * 0.62));
-  const xTicks = chartXTicks(points);
+  const barWidth = Math.max(3, Math.min(13, innerWidth / Math.max(pricePoints.length, 1) * 0.62));
+  const xTicks = chartXTicks(pricePoints);
 
   return (
     <div className="chart-shell full-chart">
-      {points.length ? (
+      {pricePoints.length ? (
         <>
           <svg viewBox={`0 0 ${width} ${height}`} role="img">
             {ticks.map((tick) => (
@@ -2058,7 +2067,7 @@ function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; curr
                 </text>
               </g>
             ))}
-            {points.map((point, index) => {
+            {pricePoints.map((point, index) => {
               const open = point.open ?? point.close;
               const high = point.high ?? Math.max(open, point.close);
               const low = point.low ?? Math.min(open, point.close);
