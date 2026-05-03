@@ -370,9 +370,12 @@ select {
 }
 
 .comparison-benchmark {
+  display: inline-block;
+  margin-left: 12px;
   color: var(--muted);
   font-size: 13px;
   font-weight: 850;
+  vertical-align: middle;
 }
 
 .comparison-table th,

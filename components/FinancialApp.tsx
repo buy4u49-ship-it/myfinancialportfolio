@@ -141,8 +141,6 @@ export default function FinancialApp() {
   const [benchmark, setBenchmark] = useState("SPY");
   const [historyYears, setHistoryYears] = useState(20);
   const [rollingWindow, setRollingWindow] = useState(36);
-  const [refreshSeconds, setRefreshSeconds] = useState(20);
-  const [autoRefresh, setAutoRefresh] = useState(false);
   const [marketRanges, setMarketRanges] = useState<Record<"coin" | "us" | "korea", ChartRange>>({
     coin: "1D",
     us: "1D",
@@ -265,34 +263,6 @@ export default function FinancialApp() {
     }
   }, [page]);
 
-  useEffect(() => {
-    if (page !== "symbol" || !symbolDetail) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setBusy(true);
-      loadSymbol(symbol, symbolRange)
-        .catch((err) => setError(err instanceof Error ? err.message : "Benchmark settings update failed."))
-        .finally(() => setBusy(false));
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [page, benchmark, historyYears, rollingWindow]);
-
-  useEffect(() => {
-    if (!autoRefresh) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      if (page === "my" && user) {
-        loadPortfolio(true);
-      }
-      if (page === "coin" || page === "us" || page === "korea") {
-        loadMarket(page, marketRanges[page]).catch(() => undefined);
-      }
-    }, Math.max(5, refreshSeconds) * 1000);
-    return () => window.clearInterval(timer);
-  }, [page, user, autoRefresh, refreshSeconds, marketRanges]);
-
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -377,6 +347,21 @@ export default function FinancialApp() {
     }
   }
 
+  async function confirmSettings() {
+    if (page !== "symbol") {
+      setPage("symbol");
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await loadSymbol(symbol, symbolRange);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Settings update failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function patchPortfolio(body: Record<string, unknown>) {
     setBusy(true);
     setError("");
@@ -454,8 +439,6 @@ export default function FinancialApp() {
         benchmark={benchmark}
         historyYears={historyYears}
         rollingWindow={rollingWindow}
-        refreshSeconds={refreshSeconds}
-        autoRefresh={autoRefresh}
         authMode={authMode}
         credentials={credentials}
         busy={busy}
@@ -463,11 +446,10 @@ export default function FinancialApp() {
         onBenchmark={setBenchmark}
         onHistoryYears={setHistoryYears}
         onRollingWindow={setRollingWindow}
-        onRefreshSeconds={setRefreshSeconds}
-        onAutoRefresh={setAutoRefresh}
         onAuthMode={setAuthMode}
         onCredentials={setCredentials}
         onSubmitAuth={submitAuth}
+        onConfirmSettings={confirmSettings}
         onOpenSymbol={openSymbol}
         onGoMyPage={() => setPage("my")}
         onLogout={logout}
@@ -599,8 +581,6 @@ function Sidebar({
   benchmark,
   historyYears,
   rollingWindow,
-  refreshSeconds,
-  autoRefresh,
   authMode,
   credentials,
   busy,
@@ -608,11 +588,10 @@ function Sidebar({
   onBenchmark,
   onHistoryYears,
   onRollingWindow,
-  onRefreshSeconds,
-  onAutoRefresh,
   onAuthMode,
   onCredentials,
   onSubmitAuth,
+  onConfirmSettings,
   onOpenSymbol,
   onGoMyPage,
   onLogout
@@ -623,8 +602,6 @@ function Sidebar({
   benchmark: string;
   historyYears: number;
   rollingWindow: number;
-  refreshSeconds: number;
-  autoRefresh: boolean;
   authMode: "login" | "register";
   credentials: { username: string; password: string; displayName: string; email: string };
   busy: boolean;
@@ -632,11 +609,10 @@ function Sidebar({
   onBenchmark: (value: string) => void;
   onHistoryYears: (value: number) => void;
   onRollingWindow: (value: number) => void;
-  onRefreshSeconds: (value: number) => void;
-  onAutoRefresh: (value: boolean) => void;
   onAuthMode: (mode: "login" | "register") => void;
   onCredentials: (value: { username: string; password: string; displayName: string; email: string }) => void;
   onSubmitAuth: (event: FormEvent<HTMLFormElement>) => void;
+  onConfirmSettings: () => void;
   onOpenSymbol: (value: string) => void;
   onGoMyPage: () => void;
   onLogout: () => void;
@@ -741,14 +717,9 @@ function Sidebar({
           Rolling beta window in months
           <input type="number" min="6" max="60" value={rollingWindow} onChange={(event) => onRollingWindow(Number(event.target.value))} />
         </label>
-        <label>
-          Quote refresh seconds
-          <input type="number" min="5" max="120" value={refreshSeconds} onChange={(event) => onRefreshSeconds(Number(event.target.value))} />
-        </label>
-        <label className="checkbox-label">
-          <input type="checkbox" checked={autoRefresh} onChange={(event) => onAutoRefresh(event.target.checked)} />
-          Auto refresh quotes
-        </label>
+        <button className="primary-button" onClick={onConfirmSettings} disabled={busy}>
+          Confirm
+        </button>
       </section>
     </aside>
   );
@@ -862,7 +833,12 @@ function SymbolDetail({
         <SummaryCard label="1M Volatility" value={formatPct(data.metrics.volatilityPct)} />
       </section>
 
-      <BenchmarkComparisonPanel rows={data.benchmark.comparisons} industry={data.statements.ratioIndustry} benchmark={data.benchmark.symbol} />
+      <BenchmarkComparisonPanel
+        rows={data.benchmark.comparisons}
+        industry={data.statements.ratioIndustry}
+        benchmark={data.benchmark.symbol}
+        rollingWindow={data.benchmark.rollingWindowMonths}
+      />
 
       <section className="panel">
         <div className="panel-heading">
@@ -989,19 +965,23 @@ function SymbolDetail({
 function BenchmarkComparisonPanel({
   rows,
   industry,
-  benchmark
+  benchmark,
+  rollingWindow
 }: {
   rows: SymbolDetailResponse["benchmark"]["comparisons"];
   industry: string;
   benchmark: string;
+  rollingWindow: number;
 }) {
   return (
     <section className="panel benchmark-comparison-panel">
       <div className="panel-heading">
         <div>
-          <h2>Valuation & Risk Comparison</h2>
+          <h2>
+            Valuation & Risk Comparison
+            <span className="comparison-benchmark">Benchmark: {benchmark} · Rolling Window: {rollingWindow}M</span>
+          </h2>
         </div>
-        <span className="comparison-benchmark">Benchmark: {benchmark}</span>
       </div>
       <div className="table-wrap">
         <table className="comparison-table">

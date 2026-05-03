@@ -46,6 +46,7 @@ type KoreaFinancialPayload = {
 const FINANCIAL_STATEMENT_CACHE_TABLE = "financial_statement_cache";
 const FINANCIAL_STATEMENT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const KOREA_FINANCIAL_MAPPING_VERSION = 2;
+const MONTHLY_VOLATILITY_WINDOW_MONTHS = 12;
 const OPENDART_ANNUAL_REPORT_CODE = "11011";
 
 const KOREA_DART_CORP_CODES: Record<string, string> = {
@@ -540,17 +541,18 @@ function alignReturns(assetReturns: MonthlyReturnPoint[], benchmarkReturns: Mont
 
 function monthlyRiskSeries(assetReturns: MonthlyReturnPoint[], benchmarkReturns: MonthlyReturnPoint[], rollingWindowMonths: number) {
   const aligned = alignReturns(assetReturns, benchmarkReturns);
-  const windowSize = Math.max(6, Math.min(60, Math.round(rollingWindowMonths)));
+  const betaWindowSize = Math.max(6, Math.min(60, Math.round(rollingWindowMonths)));
   return aligned.map((point, index) => {
-    const start = Math.max(0, index - windowSize + 1);
-    const window = aligned.slice(start, index + 1);
-    const assetWindow = window.map((item) => item.asset);
-    const benchmarkWindow = window.map((item) => item.benchmark);
-    const variance = window.length >= windowSize ? sampleVariance(assetWindow) : null;
+    const betaWindow = aligned.slice(Math.max(0, index - betaWindowSize + 1), index + 1);
+    const volatilityWindow = aligned.slice(Math.max(0, index - MONTHLY_VOLATILITY_WINDOW_MONTHS + 1), index + 1);
+    const assetBetaWindow = betaWindow.map((item) => item.asset);
+    const benchmarkWindow = betaWindow.map((item) => item.benchmark);
+    const volatilityVariance =
+      volatilityWindow.length >= 2 ? sampleVariance(volatilityWindow.map((item) => item.asset)) : null;
     return {
       time: point.time,
-      monthlyVolatilityPct: variance === null ? null : Math.sqrt(variance) * 100,
-      rollingBeta: window.length >= windowSize ? betaFromReturns(assetWindow, benchmarkWindow) : null
+      monthlyVolatilityPct: volatilityVariance === null ? null : Math.sqrt(volatilityVariance) * 100,
+      rollingBeta: betaWindow.length >= betaWindowSize ? betaFromReturns(assetBetaWindow, benchmarkWindow) : null
     };
   });
 }
