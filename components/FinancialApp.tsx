@@ -109,6 +109,11 @@ export default function FinancialApp() {
   const [symbolDetail, setSymbolDetail] = useState<SymbolDetailResponse | null>(null);
   const [symbol, setSymbol] = useState("AAPL");
   const [symbolDraft, setSymbolDraft] = useState("AAPL");
+  const [benchmark, setBenchmark] = useState("SPY");
+  const [historyYears, setHistoryYears] = useState(20);
+  const [rollingWindow, setRollingWindow] = useState(36);
+  const [refreshSeconds, setRefreshSeconds] = useState(20);
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const [marketRanges, setMarketRanges] = useState<Record<"coin" | "us" | "korea", ChartRange>>({
     coin: "1D",
     us: "1D",
@@ -225,6 +230,9 @@ export default function FinancialApp() {
   }, [page]);
 
   useEffect(() => {
+    if (!autoRefresh) {
+      return;
+    }
     const timer = window.setInterval(() => {
       if (page === "my" && user) {
         loadPortfolio(true);
@@ -232,9 +240,9 @@ export default function FinancialApp() {
       if (page === "coin" || page === "us" || page === "korea") {
         loadMarket(page, marketRanges[page]).catch(() => undefined);
       }
-    }, 5000);
+    }, Math.max(5, refreshSeconds) * 1000);
     return () => window.clearInterval(timer);
-  }, [page, user]);
+  }, [page, user, autoRefresh, refreshSeconds, marketRanges]);
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -389,12 +397,38 @@ export default function FinancialApp() {
   }
 
   return (
-    <main className="app-shell">
+    <div className="app-frame">
+      <Sidebar
+        user={user}
+        portfolio={portfolio}
+        symbolDraft={symbolDraft}
+        benchmark={benchmark}
+        historyYears={historyYears}
+        rollingWindow={rollingWindow}
+        refreshSeconds={refreshSeconds}
+        autoRefresh={autoRefresh}
+        authMode={authMode}
+        credentials={credentials}
+        busy={busy}
+        onSymbolDraft={setSymbolDraft}
+        onBenchmark={setBenchmark}
+        onHistoryYears={setHistoryYears}
+        onRollingWindow={setRollingWindow}
+        onRefreshSeconds={setRefreshSeconds}
+        onAutoRefresh={setAutoRefresh}
+        onAuthMode={setAuthMode}
+        onCredentials={setCredentials}
+        onSubmitAuth={submitAuth}
+        onOpenSymbol={openSymbol}
+        onGoMyPage={() => setPage("my")}
+        onLogout={logout}
+      />
+      <main className="app-shell">
       <header className="topbar app-topbar">
         <div>
           <p className="eyebrow">My Financial Portfolio</p>
           <h1>{pageTitle}</h1>
-          <p className="muted">Supabase account data · Fly.io Upbit cache · Vercel Next.js interface</p>
+          <p className="muted clean-subtitle">Supabase account data / Fly.io Upbit cache / Vercel Next.js interface</p>
         </div>
         <div className="topbar-actions">
           <button className="ghost-button" onClick={refreshCurrentPage} disabled={busy}>
@@ -505,8 +539,194 @@ export default function FinancialApp() {
           />
         )
       ) : null}
-    </main>
+      </main>
+    </div>
   );
+}
+
+function Sidebar({
+  user,
+  portfolio,
+  symbolDraft,
+  benchmark,
+  historyYears,
+  rollingWindow,
+  refreshSeconds,
+  autoRefresh,
+  authMode,
+  credentials,
+  busy,
+  onSymbolDraft,
+  onBenchmark,
+  onHistoryYears,
+  onRollingWindow,
+  onRefreshSeconds,
+  onAutoRefresh,
+  onAuthMode,
+  onCredentials,
+  onSubmitAuth,
+  onOpenSymbol,
+  onGoMyPage,
+  onLogout
+}: {
+  user: User | null;
+  portfolio: PortfolioResponse | null;
+  symbolDraft: string;
+  benchmark: string;
+  historyYears: number;
+  rollingWindow: number;
+  refreshSeconds: number;
+  autoRefresh: boolean;
+  authMode: "login" | "register";
+  credentials: { username: string; password: string; displayName: string; email: string };
+  busy: boolean;
+  onSymbolDraft: (value: string) => void;
+  onBenchmark: (value: string) => void;
+  onHistoryYears: (value: number) => void;
+  onRollingWindow: (value: number) => void;
+  onRefreshSeconds: (value: number) => void;
+  onAutoRefresh: (value: boolean) => void;
+  onAuthMode: (mode: "login" | "register") => void;
+  onCredentials: (value: { username: string; password: string; displayName: string; email: string }) => void;
+  onSubmitAuth: (event: FormEvent<HTMLFormElement>) => void;
+  onOpenSymbol: (value: string) => void;
+  onGoMyPage: () => void;
+  onLogout: () => void;
+}) {
+  const currency = portfolio?.summary.currency || "KRW";
+  const candidates = buildSearchCandidates(symbolDraft);
+  return (
+    <aside className="side-panel">
+      <section className="side-section">
+        <h2>Login</h2>
+        <p className="muted">{user ? user.displayName : "Not signed in"}</p>
+      </section>
+
+      {user && portfolio ? (
+        <section className="side-section side-summary">
+          <MiniMetric label="Current Wealth" value={formatMoney(portfolio.summary.currentValue, currency)} />
+          <MiniMetric label="Total Investment" value={formatMoney(portfolio.summary.costBasis, currency)} />
+          <MiniMetric label="Total Gain/Loss" value={formatMoney(portfolio.summary.cumulativeGainLoss, currency)} tone={signedClass(portfolio.summary.cumulativeGainLoss)} />
+          <MiniMetric label="Total Return" value={formatPct(portfolio.summary.cumulativeReturnPct)} tone={signedClass(portfolio.summary.cumulativeReturnPct)} />
+          <button className="ghost-button" onClick={onGoMyPage}>My Page</button>
+          <button className="ghost-button" onClick={onLogout}>Logout</button>
+        </section>
+      ) : (
+        <section className="side-section">
+          <form className="side-auth-form" onSubmit={onSubmitAuth}>
+            <label>
+              ID
+              <input
+                value={credentials.username}
+                onChange={(event) => onCredentials({ ...credentials, username: event.target.value })}
+                autoComplete="username"
+                required
+              />
+            </label>
+            <label>
+              PW
+              <input
+                type="password"
+                value={credentials.password}
+                onChange={(event) => onCredentials({ ...credentials, password: event.target.value })}
+                autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                required
+              />
+            </label>
+            {authMode === "register" ? (
+              <>
+                <label>
+                  Display name
+                  <input value={credentials.displayName} onChange={(event) => onCredentials({ ...credentials, displayName: event.target.value })} />
+                </label>
+                <label>
+                  Email
+                  <input type="email" value={credentials.email} onChange={(event) => onCredentials({ ...credentials, email: event.target.value })} />
+                </label>
+              </>
+            ) : null}
+            <button className="primary-button" disabled={busy}>
+              {busy ? "Working..." : authMode === "login" ? "Login" : "Create account"}
+            </button>
+            <button type="button" className="ghost-button" onClick={() => onAuthMode(authMode === "login" ? "register" : "login")}>
+              {authMode === "login" ? "Create account" : "Use existing account"}
+            </button>
+          </form>
+          <button className="ghost-button" onClick={onGoMyPage}>Open My Page</button>
+        </section>
+      )}
+
+      <section className="side-section">
+        <h2>Search</h2>
+        <label>
+          Symbol
+          <input
+            value={symbolDraft}
+            onChange={(event) => onSymbolDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                onOpenSymbol(symbolDraft);
+              }
+            }}
+          />
+        </label>
+        <div className="candidate-list">
+          {candidates.map((candidate) => (
+            <button key={candidate} className="mini-ghost" onClick={() => onOpenSymbol(candidate)}>
+              {candidate}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="side-section">
+        <h2>Settings</h2>
+        <label>
+          Benchmark
+          <input value={benchmark} onChange={(event) => onBenchmark(event.target.value.toUpperCase())} />
+        </label>
+        <label>
+          History window in years
+          <input type="number" min="1" max="20" value={historyYears} onChange={(event) => onHistoryYears(Number(event.target.value))} />
+        </label>
+        <label>
+          Rolling beta window in months
+          <input type="number" min="6" max="60" value={rollingWindow} onChange={(event) => onRollingWindow(Number(event.target.value))} />
+        </label>
+        <label>
+          Quote refresh seconds
+          <input type="number" min="5" max="120" value={refreshSeconds} onChange={(event) => onRefreshSeconds(Number(event.target.value))} />
+        </label>
+        <label className="checkbox-label">
+          <input type="checkbox" checked={autoRefresh} onChange={(event) => onAutoRefresh(event.target.checked)} />
+          Auto refresh quotes
+        </label>
+      </section>
+    </aside>
+  );
+}
+
+function buildSearchCandidates(query: string) {
+  const normalized = query.trim().toUpperCase();
+  const universe = [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "SPY",
+    "QQQ",
+    "BTC-KRW",
+    "ETH-KRW",
+    "SOL-KRW",
+    "XRP-KRW",
+    "OP-KRW",
+    "WLD-KRW",
+    "RENDER-KRW",
+    "005930.KS",
+    "000660.KS"
+  ];
+  const matches = normalized ? universe.filter((symbol) => symbol.includes(normalized)).slice(0, 8) : universe.slice(0, 6);
+  return matches.includes(normalized) || !normalized ? matches : [normalized, ...matches].slice(0, 8);
 }
 
 function MarketPage({
@@ -634,6 +854,12 @@ function SymbolDetail({
                 <p className="muted">{data.profile.website || "Website unavailable"}</p>
               </div>
             </div>
+            <div className="profile-facts">
+              <MiniMetric label="Sector" value={data.profile.sector || "N/A"} />
+              <MiniMetric label="Industry" value={data.profile.industry || "N/A"} />
+              <MiniMetric label="Country" value={data.profile.country || "N/A"} />
+              <MiniMetric label="Website" value={data.profile.website || "N/A"} />
+            </div>
             <p className="profile-copy">{data.profile.summary || "Company profile data is unavailable for this symbol."}</p>
           </article>
           <article className="panel">
@@ -643,14 +869,29 @@ function SymbolDetail({
                 <p className="muted">Comparable watchlist, not investment advice.</p>
               </div>
             </div>
-            <div className="peer-list">
-              {data.peers.map((quote) => (
-                <button key={quote.symbol} onClick={() => onOpenSymbol(quote.symbol)}>
-                  <span>{quote.symbol}</span>
-                  <strong>{formatMoney(quote.price, quote.currency)}</strong>
-                  <em className={signedClass(quote.changePct)}>{formatPct(quote.changePct)}</em>
-                </button>
-              ))}
+            <div className="table-wrap peer-table-wrap">
+              <table className="peer-table">
+                <thead>
+                  <tr>
+                    <th className="text-cell">Symbol</th>
+                    <th className="text-cell">Company</th>
+                    <th className="text-cell">Industry</th>
+                    <th className="number-cell">Price</th>
+                    <th className="number-cell">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.peers.map((quote) => (
+                    <tr key={quote.symbol} className="click-row" onClick={() => onOpenSymbol(quote.symbol)}>
+                      <td className="text-cell strong">{quote.symbol}</td>
+                      <td className="text-cell">{quote.name || quote.symbol}</td>
+                      <td className="text-cell">{quote.industry || quote.sector || "N/A"}</td>
+                      <td className="number-cell">{formatMoney(quote.price, quote.currency)}</td>
+                      <td className={`number-cell ${signedClass(quote.changePct)}`}>{formatPct(quote.changePct)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </article>
         </section>
@@ -1366,9 +1607,9 @@ function chartXLabel(point: ChartPoint, index: number, total: number) {
 }
 
 function LineChart({ points, currency }: { points: ChartPoint[]; currency: string }) {
-  const width = 920;
+  const width = 1280;
   const height = 340;
-  const margin = { top: 26, right: 28, bottom: 54, left: 84 };
+  const margin = { top: 26, right: 28, bottom: 54, left: 142 };
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
   const { min, span, ticks } = chartStats(points);
@@ -1387,7 +1628,7 @@ function LineChart({ points, currency }: { points: ChartPoint[]; currency: strin
             {ticks.map((tick) => (
               <g key={tick}>
                 <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
-                <text x={margin.left - 10} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
+                <text x={margin.left - 18} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
                   {currency === "KRW" ? Math.round(tick).toLocaleString("en-US") : tick.toLocaleString("en-US", { maximumFractionDigits: 2 })}
                 </text>
               </g>
@@ -1400,17 +1641,17 @@ function LineChart({ points, currency }: { points: ChartPoint[]; currency: strin
                 </text>
               );
             })}
-            <text x={22} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 22 ${margin.top + innerHeight / 2})`}>
-              Close
+            <text x={28} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 28 ${margin.top + innerHeight / 2})`}>
+              Price
             </text>
             <text x={margin.left + innerWidth / 2} y={height - 2} className="chart-axis-title" textAnchor="middle">
               Time
             </text>
-            <path d={path} fill="none" stroke="#2563eb" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+            <path d={path} fill="none" stroke="#2563eb" strokeWidth="1.8" vectorEffect="non-scaling-stroke" />
           </svg>
           <div className="chart-legend">
             <span className="legend-line"></span>
-            Close
+            Price
           </div>
         </>
       ) : (
@@ -1421,9 +1662,9 @@ function LineChart({ points, currency }: { points: ChartPoint[]; currency: strin
 }
 
 function PriceBarChart({ points, currency }: { points: ChartPoint[]; currency: string }) {
-  const width = 920;
+  const width = 1280;
   const height = 340;
-  const margin = { top: 26, right: 28, bottom: 54, left: 84 };
+  const margin = { top: 26, right: 28, bottom: 54, left: 142 };
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
   const { min, span, ticks } = chartStats(points);
@@ -1440,7 +1681,7 @@ function PriceBarChart({ points, currency }: { points: ChartPoint[]; currency: s
             {ticks.map((tick) => (
               <g key={tick}>
                 <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
-                <text x={margin.left - 10} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
+                <text x={margin.left - 18} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
                   {currency === "KRW" ? Math.round(tick).toLocaleString("en-US") : tick.toLocaleString("en-US", { maximumFractionDigits: 2 })}
                 </text>
               </g>
@@ -1475,7 +1716,7 @@ function PriceBarChart({ points, currency }: { points: ChartPoint[]; currency: s
                 </text>
               );
             })}
-            <text x={22} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 22 ${margin.top + innerHeight / 2})`}>
+            <text x={28} y={margin.top + innerHeight / 2} className="chart-axis-title" textAnchor="middle" transform={`rotate(-90 28 ${margin.top + innerHeight / 2})`}>
               Price
             </text>
             <text x={margin.left + innerWidth / 2} y={height - 2} className="chart-axis-title" textAnchor="middle">
@@ -1497,17 +1738,27 @@ function PriceBarChart({ points, currency }: { points: ChartPoint[]; currency: s
 }
 
 function MacroPanel({ points }: { points: MacroPoint[] }) {
+  const countries = Array.from(new Set(points.map((point) => point.country)));
+  const [country, setCountry] = useState<MacroPoint["country"]>(countries[0] || "United States");
+  const selectedPoints = points.filter((point) => point.country === country);
   return (
     <section className="panel">
       <div className="panel-heading">
         <div>
           <h2>Rates and M2</h2>
-          <p className="muted">Policy rates and M2 liquidity over the recent five-year window.</p>
+          <p className="muted">Policy rates and M2 liquidity over the recent five-year window. M2 is normalized to USD billions.</p>
         </div>
+        <select className="macro-country-select" value={country} onChange={(event) => setCountry(event.target.value as MacroPoint["country"])}>
+          {countries.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="macro-chart-grid">
-        <MacroLineChart points={points} field="policyRatePct" title="Policy Rate (%)" valueSuffix="%" />
-        <MacroLineChart points={points} field="m2" title="M2 Liquidity" valueSuffix="" compact />
+        <MacroLineChart points={selectedPoints} field="policyRatePct" title={`${country} Policy Rate (%)`} valueSuffix="%" />
+        <MacroLineChart points={selectedPoints} field="m2" title={`${country} M2 Liquidity (USD bn)`} valueSuffix="" compact />
       </div>
     </section>
   );
@@ -1717,7 +1968,7 @@ function FinancialGroup({
 
 function formatFinancialValue(value: number | null) {
   if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "";
+    return "N/A";
   }
   const abs = Math.abs(value);
   if (abs >= 1_000_000_000) {

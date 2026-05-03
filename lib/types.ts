@@ -29,6 +29,9 @@ export type Position = {
 
 export type Quote = {
   symbol: string;
+  name?: string;
+  sector?: string;
+  industry?: string;
   price: number | null;
   previousClose: number | null;
   changePct: number | null;

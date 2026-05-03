@@ -1,4 +1,4 @@
-import { cryptoBaseSymbol, isCryptoSymbol, marketDataSymbol, normalizeSymbol } from "./symbols";
+import { cryptoBaseSymbol, isCryptoSymbol, isKoreaSymbol, marketDataSymbol, normalizeSymbol } from "./symbols";
 import { getQuote, getQuotes } from "./prices";
 import type { ChartPoint, FinancialRatioRow, FinancialStatement, MacroPoint, MarketMoverRow, MarketPageResponse, Quote, SymbolDetailResponse } from "./types";
 
@@ -88,12 +88,148 @@ const MARKET_CONFIG: Record<
 };
 
 const SECTOR_PEERS: Record<string, string[]> = {
-  Technology: ["AAPL", "MSFT", "NVDA", "AVGO", "GOOGL", "META"],
-  "Consumer Cyclical": ["AMZN", "TSLA", "HD", "MCD"],
-  "Financial Services": ["JPM", "BAC", "V", "MA"],
-  Healthcare: ["LLY", "UNH", "JNJ", "PFE"],
+  Technology: ["MSFT", "NVDA", "AAPL", "AVGO", "AMD", "CRM", "ADBE", "NOW"],
+  "Communication Services": ["GOOGL", "META", "NFLX", "DIS", "TMUS", "SPOT"],
+  "Consumer Cyclical": ["AMZN", "TSLA", "HD", "NKE", "MCD", "BKNG"],
+  "Consumer Defensive": ["WMT", "COST", "PG", "KO", "PEP", "PM"],
+  "Financial Services": ["JPM", "BAC", "V", "MA", "GS", "MS"],
+  Healthcare: ["LLY", "UNH", "JNJ", "MRK", "ABBV", "TMO"],
+  Industrials: ["GE", "CAT", "HON", "RTX", "UPS", "BA"],
+  Energy: ["XOM", "CVX", "COP", "SLB", "EOG", "MPC"],
+  "Basic Materials": ["LIN", "APD", "SHW", "FCX", "NEM", "NUE"],
+  "Real Estate": ["PLD", "AMT", "EQIX", "WELL", "SPG", "O"],
+  Utilities: ["NEE", "SO", "DUK", "AEP", "SRE", "D"],
+  ETF: ["SPY", "VOO", "QQQ"],
+  "Korea Technology": ["005930.KS", "000660.KS", "035420.KS", "035720.KS", "066570.KS"],
+  "Korea Healthcare": ["207940.KS", "068270.KS"],
+  "Korea Consumer Cyclical": ["005380.KS", "000270.KS", "012330.KS"],
+  "Korea Financial Services": ["105560.KS", "055550.KS", "032830.KS"],
+  "Korea Industrials": ["373220.KS", "012450.KS"],
   crypto: ["BTC-KRW", "ETH-KRW", "SOL-KRW", "XRP-KRW", "LINK-KRW"]
 };
+
+const KOREA_SECTOR_PEERS: Record<string, string[]> = {
+  Technology: ["005930.KS", "000660.KS", "035420.KS", "035720.KS", "066570.KS"],
+  Healthcare: ["207940.KS", "068270.KS"],
+  "Consumer Cyclical": ["005380.KS", "000270.KS", "012330.KS"],
+  "Financial Services": ["105560.KS", "055550.KS", "032830.KS"],
+  Industrials: ["373220.KS", "012450.KS"]
+};
+
+const PROFILE_FALLBACKS: Record<string, { name: string; sector: string; industry: string; country: string; website: string; summary: string }> = {
+  AAPL: {
+    name: "Apple Inc.",
+    sector: "Technology",
+    industry: "Consumer Electronics",
+    country: "United States",
+    website: "https://www.apple.com",
+    summary: "Apple designs consumer electronics, software, and services including iPhone, Mac, iPad, wearables, and digital platforms."
+  },
+  AVGO: {
+    name: "Broadcom Inc.",
+    sector: "Technology",
+    industry: "Semiconductors",
+    country: "United States",
+    website: "https://www.broadcom.com",
+    summary: "Broadcom designs semiconductor and infrastructure software products for networking, broadband, wireless, storage, and enterprise markets."
+  },
+  CRWV: {
+    name: "CoreWeave, Inc.",
+    sector: "Technology",
+    industry: "Cloud Infrastructure",
+    country: "United States",
+    website: "https://www.coreweave.com",
+    summary: "CoreWeave provides cloud infrastructure focused on accelerated computing workloads, including artificial intelligence and high-performance computing."
+  },
+  MSFT: {
+    name: "Microsoft Corporation",
+    sector: "Technology",
+    industry: "Software - Infrastructure",
+    country: "United States",
+    website: "https://www.microsoft.com",
+    summary: "Microsoft develops software, cloud services, devices, gaming platforms, and productivity applications."
+  },
+  NVDA: {
+    name: "NVIDIA Corporation",
+    sector: "Technology",
+    industry: "Semiconductors",
+    country: "United States",
+    website: "https://www.nvidia.com",
+    summary: "NVIDIA designs GPUs, accelerated computing platforms, networking products, and AI software infrastructure."
+  },
+  SPY: {
+    name: "SPDR S&P 500 ETF Trust",
+    sector: "ETF",
+    industry: "Exchange Traded Fund",
+    country: "United States",
+    website: "https://www.ssga.com",
+    summary: "SPY is an exchange-traded fund designed to track the S&P 500 Index."
+  },
+  VOO: {
+    name: "Vanguard S&P 500 ETF",
+    sector: "ETF",
+    industry: "Exchange Traded Fund",
+    country: "United States",
+    website: "https://investor.vanguard.com",
+    summary: "VOO is an exchange-traded fund designed to track the S&P 500 Index."
+  },
+  QQQ: {
+    name: "Invesco QQQ Trust",
+    sector: "ETF",
+    industry: "Exchange Traded Fund",
+    country: "United States",
+    website: "https://www.invesco.com",
+    summary: "QQQ is an exchange-traded fund designed to track the Nasdaq-100 Index."
+  },
+  "005930.KS": {
+    name: "Samsung Electronics Co., Ltd.",
+    sector: "Korea Technology",
+    industry: "Consumer Electronics and Semiconductors",
+    country: "South Korea",
+    website: "https://www.samsung.com",
+    summary: "Samsung Electronics produces memory chips, displays, mobile devices, appliances, and consumer electronics."
+  },
+  "000660.KS": {
+    name: "SK hynix Inc.",
+    sector: "Korea Technology",
+    industry: "Semiconductors",
+    country: "South Korea",
+    website: "https://www.skhynix.com",
+    summary: "SK hynix manufactures memory semiconductors including DRAM and NAND flash products."
+  }
+};
+
+const SECTOR_DEFAULT_INDUSTRIES: Record<string, string> = {
+  Technology: "Technology Hardware, Software, and Semiconductors",
+  "Communication Services": "Media, Internet, and Telecommunications",
+  "Consumer Cyclical": "Consumer Discretionary",
+  "Consumer Defensive": "Consumer Staples",
+  "Financial Services": "Banks, Payments, and Capital Markets",
+  Healthcare: "Pharmaceuticals, Healthcare Equipment, and Services",
+  Industrials: "Capital Goods, Transportation, and Aerospace",
+  Energy: "Oil, Gas, and Energy Services",
+  "Basic Materials": "Chemicals, Metals, and Materials",
+  "Real Estate": "REITs and Real Estate Services",
+  Utilities: "Regulated Electric, Gas, and Water Utilities",
+  ETF: "Exchange Traded Fund"
+};
+
+function fallbackProfile(symbol: string, summaryProfile: Record<string, unknown>, priceModule: Record<string, unknown>) {
+  const fallback = PROFILE_FALLBACKS[symbol] || PROFILE_FALLBACKS[marketDataSymbol(symbol)] || {};
+  const providerSymbol = marketDataSymbol(symbol);
+  const watchlists = isKoreaSymbol(providerSymbol) ? KOREA_SECTOR_PEERS : SECTOR_PEERS;
+  const sectorFromWatchlist =
+    Object.entries(watchlists).find(([, peers]) => peers.includes(symbol) || peers.includes(providerSymbol))?.[0] || "";
+  const sector = String(summaryProfile.sector || fallback.sector || sectorFromWatchlist || (isCryptoSymbol(symbol) ? "crypto" : ""));
+  return {
+    name: String(rawValue(priceModule.longName) || rawValue(priceModule.shortName) || fallback.name || symbol),
+    sector,
+    industry: String(summaryProfile.industry || fallback.industry || SECTOR_DEFAULT_INDUSTRIES[sector] || ""),
+    country: String(summaryProfile.country || fallback.country || (isKoreaSymbol(providerSymbol) ? "South Korea" : sector && !isCryptoSymbol(symbol) ? "United States" : "")),
+    website: String(summaryProfile.website || fallback.website || ""),
+    summary: String(summaryProfile.longBusinessSummary || fallback.summary || "")
+  };
+}
 
 function numberOrNull(value: unknown) {
   const num = Number(value);
@@ -250,19 +386,19 @@ const MACRO_ANCHORS: Record<MacroPoint["country"], { rate: number[]; m2: number[
   },
   Korea: {
     rate: [0.5, 1.25, 3.5, 3.5, 3.0, 2.5],
-    m2: [3_250_000, 3_650_000, 3_850_000, 4_070_000, 4_350_000, 4_565_000]
+    m2: [2_355, 2_645, 2_790, 2_949, 3_152, 3_308]
   },
   Europe: {
     rate: [0, 0, 2.5, 4.0, 3.15, 2.15],
-    m2: [14_650_000, 15_750_000, 16_150_000, 16_050_000, 16_170_000, 16_245_000]
+    m2: [15_822, 17_010, 17_442, 17_334, 17_464, 17_545]
   },
   Japan: {
     rate: [-0.1, -0.1, -0.1, 0.1, 0.5, 0.75],
-    m2: [1_165_000, 1_205_000, 1_225_000, 1_242_000, 1_265_000, 1_275_000]
+    m2: [7_516, 7_774, 7_903, 8_013, 8_161, 8_226]
   },
   China: {
     rate: [3.85, 3.7, 3.45, 3.45, 3.1, 3.0],
-    m2: [218_000, 238_000, 266_000, 292_000, 315_000, 354_000]
+    m2: [30_069, 32_828, 36_690, 40_276, 43_448, 48_828]
   }
 };
 
@@ -316,10 +452,10 @@ async function fetchYahooSummary(symbol: string) {
     const response = await fetch(
       `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(
         providerSymbol
-      )}?modules=summaryProfile,price,financialData,defaultKeyStatistics,incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory`,
+      )}?formatted=false&lang=en-US&region=US&modules=assetProfile,summaryProfile,price,financialData,defaultKeyStatistics,incomeStatementHistory,incomeStatementHistoryQuarterly,balanceSheetHistory,balanceSheetHistoryQuarterly,cashflowStatementHistory,cashflowStatementHistoryQuarterly`,
       {
         headers: { accept: "application/json", "user-agent": "myfinancialportfolio-next/1.0" },
-        next: { revalidate: 3600 }
+        next: { revalidate: 86400 }
       }
     );
     if (!response.ok) {
@@ -443,6 +579,226 @@ function buildFinancialStatement(moduleValue: unknown, key: string, definitions:
   };
 }
 
+function hasStatementValues(statement: FinancialStatement) {
+  return statement.columns.length > 0 && statement.lines.some((line) => line.values.some((value) => value !== null));
+}
+
+function bestFinancialStatement(
+  primaryModule: unknown,
+  fallbackModule: unknown,
+  key: string,
+  definitions: LineDefinition[]
+): FinancialStatement {
+  const primary = buildFinancialStatement(primaryModule, key, definitions);
+  if (hasStatementValues(primary)) {
+    return primary;
+  }
+  return buildFinancialStatement(fallbackModule, key, definitions);
+}
+
+const SEC_CIKS: Record<string, string> = {
+  AAPL: "0000320193",
+  MSFT: "0000789019",
+  NVDA: "0001045810",
+  GOOGL: "0001652044",
+  GOOG: "0001652044",
+  AMZN: "0001018724",
+  META: "0001326801",
+  TSLA: "0001318605",
+  AVGO: "0001730168",
+  AMD: "0000002488",
+  CRM: "0001108524",
+  ADBE: "0000796343",
+  NOW: "0001373715",
+  NFLX: "0001065280",
+  JPM: "0000019617",
+  BAC: "0000070858",
+  V: "0001403161",
+  MA: "0001141391",
+  LLY: "0000059478",
+  UNH: "0000731766",
+  JNJ: "0000200406",
+  XOM: "0000034088",
+  CVX: "0000093410"
+};
+
+const SEC_FACT_FIELDS: Record<string, string[]> = {
+  total_assets: ["Assets"],
+  current_assets: ["AssetsCurrent"],
+  cash_short_investments: ["CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "CashAndCashEquivalentsAtCarryingValue", "ShortTermInvestments"],
+  receivables: ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
+  inventory: ["InventoryNet"],
+  prepaid: ["PrepaidExpenseAndOtherAssetsCurrent", "PrepaidExpenseCurrent"],
+  other_current_assets: ["OtherCurrentAssets"],
+  noncurrent_assets: ["AssetsNoncurrent"],
+  long_term_investments: ["LongTermInvestments", "MarketableSecuritiesNoncurrent"],
+  ppe: ["PropertyPlantAndEquipmentNet"],
+  intangibles: ["GoodwillAndIntangibleAssetsNet", "FiniteLivedIntangibleAssetsNet", "Goodwill"],
+  deferred_assets: ["DeferredTaxAssetsNet", "DeferredTaxAssetsValuationAllowance"],
+  other_noncurrent_assets: ["OtherAssetsNoncurrent"],
+  total_liabilities: ["Liabilities"],
+  current_liabilities: ["LiabilitiesCurrent"],
+  accounts_payable: ["AccountsPayableCurrent"],
+  short_term_debt: ["ShortTermBorrowings", "ShortTermDebtCurrent"],
+  other_current_liabilities: ["OtherCurrentLiabilities"],
+  noncurrent_liabilities: ["LiabilitiesNoncurrent"],
+  long_term_debt: ["LongTermDebtNoncurrent", "LongTermDebtAndFinanceLeaseObligationsNoncurrent"],
+  other_liabilities: ["OtherLiabilitiesNoncurrent"],
+  total_equity: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+  common_stock: ["CommonStocksIncludingAdditionalPaidInCapital", "CommonStockValue"],
+  capital_surplus: ["AdditionalPaidInCapital"],
+  retained_earnings: ["RetainedEarningsAccumulatedDeficit"],
+  treasury_stock: ["TreasuryStockValue"],
+  revenue: ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
+  cost_of_revenue: ["CostOfRevenue", "CostOfGoodsAndServicesSold"],
+  gross_profit: ["GrossProfit"],
+  sga: ["SellingGeneralAndAdministrativeExpense"],
+  salary: ["LaborAndRelatedExpense", "SalariesAndWages"],
+  rent: ["OperatingLeaseCost"],
+  depreciation: ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"],
+  advertising: ["AdvertisingExpense"],
+  fees: ["ProfessionalFees"],
+  freight: ["ShippingHandlingAndTransportationCosts"],
+  research: ["ResearchAndDevelopmentExpense"],
+  bad_debt: ["AllowanceForDoubtfulAccountsExpense"],
+  other_sga: ["OtherOperatingExpenses"],
+  operating_income: ["OperatingIncomeLoss"],
+  non_operating: ["NonoperatingIncomeExpense", "OtherNonoperatingIncomeExpense"],
+  pretax_income: ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
+  tax: ["IncomeTaxExpenseBenefit"],
+  net_income: ["NetIncomeLoss", "ProfitLoss"],
+  oci: ["OtherComprehensiveIncomeLossNetOfTax"],
+  comprehensive_income: ["ComprehensiveIncomeNetOfTax"],
+  operating_cashflow: ["NetCashProvidedByUsedInOperatingActivities"],
+  change_receivables: ["IncreaseDecreaseInAccountsReceivable"],
+  change_inventory: ["IncreaseDecreaseInInventories"],
+  change_payables: ["IncreaseDecreaseInAccountsPayable"],
+  investing_cashflow: ["NetCashProvidedByUsedInInvestingActivities"],
+  capex: ["PaymentsToAcquirePropertyPlantAndEquipment"],
+  financing_cashflow: ["NetCashProvidedByUsedInFinancingActivities"],
+  dividends: ["PaymentsOfDividends"]
+};
+
+type SecCompanyFacts = {
+  facts?: {
+    "us-gaap"?: Record<
+      string,
+      {
+        units?: Record<string, Array<{ fy?: number; fp?: string; form?: string; end?: string; filed?: string; val?: number }>>;
+      }
+    >;
+  };
+};
+
+async function fetchSecCompanyFacts(symbol: string): Promise<SecCompanyFacts | null> {
+  const cik = SEC_CIKS[marketDataSymbol(symbol)];
+  if (!cik) {
+    return null;
+  }
+  try {
+    const response = await fetch(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, {
+      headers: {
+        accept: "application/json",
+        "user-agent": "myfinancialportfolio-next/1.0 contact@example.com"
+      },
+      next: { revalidate: 86400 }
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as SecCompanyFacts;
+  } catch {
+    return null;
+  }
+}
+
+function secFactRows(facts: SecCompanyFacts | null, concept: string) {
+  const rows = facts?.facts?.["us-gaap"]?.[concept]?.units?.USD || [];
+  return rows
+    .filter((row) => row.form?.startsWith("10-K") && row.fp === "FY" && Number.isFinite(row.val) && row.fy)
+    .sort((a, b) => String(b.filed || b.end || "").localeCompare(String(a.filed || a.end || "")));
+}
+
+function secPeriods(facts: SecCompanyFacts | null) {
+  const candidates = ["Assets", "Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "NetIncomeLoss"]
+    .flatMap((concept) => secFactRows(facts, concept))
+    .filter((row) => row.fy && row.end);
+  const unique = new Map<number, { fy: number; end: string }>();
+  for (const row of candidates) {
+    if (row.fy && row.end && !unique.has(row.fy)) {
+      unique.set(row.fy, { fy: row.fy, end: row.end });
+    }
+  }
+  return Array.from(unique.values())
+    .sort((a, b) => b.fy - a.fy)
+    .slice(0, 4);
+}
+
+function secValue(facts: SecCompanyFacts | null, concepts: string[], fiscalYear: number) {
+  for (const concept of concepts) {
+    const row = secFactRows(facts, concept).find((item) => item.fy === fiscalYear);
+    if (row && Number.isFinite(row.val)) {
+      return Number(row.val);
+    }
+  }
+  return null;
+}
+
+function derivedSecValue(key: string, values: Record<string, number | null>) {
+  if (key === "noncurrent_assets" && values.total_assets !== null && values.current_assets !== null) {
+    return values.total_assets - values.current_assets;
+  }
+  if (key === "gross_profit" && values.revenue !== null && values.cost_of_revenue !== null) {
+    return values.revenue - values.cost_of_revenue;
+  }
+  if (key === "pretax_income" && values.net_income !== null && values.tax !== null) {
+    return values.net_income + values.tax;
+  }
+  if (key === "free_cashflow" && values.operating_cashflow !== null && values.capex !== null) {
+    return values.operating_cashflow - Math.abs(values.capex);
+  }
+  return null;
+}
+
+function buildSecStatement(facts: SecCompanyFacts | null, definitions: LineDefinition[]): FinancialStatement {
+  const periods = secPeriods(facts);
+  const rowsByYear = periods.map((period) => {
+    const values: Record<string, number | null> = {};
+    for (const definition of definitions) {
+      values[definition.key] = secValue(facts, SEC_FACT_FIELDS[definition.key] || [], period.fy);
+    }
+    for (const definition of definitions) {
+      if (values[definition.key] === null) {
+        values[definition.key] = derivedSecValue(definition.key, values);
+      }
+    }
+    return values;
+  });
+  return {
+    columns: periods.map((period) => `${period.fy}`),
+    lines: definitions.map((definition) => ({
+      key: definition.key,
+      label: definition.label,
+      values: rowsByYear.map((row) => row[definition.key] ?? null)
+    }))
+  };
+}
+
+async function fetchSecStatements(symbol: string) {
+  if (isCryptoSymbol(symbol) || isKoreaSymbol(symbol)) {
+    return null;
+  }
+  const facts = await fetchSecCompanyFacts(symbol);
+  if (!facts) {
+    return null;
+  }
+  return {
+    income: buildSecStatement(facts, INCOME_LINES),
+    balance: buildSecStatement(facts, BALANCE_LINES),
+    cashflow: buildSecStatement(facts, CASHFLOW_LINES)
+  };
+}
+
 function formatRatio(value: number | null, type: "number" | "percent") {
   if (value === null) {
     return "N/A";
@@ -514,16 +870,37 @@ async function financialRatios(summary: Record<string, unknown>, peerSymbols: st
 export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"): Promise<SymbolDetailResponse> {
   const normalized = normalizeSymbol(symbol);
   const [quote, chart, summary] = await Promise.all([getQuote(normalized), fetchChart(normalized, range), fetchYahooSummary(normalized)]);
-  const profile = (summary.summaryProfile || {}) as Record<string, unknown>;
+  const profile = {
+    ...((summary.assetProfile || {}) as Record<string, unknown>),
+    ...((summary.summaryProfile || {}) as Record<string, unknown>)
+  };
   const priceModule = (summary.price || {}) as Record<string, unknown>;
   const financialData = (summary.financialData || {}) as Record<string, unknown>;
-  const sector = String(profile.sector || (isCryptoSymbol(normalized) ? "crypto" : ""));
-  const peerSymbols = SECTOR_PEERS[sector] || SECTOR_PEERS.crypto;
+  const resolvedProfile = fallbackProfile(normalized, profile, priceModule);
+  const sector = resolvedProfile.sector || (isCryptoSymbol(normalized) ? "crypto" : "");
+  const peerMap = isKoreaSymbol(normalized) ? KOREA_SECTOR_PEERS : SECTOR_PEERS;
+  const peerSymbols =
+    peerMap[sector] ||
+    (isCryptoSymbol(normalized) ? SECTOR_PEERS.crypto : isKoreaSymbol(normalized) ? MARKET_CONFIG.korea.universe : MARKET_CONFIG.us.universe);
   const comparablePeers = peerSymbols.filter((peer) => peer !== normalized);
-  const [peers, ratios] = await Promise.all([
+  const yahooStatements = {
+    income: bestFinancialStatement(summary.incomeStatementHistory, summary.incomeStatementHistoryQuarterly, "incomeStatementHistory", INCOME_LINES),
+    balance: bestFinancialStatement(summary.balanceSheetHistory, summary.balanceSheetHistoryQuarterly, "balanceSheetStatements", BALANCE_LINES),
+    cashflow: bestFinancialStatement(summary.cashflowStatementHistory, summary.cashflowStatementHistoryQuarterly, "cashflowStatements", CASHFLOW_LINES)
+  };
+  const needsSecStatements =
+    !hasStatementValues(yahooStatements.income) || !hasStatementValues(yahooStatements.balance) || !hasStatementValues(yahooStatements.cashflow);
+  const [peers, ratios, secStatements] = await Promise.all([
     getQuotes(comparablePeers),
-    financialRatios(summary, comparablePeers)
+    financialRatios(summary, comparablePeers),
+    needsSecStatements ? fetchSecStatements(normalized) : Promise.resolve(null)
   ]);
+  const enrichedPeers = Array.from(peers.values())
+    .slice(0, 8)
+    .map((peer) => {
+      const peerProfile = fallbackProfile(peer.symbol, {}, { shortName: peer.symbol });
+      return { ...peer, name: peerProfile.name, sector: peerProfile.sector, industry: peerProfile.industry };
+    });
   const closes = chart.map((point) => point.close);
   const avg = closes.length ? closes.reduce((sum, value) => sum + value, 0) / closes.length : null;
   const variance =
@@ -535,14 +912,7 @@ export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"
     symbol: normalized,
     quote,
     chart,
-    profile: {
-      name: String(rawValue(priceModule.longName) || rawValue(priceModule.shortName) || normalized),
-      sector,
-      industry: String(profile.industry || ""),
-      country: String(profile.country || ""),
-      website: String(profile.website || ""),
-      summary: String(profile.longBusinessSummary || "")
-    },
+    profile: resolvedProfile,
     metrics: {
       avgReturnPct:
         closes.length >= 2 && closes[0] !== 0 ? ((closes[closes.length - 1] / closes[0] - 1) * 100) : null,
@@ -551,14 +921,14 @@ export async function buildSymbolDetail(symbol: string, range: ChartRange = "1M"
       low: closes.length ? Math.min(...closes) : null,
       volume: numberOrNull(financialData.totalRevenue) ?? chart.at(-1)?.volume ?? null
     },
-    peers: Array.from(peers.values()).slice(0, 6),
+    peers: enrichedPeers,
     statements: {
-      income: buildFinancialStatement(summary.incomeStatementHistory, "incomeStatementHistory", INCOME_LINES),
-      balance: buildFinancialStatement(summary.balanceSheetHistory, "balanceSheetStatements", BALANCE_LINES),
-      cashflow: buildFinancialStatement(summary.cashflowStatementHistory, "cashflowStatements", CASHFLOW_LINES),
+      income: hasStatementValues(yahooStatements.income) ? yahooStatements.income : secStatements?.income ?? yahooStatements.income,
+      balance: hasStatementValues(yahooStatements.balance) ? yahooStatements.balance : secStatements?.balance ?? yahooStatements.balance,
+      cashflow: hasStatementValues(yahooStatements.cashflow) ? yahooStatements.cashflow : secStatements?.cashflow ?? yahooStatements.cashflow,
       ratios: ratios.rows,
       ratioPeerCount: ratios.peerCount,
-      ratioIndustry: String(profile.industry || sector || "industry")
+      ratioIndustry: String(resolvedProfile.industry || sector || "industry")
     },
     refreshedAt: new Date().toISOString()
   };
