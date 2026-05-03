@@ -45,15 +45,26 @@ type KoreaFinancialPayload = {
 
 const FINANCIAL_STATEMENT_CACHE_TABLE = "financial_statement_cache";
 const FINANCIAL_STATEMENT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const KOREA_FINANCIAL_MAPPING_VERSION = 2;
+const KOREA_FINANCIAL_MAPPING_VERSION = 3;
 const MONTHLY_VOLATILITY_WINDOW_MONTHS = 12;
 const OPENDART_ANNUAL_REPORT_CODE = "11011";
 
 const KOREA_DART_CORP_CODES: Record<string, string> = {
   "005930.KS": "00126380",
   "000660.KS": "00164779",
+  "373220.KS": "01515323",
+  "207940.KS": "00877059",
+  "005380.KS": "00164742",
+  "000270.KS": "00106641",
+  "068270.KS": "00413046",
   "035420.KS": "00266961",
-  "035720.KS": "00401731"
+  "105560.KS": "00688996",
+  "012450.KS": "00126566",
+  "035720.KS": "00258801",
+  "066570.KS": "00401731",
+  "012330.KS": "00164788",
+  "055550.KS": "00382199",
+  "032830.KS": "00126256"
 };
 let openDartCorpCodeCache: Map<string, string> | null = null;
 
@@ -1100,29 +1111,42 @@ function openDartApiKey() {
 
 function readZipXml(bytes: Uint8Array) {
   const decoder = new TextDecoder("utf-8");
-  let offset = 0;
-  while (offset + 30 <= bytes.length) {
-    const view = new DataView(bytes.buffer, bytes.byteOffset + offset);
-    if (view.getUint32(0, true) !== 0x04034b50) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocdOffset = -1;
+  for (let index = bytes.length - 22; index >= Math.max(0, bytes.length - 66_000); index -= 1) {
+    if (view.getUint32(index, true) === 0x06054b50) {
+      eocdOffset = index;
       break;
     }
-    const compressionMethod = view.getUint16(8, true);
-    const compressedSize = view.getUint32(18, true);
-    const fileNameLength = view.getUint16(26, true);
-    const extraLength = view.getUint16(28, true);
-    const nameStart = offset + 30;
-    const dataStart = nameStart + fileNameLength + extraLength;
-    const dataEnd = dataStart + compressedSize;
-    const fileName = decoder.decode(bytes.subarray(nameStart, nameStart + fileNameLength));
-    if (dataEnd > bytes.length || compressedSize === 0) {
+  }
+  if (eocdOffset < 0) {
+    return "";
+  }
+  const entryCount = view.getUint16(eocdOffset + 10, true);
+  let centralOffset = view.getUint32(eocdOffset + 16, true);
+  for (let index = 0; index < entryCount && centralOffset + 46 <= bytes.length; index += 1) {
+    if (view.getUint32(centralOffset, true) !== 0x02014b50) {
       break;
     }
-    if (fileName.toLowerCase().endsWith(".xml")) {
-      const compressed = bytes.subarray(dataStart, dataEnd);
-      const xmlBytes = compressionMethod === 8 ? inflateRawSync(Buffer.from(compressed)) : Buffer.from(compressed);
-      return decoder.decode(xmlBytes);
+    const compressionMethod = view.getUint16(centralOffset + 10, true);
+    const compressedSize = view.getUint32(centralOffset + 20, true);
+    const fileNameLength = view.getUint16(centralOffset + 28, true);
+    const extraLength = view.getUint16(centralOffset + 30, true);
+    const commentLength = view.getUint16(centralOffset + 32, true);
+    const localOffset = view.getUint32(centralOffset + 42, true);
+    const fileName = decoder.decode(bytes.subarray(centralOffset + 46, centralOffset + 46 + fileNameLength));
+    if (fileName.toLowerCase().endsWith(".xml") && localOffset + 30 <= bytes.length) {
+      const localNameLength = view.getUint16(localOffset + 26, true);
+      const localExtraLength = view.getUint16(localOffset + 28, true);
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+      const dataEnd = dataStart + compressedSize;
+      if (dataEnd <= bytes.length) {
+        const compressed = bytes.subarray(dataStart, dataEnd);
+        const xmlBytes = compressionMethod === 8 ? inflateRawSync(Buffer.from(compressed)) : Buffer.from(compressed);
+        return decoder.decode(xmlBytes);
+      }
     }
-    offset = dataEnd;
+    centralOffset += 46 + fileNameLength + extraLength + commentLength;
   }
   return "";
 }
