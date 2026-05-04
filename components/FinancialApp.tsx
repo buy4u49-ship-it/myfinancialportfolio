@@ -486,7 +486,7 @@ export default function FinancialApp() {
       <main className="app-shell">
       <header className="topbar app-topbar">
         <div className="topbar-title-group">
-          <img className="brand-wordmark" src="/brand/mfp-wordmark-light.svg" alt="My Financial Portfolio" />
+          <BrandWordmark />
           <h1>{pageTitle}</h1>
         </div>
         <div className="topbar-actions">
@@ -782,6 +782,34 @@ function buildSearchCandidates(query: string) {
   }
   const krwCandidate = /^[A-Z0-9]+$/.test(normalized) ? `${normalized}-KRW` : "";
   return Array.from(new Set([normalized, krwCandidate, ...matches].filter(Boolean))).slice(0, 8);
+}
+
+function BrandWordmark() {
+  return (
+    <svg className="brand-wordmark" viewBox="0 0 760 160" fill="none" role="img" aria-label="My Financial Portfolio">
+      <rect x="16" y="16" width="128" height="128" rx="32" fill="url(#mfp-wordmark-gradient)" />
+      <rect x="44" y="86" width="22" height="38" rx="7" fill="#9FC2FF" />
+      <rect x="76" y="70" width="22" height="54" rx="7" fill="#CFE0FF" />
+      <rect x="108" y="52" width="22" height="72" rx="7" fill="#FFFFFF" />
+      <path d="M108 44L119 31L130 44" stroke="#FFFFFF" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
+      <text x="176" y="106" fill="#111827" fontFamily="Inter, Pretendard, Arial, sans-serif" fontSize="72" fontWeight="800">
+        MFP
+      </text>
+      <path d="M374 40V120" stroke="#CBD5E1" strokeWidth="4" strokeLinecap="round" />
+      <text x="408" y="70" fill="#2563EB" fontFamily="Inter, Pretendard, Arial, sans-serif" fontSize="24" fontWeight="800" letterSpacing="8">
+        MY FINANCIAL
+      </text>
+      <text x="408" y="108" fill="#2563EB" fontFamily="Inter, Pretendard, Arial, sans-serif" fontSize="24" fontWeight="800" letterSpacing="8">
+        PORTFOLIO
+      </text>
+      <defs>
+        <linearGradient id="mfp-wordmark-gradient" x1="30" y1="20" x2="140" y2="148" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#2E7BFF" />
+          <stop offset="1" stopColor="#0E54D8" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
 }
 
 function MarketPage({
