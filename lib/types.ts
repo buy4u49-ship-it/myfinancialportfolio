@@ -260,6 +260,7 @@ export type PortfolioResponse = {
     username: string;
     displayName: string;
     email: string;
+    isAdmin?: boolean;
   };
   rows: PortfolioRow[];
   transactions: PortfolioTransaction[];

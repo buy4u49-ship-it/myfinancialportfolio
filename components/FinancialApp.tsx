@@ -218,7 +218,7 @@ export default function FinancialApp() {
     try {
       const data = await parseJsonResponse<PortfolioResponse>(await fetch("/api/portfolio", { cache: "no-store" }));
       setPortfolio(data);
-      setUser(data.user);
+      setUser((prev) => ({ ...data.user, isAdmin: data.user.isAdmin ?? prev?.isAdmin }));
       setProfileDraft({ displayName: data.user.displayName, email: data.user.email || "" });
       setError("");
     } catch (err) {

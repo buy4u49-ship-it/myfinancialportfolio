@@ -312,6 +312,7 @@ select {
 .nav-search-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   margin: 0 0 16px;
 }
@@ -344,7 +345,7 @@ select {
   display: grid;
   grid-template-columns: minmax(220px, 340px) 108px;
   gap: 10px;
-  margin-left: clamp(20px, 5vw, 90px);
+  margin-left: auto;
 }
 
 .symbol-toolbar input,

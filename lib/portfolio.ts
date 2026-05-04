@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { publicUserPayload } from "./admin";
 import { getQuotes } from "./prices";
 import { inferCurrency, normalizeSymbol } from "./symbols";
 import type {
@@ -177,11 +178,7 @@ export async function buildPortfolioResponse(record: UserRecord): Promise<Portfo
   const summary = buildPortfolioSummary(rows, transactions);
   const triggeredAlerts = await evaluatePriceAlerts(record);
   return {
-    user: {
-      username: record.username,
-      displayName: record.profile?.display_name || record.username,
-      email: record.profile?.email || ""
-    },
+    user: publicUserPayload(record),
     rows,
     transactions: [...transactions].reverse(),
     alerts: normalizeAlerts(record),
