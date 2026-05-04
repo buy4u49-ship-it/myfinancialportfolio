@@ -236,6 +236,20 @@ select {
   margin-bottom: 24px;
 }
 
+.topbar-title-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.brand-wordmark {
+  display: block;
+  width: min(320px, 52vw);
+  height: auto;
+}
+
 .topbar-actions {
   display: flex;
   gap: 10px;
