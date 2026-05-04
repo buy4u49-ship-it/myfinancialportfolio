@@ -485,8 +485,8 @@ export default function FinancialApp() {
       />
       <main className="app-shell">
       <header className="topbar app-topbar">
-        <div>
-          <p className="eyebrow">My Financial Portfolio</p>
+        <div className="topbar-title-group">
+          <img className="brand-wordmark" src="/brand/mfp-wordmark-light.svg" alt="My Financial Portfolio" />
           <h1>{pageTitle}</h1>
         </div>
         <div className="topbar-actions">
