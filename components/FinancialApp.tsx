@@ -2,6 +2,7 @@
 
 import { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import type {
+  AdminResponse,
   ChartPoint,
   FinancialLine,
   FinancialStatement,
@@ -21,16 +22,17 @@ type User = {
   username: string;
   displayName: string;
   email?: string;
+  isAdmin?: boolean;
 };
 
-type PageKey = "coin" | "us" | "korea" | "symbol" | "my";
+type PageKey = "coin" | "us" | "korea" | "symbol" | "my" | "admin";
 type TradeMode = "BUY" | "SELL";
 type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type MyTab = "portfolio" | "alerts" | "account";
 type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
 type MappingOption = { statement: string; lineKey: string; label: string };
 
-const PAGES: Array<{ key: PageKey; label: string }> = [
+const BASE_PAGES: Array<{ key: PageKey; label: string }> = [
   { key: "coin", label: "Coin Main" },
   { key: "us", label: "US Stock Main" },
   { key: "korea", label: "Korea Stock Main" },
@@ -138,6 +140,8 @@ export default function FinancialApp() {
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
   const [marketData, setMarketData] = useState<Partial<Record<PageKey, MarketPageResponse>>>({});
   const [symbolDetail, setSymbolDetail] = useState<SymbolDetailResponse | null>(null);
+  const [adminData, setAdminData] = useState<AdminResponse | null>(null);
+  const [adminSelectedUsername, setAdminSelectedUsername] = useState("");
   const [symbol, setSymbol] = useState("AAPL");
   const [symbolDraft, setSymbolDraft] = useState("AAPL");
   const [benchmark, setBenchmark] = useState("SPY");
@@ -228,6 +232,14 @@ export default function FinancialApp() {
     }
   }
 
+  async function loadAdmin(targetUsername = adminSelectedUsername) {
+    const query = targetUsername ? `?username=${encodeURIComponent(targetUsername)}` : "";
+    const data = await parseJsonResponse<AdminResponse>(await fetch(`/api/admin${query}`, { cache: "no-store" }));
+    setAdminData(data);
+    setAdminSelectedUsername(data.selectedUsername || "");
+    return data;
+  }
+
   async function refreshCurrentPage() {
     setBusy(true);
     setError("");
@@ -236,6 +248,8 @@ export default function FinancialApp() {
         await loadMarket(page, marketRanges[page]);
       } else if (page === "symbol") {
         await loadSymbol(symbol, symbolRange);
+      } else if (page === "admin" && user?.isAdmin) {
+        await loadAdmin();
       } else if (user) {
         await loadPortfolio();
       }
@@ -264,8 +278,16 @@ export default function FinancialApp() {
       refreshCurrentPage();
     } else if (page === "my" && user && !portfolio) {
       loadPortfolio();
+    } else if (page === "admin") {
+      if (user?.isAdmin) {
+        if (!adminData) {
+          refreshCurrentPage();
+        }
+      } else {
+        setPage("coin");
+      }
     }
-  }, [page]);
+  }, [page, user?.isAdmin]);
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -414,6 +436,31 @@ export default function FinancialApp() {
     }
   }
 
+  async function patchAdmin(body: Record<string, unknown>) {
+    if (!adminSelectedUsername) {
+      return null;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const data = await parseJsonResponse<AdminResponse>(
+        await fetch("/api/admin", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...body, targetUsername: adminSelectedUsername })
+        })
+      );
+      setAdminData(data);
+      setAdminSelectedUsername(data.selectedUsername || adminSelectedUsername);
+      return data;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Admin update failed.");
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submitAlert() {
     const data = await patchPortfolio({
       action: "add_alert",
@@ -449,7 +496,10 @@ export default function FinancialApp() {
           ? "Korea Stock Main"
           : page === "symbol"
             ? "Symbol Detail"
-            : "My Page";
+            : page === "admin"
+              ? "Admin"
+              : "My Page";
+  const visiblePages = user?.isAdmin ? [...BASE_PAGES, { key: "admin" as const, label: "Admin" }] : BASE_PAGES;
 
   if (loading) {
     return (
@@ -518,7 +568,7 @@ export default function FinancialApp() {
 
         <div className="nav-search-row">
           <nav className="page-nav">
-            {PAGES.map((item) => (
+            {visiblePages.map((item) => (
               <button
                 key={item.key}
                 className={page === item.key ? "active" : ""}
@@ -566,6 +616,23 @@ export default function FinancialApp() {
             onRange={changeSymbolRange}
             onOpenSymbol={openSymbol}
             onSaveMapping={saveFinancialMapping}
+          />
+        ) : null}
+
+        {page === "admin" && user?.isAdmin ? (
+          <AdminPage
+            data={adminData}
+            selectedUsername={adminSelectedUsername}
+            busy={busy}
+            onSelect={(username) => {
+              setAdminSelectedUsername(username);
+              setBusy(true);
+              loadAdmin(username)
+                .catch((err) => setError(err instanceof Error ? err.message : "Admin load failed."))
+                .finally(() => setBusy(false));
+            }}
+            onRefresh={() => loadAdmin()}
+            onPatch={patchAdmin}
           />
         ) : null}
 
@@ -768,6 +835,326 @@ function Sidebar({
   );
 }
 
+function AdminPage({
+  data,
+  selectedUsername,
+  busy,
+  onSelect,
+  onRefresh,
+  onPatch
+}: {
+  data: AdminResponse | null;
+  selectedUsername: string;
+  busy: boolean;
+  onSelect: (username: string) => void;
+  onRefresh: () => Promise<AdminResponse>;
+  onPatch: (body: Record<string, unknown>) => Promise<AdminResponse | null>;
+}) {
+  if (!data) {
+    return <div className="loading-panel">Loading admin dashboard...</div>;
+  }
+  const selected = data.selectedUser;
+  return (
+    <section className="admin-layout">
+      <article className="panel admin-user-list-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Members</h2>
+          </div>
+          <button className="ghost-button" onClick={() => void onRefresh()} disabled={busy}>
+            Refresh
+          </button>
+        </div>
+        <div className="admin-user-list">
+          {data.users.map((item) => (
+            <button
+              key={item.username}
+              className={item.username === selectedUsername ? "active" : ""}
+              onClick={() => onSelect(item.username)}
+            >
+              <strong>{item.displayName}</strong>
+              <span>{item.username}</span>
+              <span>
+                {item.positionCount} positions · {item.transactionCount} trades
+              </span>
+            </button>
+          ))}
+        </div>
+      </article>
+
+      <section className="admin-detail-stack">
+        {!selected ? (
+          <div className="loading-panel">Select a member.</div>
+        ) : (
+          <>
+            <article className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Account</h2>
+                </div>
+              </div>
+              <form
+                className="admin-form-grid"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const form = new FormData(event.currentTarget);
+                  void onPatch({
+                    action: "update_profile",
+                    displayName: form.get("displayName"),
+                    email: form.get("email")
+                  });
+                }}
+              >
+                <label>
+                  Username
+                  <input value={selected.user.username} disabled />
+                </label>
+                <label>
+                  Display name
+                  <input name="displayName" defaultValue={selected.user.displayName} />
+                </label>
+                <label>
+                  Email
+                  <input name="email" type="email" defaultValue={selected.user.email} />
+                </label>
+                <button className="primary-button" disabled={busy}>
+                  Save Account
+                </button>
+              </form>
+            </article>
+
+            <article className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Holdings</h2>
+                </div>
+              </div>
+              <div className="admin-editor-list">
+                {data.selectedPositions.map((position) => (
+                  <AdminPositionEditor key={`${position.index}-${position.symbol}`} position={position} busy={busy} onPatch={onPatch} />
+                ))}
+              </div>
+              <AdminAddPositionForm busy={busy} onPatch={onPatch} />
+            </article>
+
+            <article className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Transactions</h2>
+                </div>
+              </div>
+              <div className="admin-editor-list">
+                {selected.transactions.map((transaction) => (
+                  <AdminTransactionEditor key={transaction.id} transaction={transaction} busy={busy} onPatch={onPatch} />
+                ))}
+                {!selected.transactions.length ? <div className="empty-cell">No transactions recorded.</div> : null}
+              </div>
+              <AdminAddTransactionForm busy={busy} onPatch={onPatch} />
+            </article>
+          </>
+        )}
+      </section>
+    </section>
+  );
+}
+
+function AdminPositionEditor({
+  position,
+  busy,
+  onPatch
+}: {
+  position: AdminResponse["selectedPositions"][number];
+  busy: boolean;
+  onPatch: (body: Record<string, unknown>) => Promise<AdminResponse | null>;
+}) {
+  const [draft, setDraft] = useState({
+    symbol: position.symbol,
+    quantity: String(position.quantity),
+    avgCost: String(position.avgCost),
+    currency: position.currency
+  });
+
+  useEffect(() => {
+    setDraft({
+      symbol: position.symbol,
+      quantity: String(position.quantity),
+      avgCost: String(position.avgCost),
+      currency: position.currency
+    });
+  }, [position]);
+
+  return (
+    <div className="admin-edit-row admin-position-row">
+      <input value={draft.symbol} onChange={(event) => setDraft((prev) => ({ ...prev, symbol: event.target.value.toUpperCase() }))} />
+      <input value={draft.quantity} type="number" step="any" onChange={(event) => setDraft((prev) => ({ ...prev, quantity: event.target.value }))} />
+      <input value={draft.avgCost} type="number" step="any" onChange={(event) => setDraft((prev) => ({ ...prev, avgCost: event.target.value }))} />
+      <input value={draft.currency} onChange={(event) => setDraft((prev) => ({ ...prev, currency: event.target.value.toUpperCase() }))} />
+      <button
+        className="mini-ghost"
+        disabled={busy}
+        onClick={() =>
+          void onPatch({
+            action: "update_position",
+            index: position.index,
+            symbol: draft.symbol,
+            quantity: draft.quantity,
+            avgCost: draft.avgCost,
+            currency: draft.currency
+          })
+        }
+      >
+        Save
+      </button>
+      <button className="mini-ghost danger-ghost" disabled={busy} onClick={() => void onPatch({ action: "delete_position", index: position.index })}>
+        Delete
+      </button>
+    </div>
+  );
+}
+
+function AdminAddPositionForm({
+  busy,
+  onPatch
+}: {
+  busy: boolean;
+  onPatch: (body: Record<string, unknown>) => Promise<AdminResponse | null>;
+}) {
+  return (
+    <form
+      className="admin-add-form admin-position-row"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const formElement = event.currentTarget;
+        const form = new FormData(formElement);
+        void onPatch({
+          action: "add_position",
+          symbol: form.get("symbol"),
+          quantity: form.get("quantity"),
+          avgCost: form.get("avgCost"),
+          currency: form.get("currency")
+        }).then((result) => {
+          if (result) {
+            formElement.reset();
+          }
+        });
+      }}
+    >
+      <input name="symbol" placeholder="Symbol" />
+      <input name="quantity" type="number" step="any" placeholder="Quantity" />
+      <input name="avgCost" type="number" step="any" placeholder="Avg cost" />
+      <input name="currency" placeholder="Currency" />
+      <button className="primary-button" disabled={busy}>
+        Add Holding
+      </button>
+    </form>
+  );
+}
+
+function AdminTransactionEditor({
+  transaction,
+  busy,
+  onPatch
+}: {
+  transaction: PortfolioTransaction;
+  busy: boolean;
+  onPatch: (body: Record<string, unknown>) => Promise<AdminResponse | null>;
+}) {
+  const [draft, setDraft] = useState({
+    type: transaction.type,
+    symbol: transaction.symbol,
+    quantity: String(transaction.quantity),
+    price: String(transaction.price),
+    currency: transaction.currency,
+    costBasis: transaction.cost_basis === undefined ? "" : String(transaction.cost_basis),
+    realizedGainLoss: transaction.realized_gain_loss === null || transaction.realized_gain_loss === undefined ? "" : String(transaction.realized_gain_loss),
+    createdAt: transaction.created_at
+  });
+
+  useEffect(() => {
+    setDraft({
+      type: transaction.type,
+      symbol: transaction.symbol,
+      quantity: String(transaction.quantity),
+      price: String(transaction.price),
+      currency: transaction.currency,
+      costBasis: transaction.cost_basis === undefined ? "" : String(transaction.cost_basis),
+      realizedGainLoss: transaction.realized_gain_loss === null || transaction.realized_gain_loss === undefined ? "" : String(transaction.realized_gain_loss),
+      createdAt: transaction.created_at
+    });
+  }, [transaction]);
+
+  return (
+    <div className="admin-edit-row admin-transaction-row">
+      <select value={draft.type} onChange={(event) => setDraft((prev) => ({ ...prev, type: event.target.value as "BUY" | "SELL" }))}>
+        <option value="BUY">BUY</option>
+        <option value="SELL">SELL</option>
+      </select>
+      <input value={draft.symbol} onChange={(event) => setDraft((prev) => ({ ...prev, symbol: event.target.value.toUpperCase() }))} />
+      <input value={draft.quantity} type="number" step="any" onChange={(event) => setDraft((prev) => ({ ...prev, quantity: event.target.value }))} />
+      <input value={draft.price} type="number" step="any" onChange={(event) => setDraft((prev) => ({ ...prev, price: event.target.value }))} />
+      <input value={draft.currency} onChange={(event) => setDraft((prev) => ({ ...prev, currency: event.target.value.toUpperCase() }))} />
+      <input value={draft.costBasis} type="number" step="any" placeholder="Cost basis" onChange={(event) => setDraft((prev) => ({ ...prev, costBasis: event.target.value }))} />
+      <input value={draft.realizedGainLoss} type="number" step="any" placeholder="Realized P/L" onChange={(event) => setDraft((prev) => ({ ...prev, realizedGainLoss: event.target.value }))} />
+      <input value={draft.createdAt} onChange={(event) => setDraft((prev) => ({ ...prev, createdAt: event.target.value }))} />
+      <button className="mini-ghost" disabled={busy} onClick={() => void onPatch({ action: "update_transaction", transactionId: transaction.id, ...draft })}>
+        Save
+      </button>
+      <button className="mini-ghost danger-ghost" disabled={busy} onClick={() => void onPatch({ action: "delete_transaction", transactionId: transaction.id })}>
+        Delete
+      </button>
+    </div>
+  );
+}
+
+function AdminAddTransactionForm({
+  busy,
+  onPatch
+}: {
+  busy: boolean;
+  onPatch: (body: Record<string, unknown>) => Promise<AdminResponse | null>;
+}) {
+  return (
+    <form
+      className="admin-add-form admin-transaction-row"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const formElement = event.currentTarget;
+        const form = new FormData(formElement);
+        void onPatch({
+          action: "add_transaction",
+          type: form.get("type"),
+          symbol: form.get("symbol"),
+          quantity: form.get("quantity"),
+          price: form.get("price"),
+          currency: form.get("currency"),
+          costBasis: form.get("costBasis"),
+          realizedGainLoss: form.get("realizedGainLoss"),
+          createdAt: form.get("createdAt")
+        }).then((result) => {
+          if (result) {
+            formElement.reset();
+          }
+        });
+      }}
+    >
+      <select name="type" defaultValue="BUY">
+        <option value="BUY">BUY</option>
+        <option value="SELL">SELL</option>
+      </select>
+      <input name="symbol" placeholder="Symbol" />
+      <input name="quantity" type="number" step="any" placeholder="Quantity" />
+      <input name="price" type="number" step="any" placeholder="Price" />
+      <input name="currency" placeholder="Currency" />
+      <input name="costBasis" type="number" step="any" placeholder="Cost basis" />
+      <input name="realizedGainLoss" type="number" step="any" placeholder="Realized P/L" />
+      <input name="createdAt" placeholder="Created at ISO" />
+      <button className="primary-button" disabled={busy}>
+        Add Transaction
+      </button>
+    </form>
+  );
+}
+
 function buildSearchCandidates(query: string) {
   const normalized = query.trim().toUpperCase();
   const universe = [
@@ -913,6 +1300,7 @@ function SymbolDetail({
 
       <BenchmarkComparisonPanel
         rows={data.benchmark.comparisons}
+        valuationHistory={data.benchmark.valuationHistory}
         industry={data.statements.ratioIndustry}
         benchmark={data.benchmark.symbol}
         rollingWindow={data.benchmark.rollingWindowMonths}
@@ -1044,11 +1432,13 @@ function SymbolDetail({
 
 function BenchmarkComparisonPanel({
   rows,
+  valuationHistory,
   industry,
   benchmark,
   rollingWindow
 }: {
   rows: SymbolDetailResponse["benchmark"]["comparisons"];
+  valuationHistory: SymbolDetailResponse["benchmark"]["valuationHistory"];
   industry: string;
   benchmark: string;
   rollingWindow: number;
@@ -1063,6 +1453,7 @@ function BenchmarkComparisonPanel({
           </h2>
         </div>
       </div>
+      <ValuationHistoryChart points={valuationHistory} industry={industry} />
       <div className="table-wrap">
         <table className="comparison-table">
           <thead>
@@ -1084,6 +1475,141 @@ function BenchmarkComparisonPanel({
         </table>
       </div>
     </section>
+  );
+}
+
+function ValuationHistoryChart({
+  points,
+  industry
+}: {
+  points: SymbolDetailResponse["benchmark"]["valuationHistory"];
+  industry: string;
+}) {
+  const hasValues = points.some(
+    (point) =>
+      point.companyPer !== null ||
+      point.industryPer !== null ||
+      point.companyRoe !== null ||
+      point.industryRoe !== null
+  );
+  if (!hasValues) {
+    return <div className="empty-cell">PER and ROE history is unavailable for this symbol.</div>;
+  }
+  return (
+    <div className="valuation-chart-grid">
+      <ValuationMetricChart
+        title="PER"
+        points={points}
+        companyKey="companyPer"
+        industryKey="industryPer"
+        industry={industry}
+        valueType="number"
+      />
+      <ValuationMetricChart
+        title="ROE"
+        points={points}
+        companyKey="companyRoe"
+        industryKey="industryRoe"
+        industry={industry}
+        valueType="percent"
+      />
+    </div>
+  );
+}
+
+function ValuationMetricChart({
+  title,
+  points,
+  companyKey,
+  industryKey,
+  industry,
+  valueType
+}: {
+  title: string;
+  points: SymbolDetailResponse["benchmark"]["valuationHistory"];
+  companyKey: "companyPer" | "companyRoe";
+  industryKey: "industryPer" | "industryRoe";
+  industry: string;
+  valueType: "number" | "percent";
+}) {
+  const { ref: chartRef, width, height } = useResponsiveSvgSize<HTMLDivElement>({
+    defaultWidth: 620,
+    minWidth: 360,
+    minHeight: 260,
+    maxHeight: 360,
+    heightRatio: 0.42
+  });
+  const margin = { top: 36, right: 22, bottom: 64, left: 68 };
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+  const values = finiteValues(points.flatMap((point) => [point[companyKey], point[industryKey]]));
+  const max = Math.max(valueType === "percent" ? 0.2 : 1, ...values);
+  const min = Math.min(0, ...values);
+  const span = max - min || 1;
+  const groupWidth = innerWidth / Math.max(points.length, 1);
+  const barWidth = Math.max(8, Math.min(28, groupWidth * 0.24));
+  const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
+  const tickValues = Array.from({ length: 4 }, (_, index) => min + (span / 3) * index);
+  const formatMetric = (value: number) => (valueType === "percent" ? `${(value * 100).toFixed(1)}%` : value.toFixed(1));
+
+  return (
+    <div ref={chartRef} className="valuation-chart-card">
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img">
+        <text x={margin.left} y={20} className="chart-axis-title valuation-chart-title" textAnchor="start">
+          {title}
+        </text>
+        {tickValues.map((tick) => (
+          <g key={tick}>
+            <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
+            <text x={margin.left - 12} y={yFor(tick) + 4} className="chart-axis-label" textAnchor="end">
+              {formatMetric(tick)}
+            </text>
+          </g>
+        ))}
+        {points.map((point, index) => {
+          const center = margin.left + groupWidth * index + groupWidth / 2;
+          const company = point[companyKey];
+          const industryAverage = point[industryKey];
+          return (
+            <g key={`${title}-${point.label}`}>
+              {company !== null ? (
+                <rect
+                  x={center - barWidth - 2}
+                  y={Math.min(yFor(company), yFor(0))}
+                  width={barWidth}
+                  height={Math.max(1, Math.abs(yFor(company) - yFor(0)))}
+                  fill="#2563eb"
+                  rx="2"
+                />
+              ) : null}
+              {industryAverage !== null ? (
+                <rect
+                  x={center + 2}
+                  y={Math.min(yFor(industryAverage), yFor(0))}
+                  width={barWidth}
+                  height={Math.max(1, Math.abs(yFor(industryAverage) - yFor(0)))}
+                  fill="#94a3b8"
+                  rx="2"
+                />
+              ) : null}
+              <text x={center} y={height - 28} className="chart-axis-label" textAnchor="middle">
+                {point.label}
+              </text>
+            </g>
+          );
+        })}
+        <g className="valuation-chart-legend">
+          <rect x={width - 210} y={10} width={10} height={10} rx="2" fill="#2563eb" />
+          <text x={width - 194} y={20} className="chart-axis-label">
+            Company
+          </text>
+          <rect x={width - 116} y={10} width={10} height={10} rx="2" fill="#94a3b8" />
+          <text x={width - 100} y={20} className="chart-axis-label">
+            {industry || "Industry"}
+          </text>
+        </g>
+      </svg>
+    </div>
   );
 }
 

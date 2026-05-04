@@ -160,6 +160,7 @@ export type SymbolDetailResponse = {
     industryRollingBeta: number | null;
     industryFullPeriodBeta: number | null;
     comparisons: FinancialRatioRow[];
+    valuationHistory: ValuationHistoryPoint[];
     monthlyLogReturns: HistoricalMetricPoint[];
     monthlyRisk: HistoricalRiskPoint[];
   };
@@ -203,6 +204,15 @@ export type FinancialRatioRow = {
   metric: string;
   company: string;
   industryAverage: string;
+};
+
+export type ValuationHistoryPoint = {
+  label: string;
+  fiscalYear: number | null;
+  companyPer: number | null;
+  industryPer: number | null;
+  companyRoe: number | null;
+  industryRoe: number | null;
 };
 
 export type FinancialStatementMappingCandidate = {
@@ -257,6 +267,33 @@ export type PortfolioResponse = {
   triggeredAlerts: TriggeredAlert[];
   summary: PortfolioSummary;
   projection: PortfolioProjection;
+  refreshedAt: string;
+};
+
+export type AdminUserSummary = {
+  username: string;
+  displayName: string;
+  email: string;
+  createdAt: string;
+  positionCount: number;
+  transactionCount: number;
+  alertCount: number;
+};
+
+export type AdminManagedPosition = {
+  index: number;
+  symbol: string;
+  quantity: number;
+  avgCost: number;
+  currency: string;
+};
+
+export type AdminResponse = {
+  isAdmin: true;
+  users: AdminUserSummary[];
+  selectedUsername: string | null;
+  selectedUser: PortfolioResponse | null;
+  selectedPositions: AdminManagedPosition[];
   refreshedAt: string;
 };
 

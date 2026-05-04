@@ -51,6 +51,31 @@ export async function getUserRecord(username: string) {
   return record;
 }
 
+export async function listUserRecords() {
+  const { data, error } = await supabaseAdmin()
+    .from(USER_TABLE)
+    .select("username,record")
+    .order("username", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || [])
+    .map((row) => {
+      if (!row || typeof row.record !== "object" || row.record === null) {
+        return null;
+      }
+      const record = row.record as UserRecord;
+      record.username = normalizeUsername(String(row.username || record.username || ""));
+      record.portfolio = Array.isArray(record.portfolio) ? record.portfolio : [];
+      record.transactions = Array.isArray(record.transactions) ? record.transactions : [];
+      record.alerts = Array.isArray(record.alerts) ? record.alerts : [];
+      return record.username ? record : null;
+    })
+    .filter((record): record is UserRecord => record !== null);
+}
+
 export async function saveUserRecord(username: string, record: UserRecord) {
   const normalized = normalizeUsername(username);
   record.username = normalized;

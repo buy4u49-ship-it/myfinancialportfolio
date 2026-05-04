@@ -442,6 +442,32 @@ select {
   vertical-align: middle;
 }
 
+.valuation-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 18px 22px 6px;
+}
+
+.valuation-chart-card {
+  min-height: 260px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.valuation-chart-card svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.valuation-chart-title {
+  font-size: 16px;
+  fill: var(--text);
+}
+
 .comparison-table th,
 .comparison-table td {
   padding: 13px 16px;
@@ -1234,6 +1260,95 @@ th {
   margin: 12px 22px 20px;
 }
 
+.admin-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.admin-user-list-panel {
+  position: sticky;
+  top: 18px;
+}
+
+.admin-user-list,
+.admin-detail-stack,
+.admin-editor-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-user-list {
+  padding: 14px;
+}
+
+.admin-user-list button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  padding: 12px;
+}
+
+.admin-user-list button.active {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.admin-user-list span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.admin-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 18px 22px 22px;
+  align-items: end;
+}
+
+.admin-form-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.admin-editor-list {
+  padding: 16px 22px 8px;
+}
+
+.admin-edit-row,
+.admin-add-form {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-position-row {
+  grid-template-columns: minmax(130px, 1fr) 120px 120px 90px 80px 80px;
+}
+
+.admin-transaction-row {
+  grid-template-columns: 82px minmax(120px, 1fr) 96px 110px 82px 120px 120px minmax(180px, 1fr) 70px 78px;
+}
+
+.admin-add-form {
+  padding: 10px 22px 22px;
+}
+
+.danger-ghost {
+  color: var(--red);
+  border-color: #fecaca;
+}
+
 @media (max-width: 920px) {
   .app-frame {
     display: block;
@@ -1283,8 +1398,16 @@ th {
   .two-column,
   .peer-list,
   .macro-chart-grid,
+  .valuation-chart-grid,
+  .admin-layout,
+  .admin-form-grid,
   .portfolio-analytics,
   .allocation-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-position-row,
+  .admin-transaction-row {
     grid-template-columns: 1fr;
   }
 
@@ -1328,6 +1451,8 @@ th {
   .quote-card,
   .peer-list button,
   .macro-card,
+  .valuation-chart-card,
+  .admin-user-list button,
   .side-panel {
     background: #111827;
     color: var(--text);

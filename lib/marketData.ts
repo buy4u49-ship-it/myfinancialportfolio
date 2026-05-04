@@ -11,13 +11,15 @@ import type {
   MarketMoverRow,
   MarketPageResponse,
   Quote,
-  SymbolDetailResponse
+  SymbolDetailResponse,
+  ValuationHistoryPoint
 } from "./types";
 import { inflateRawSync } from "node:zlib";
 
 type MarketKey = "crypto" | "us" | "korea";
 export type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type RatioValues = { eps: number | null; per: number | null; netMargin: number | null; operatingMargin: number | null; roe: number | null };
+type PeriodRatioValues = RatioValues & { fiscalYear: number | null };
 type MonthlyReturnPoint = { time: string; month: string; value: number };
 type BenchmarkAnalyticsResult = {
   symbol: string;
@@ -37,6 +39,7 @@ type KoreaFinancialPayload = {
   mappingSignature: string;
   refreshedAt: string;
   ratioValues: RatioValues;
+  ratioHistory?: PeriodRatioValues[];
   statements: {
     income: FinancialStatement;
     balance: FinancialStatement;
@@ -1705,19 +1708,24 @@ function buildOpenDartStatement(rows: OpenDartRow[], definitions: LineDefinition
   };
 }
 
-function openDartRatioValues(rows: OpenDartRow[], marketPrice: number | null, savedMappings: SavedOpenDartMapping[] = []): RatioValues {
+function openDartRatioValuesForYear(
+  rows: OpenDartRow[],
+  year: string,
+  marketPrice: number | null,
+  savedMappings: SavedOpenDartMapping[] = []
+): RatioValues {
   const years = dartYears(rows);
-  const latestYear = years[0];
-  if (!latestYear) {
+  if (!year) {
     return emptyRatioValues();
   }
-  const revenue = dartValue(rows, latestYear, "revenue", savedMappings);
-  const operatingIncome = dartValue(rows, latestYear, "operating_income", savedMappings);
-  const netIncome = dartValue(rows, latestYear, "net_income", savedMappings);
-  const equity = dartValue(rows, latestYear, "total_equity", savedMappings);
-  const previousEquity = years[1] ? dartValue(rows, years[1], "total_equity", savedMappings) : null;
+  const revenue = dartValue(rows, year, "revenue", savedMappings);
+  const operatingIncome = dartValue(rows, year, "operating_income", savedMappings);
+  const netIncome = dartValue(rows, year, "net_income", savedMappings);
+  const equity = dartValue(rows, year, "total_equity", savedMappings);
+  const previousYear = years[years.indexOf(year) + 1];
+  const previousEquity = previousYear ? dartValue(rows, previousYear, "total_equity", savedMappings) : null;
   const epsRow = rows.find((row) =>
-    row.bsns_year === latestYear &&
+    row.bsns_year === year &&
     dartRowMatches(row, {
       sjDiv: "IS",
       accountIds: ["ifrs-full_BasicEarningsLossPerShare", "ifrs-full_DilutedEarningsLossPerShare"],
@@ -1733,6 +1741,19 @@ function openDartRatioValues(rows: OpenDartRow[], marketPrice: number | null, sa
     operatingMargin: revenue !== null && revenue !== 0 && operatingIncome !== null ? operatingIncome / revenue : null,
     roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null
   };
+}
+
+function openDartRatioValues(rows: OpenDartRow[], marketPrice: number | null, savedMappings: SavedOpenDartMapping[] = []): RatioValues {
+  return openDartRatioValuesForYear(rows, dartYears(rows)[0] || "", marketPrice, savedMappings);
+}
+
+function openDartRatioHistory(rows: OpenDartRow[], marketPrice: number | null, savedMappings: SavedOpenDartMapping[] = []): PeriodRatioValues[] {
+  return dartYears(rows)
+    .slice(0, 4)
+    .map((year) => ({
+      fiscalYear: Number(year),
+      ...openDartRatioValuesForYear(rows, year, marketPrice, savedMappings)
+    }));
 }
 
 async function koreaOpenDartFinancial(symbol: string, marketPrice: number | null): Promise<KoreaFinancialPayload | null> {
@@ -1757,6 +1778,7 @@ async function koreaOpenDartFinancial(symbol: string, marketPrice: number | null
     mappingSignature,
     refreshedAt: new Date().toISOString(),
     ratioValues: openDartRatioValues(rows, marketPrice, savedMappings),
+    ratioHistory: openDartRatioHistory(rows, marketPrice, savedMappings),
     statements: {
       income: buildOpenDartStatement(rows, INCOME_LINES, savedMappings),
       balance: buildOpenDartStatement(rows, BALANCE_LINES, savedMappings),
@@ -1798,20 +1820,17 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
   };
 }
 
-async function secRatioValues(symbol: string, marketPrice: number | null): Promise<RatioValues> {
-  const facts = await fetchSecCompanyFacts(symbol);
-  const periods = secPeriods(facts);
-  const latestYear = periods[0]?.fy;
-  if (!latestYear) {
+function secRatioValuesForYear(facts: SecCompanyFacts | null, fiscalYear: number, previousFiscalYear: number | null, marketPrice: number | null): RatioValues {
+  if (!fiscalYear) {
     return emptyRatioValues();
   }
-  const revenue = secValue(facts, SEC_FACT_FIELDS.revenue, latestYear);
-  const operatingIncome = secValue(facts, SEC_FACT_FIELDS.operating_income, latestYear);
-  const netIncome = secValue(facts, SEC_FACT_FIELDS.net_income, latestYear);
-  const equity = secValue(facts, SEC_FACT_FIELDS.total_equity, latestYear);
-  const previousEquity = periods[1]?.fy ? secValue(facts, SEC_FACT_FIELDS.total_equity, periods[1].fy) : null;
+  const revenue = secValue(facts, SEC_FACT_FIELDS.revenue, fiscalYear);
+  const operatingIncome = secValue(facts, SEC_FACT_FIELDS.operating_income, fiscalYear);
+  const netIncome = secValue(facts, SEC_FACT_FIELDS.net_income, fiscalYear);
+  const equity = secValue(facts, SEC_FACT_FIELDS.total_equity, fiscalYear);
+  const previousEquity = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.total_equity, previousFiscalYear) : null;
   const eps =
-    secValueByUnits(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], latestYear, ["USD/shares", "USD / shares"]) ??
+    secValueByUnits(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], fiscalYear, ["USD/shares", "USD / shares"]) ??
     null;
   const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
   return {
@@ -1820,6 +1839,30 @@ async function secRatioValues(symbol: string, marketPrice: number | null): Promi
     netMargin: revenue !== null && revenue !== 0 && netIncome !== null ? netIncome / revenue : null,
     operatingMargin: revenue !== null && revenue !== 0 && operatingIncome !== null ? operatingIncome / revenue : null,
     roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null
+  };
+}
+
+async function secRatioHistory(symbol: string, marketPrice: number | null): Promise<PeriodRatioValues[]> {
+  const facts = await fetchSecCompanyFacts(symbol);
+  const periods = secPeriods(facts);
+  return periods.map((period, index) => ({
+    fiscalYear: period.fy,
+    ...secRatioValuesForYear(facts, period.fy, periods[index + 1]?.fy ?? null, marketPrice)
+  }));
+}
+
+async function secRatioValues(symbol: string, marketPrice: number | null): Promise<RatioValues> {
+  const history = await secRatioHistory(symbol, marketPrice);
+  const latest = history[0];
+  if (!latest) {
+    return emptyRatioValues();
+  }
+  return {
+    eps: latest.eps,
+    per: latest.per,
+    netMargin: latest.netMargin,
+    operatingMargin: latest.operatingMargin,
+    roe: latest.roe
   };
 }
 
@@ -1838,52 +1881,107 @@ function average(values: Array<number | null>) {
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : null;
 }
 
+function periodToRatioValues(period: PeriodRatioValues | undefined): RatioValues {
+  if (!period) {
+    return emptyRatioValues();
+  }
+  return {
+    eps: period.eps,
+    per: period.per,
+    netMargin: period.netMargin,
+    operatingMargin: period.operatingMargin,
+    roe: period.roe
+  };
+}
+
+function valuationHistoryRows({
+  company,
+  companyHistory,
+  peers,
+  peerHistories
+}: {
+  company: RatioValues;
+  companyHistory: PeriodRatioValues[];
+  peers: RatioValues[];
+  peerHistories: PeriodRatioValues[][];
+}): ValuationHistoryPoint[] {
+  const latestFiscalYear = new Date().getUTCFullYear() - 1;
+  const periods = [
+    { label: "Current", fiscalYear: null },
+    { label: `FY ${latestFiscalYear}`, fiscalYear: latestFiscalYear },
+    { label: `FY ${latestFiscalYear - 1}`, fiscalYear: latestFiscalYear - 1 },
+    { label: `FY ${latestFiscalYear - 2}`, fiscalYear: latestFiscalYear - 2 }
+  ];
+  return periods.map((period) => {
+    const companyPeriod = period.fiscalYear === null ? company : periodToRatioValues(companyHistory.find((item) => item.fiscalYear === period.fiscalYear));
+    const peerPeriods =
+      period.fiscalYear === null
+        ? peers
+        : peerHistories.map((history) => periodToRatioValues(history.find((item) => item.fiscalYear === period.fiscalYear)));
+    return {
+      label: period.label,
+      fiscalYear: period.fiscalYear,
+      companyPer: companyPeriod.per,
+      industryPer: average(peerPeriods.map((peer) => peer.per)),
+      companyRoe: companyPeriod.roe,
+      industryRoe: average(peerPeriods.map((peer) => peer.roe))
+    };
+  });
+}
+
 async function financialRatios(
   symbol: string,
   summary: Record<string, unknown>,
   peerSymbols: string[],
   marketPrice: number | null,
   koreaFinancial: KoreaFinancialPayload | null = null
-): Promise<{ rows: FinancialRatioRow[]; peerCount: number }> {
-  const companyFallback = isKoreaSymbol(symbol) ? koreaFinancial?.ratioValues ?? emptyRatioValues() : await secRatioValues(symbol, marketPrice);
+): Promise<{ rows: FinancialRatioRow[]; peerCount: number; valuationHistory: ValuationHistoryPoint[] }> {
+  const companyHistory = isKoreaSymbol(symbol) ? koreaFinancial?.ratioHistory ?? [] : await secRatioHistory(symbol, marketPrice);
+  const companyFallback = isKoreaSymbol(symbol) ? koreaFinancial?.ratioValues ?? periodToRatioValues(companyHistory[0]) : periodToRatioValues(companyHistory[0]);
   const company = mergeRatioValues(ratioValues(summary), companyFallback);
   const peers = await Promise.all(
     peerSymbols.slice(0, 5).map(async (peer) => {
       const [peerSummary, peerQuote] = await Promise.all([fetchYahooSummary(peer), getQuote(peer)]);
-      const peerFallback = isKoreaSymbol(peer)
-        ? (await koreaOpenDartFinancial(peer, peerQuote.price))?.ratioValues ?? emptyRatioValues()
-        : await secRatioValues(peer, peerQuote.price);
-      return mergeRatioValues(ratioValues(peerSummary), peerFallback);
+      const peerKoreaFinancial = isKoreaSymbol(peer) ? await koreaOpenDartFinancial(peer, peerQuote.price) : null;
+      const peerHistory = isKoreaSymbol(peer) ? peerKoreaFinancial?.ratioHistory ?? [] : await secRatioHistory(peer, peerQuote.price);
+      const peerFallback = isKoreaSymbol(peer) ? peerKoreaFinancial?.ratioValues ?? periodToRatioValues(peerHistory[0]) : periodToRatioValues(peerHistory[0]);
+      return {
+        current: mergeRatioValues(ratioValues(peerSummary), peerFallback),
+        history: peerHistory
+      };
     })
   );
-  const peerCount = peers.filter((peer) => peer.eps !== null || peer.per !== null || peer.netMargin !== null || peer.operatingMargin !== null || peer.roe !== null).length;
+  const peerCurrent = peers.map((peer) => peer.current);
+  const peerHistories = peers.map((peer) => peer.history);
+  const peerCount = peerCurrent.filter((peer) => peer.eps !== null || peer.per !== null || peer.netMargin !== null || peer.operatingMargin !== null || peer.roe !== null).length;
   return {
     peerCount,
+    valuationHistory: valuationHistoryRows({ company, companyHistory, peers: peerCurrent, peerHistories }),
     rows: [
       {
         metric: "EPS",
         company: formatRatio(company.eps, "number"),
-        industryAverage: formatRatio(average(peers.map((peer) => peer.eps)), "number")
+        industryAverage: formatRatio(average(peerCurrent.map((peer) => peer.eps)), "number")
       },
       {
         metric: "PER",
         company: formatRatio(company.per, "number"),
-        industryAverage: formatRatio(average(peers.map((peer) => peer.per)), "number")
+        industryAverage: formatRatio(average(peerCurrent.map((peer) => peer.per)), "number")
       },
       {
         metric: "Net Profit Margin",
         company: formatRatio(company.netMargin, "percent"),
-        industryAverage: formatRatio(average(peers.map((peer) => peer.netMargin)), "percent")
+        industryAverage: formatRatio(average(peerCurrent.map((peer) => peer.netMargin)), "percent")
       },
       {
         metric: "Operating Margin",
         company: formatRatio(company.operatingMargin, "percent"),
-        industryAverage: formatRatio(average(peers.map((peer) => peer.operatingMargin)), "percent")
+        industryAverage: formatRatio(average(peerCurrent.map((peer) => peer.operatingMargin)), "percent")
       },
       {
         metric: "ROE",
         company: formatRatio(company.roe, "percent"),
-        industryAverage: formatRatio(average(peers.map((peer) => peer.roe)), "percent")
+        industryAverage: formatRatio(average(peerCurrent.map((peer) => peer.roe)), "percent")
       }
     ]
   };
@@ -1893,29 +1991,35 @@ function formatBeta(value: number | null) {
   return value === null ? "N/A" : value.toFixed(4);
 }
 
+function expectedMonthlyReturnFromBeta(beta: number | null) {
+  return beta === null ? null : 0.35 + beta * 0.55;
+}
+
+function formatExpectedReturn(value: number | null) {
+  return value === null ? "N/A" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
 function benchmarkComparisonRows(ratioRows: FinancialRatioRow[], analytics: BenchmarkAnalyticsResult): FinancialRatioRow[] {
-  const per = ratioRows.find((row) => row.metric === "PER");
-  const roe = ratioRows.find((row) => row.metric === "ROE");
   return [
-    {
-      metric: "PER",
-      company: per?.company || "N/A",
-      industryAverage: per?.industryAverage || "N/A"
-    },
-    {
-      metric: "ROE",
-      company: roe?.company || "N/A",
-      industryAverage: roe?.industryAverage || "N/A"
-    },
     {
       metric: `Rolling Beta (${analytics.rollingWindowMonths}M)`,
       company: formatBeta(analytics.rollingBeta),
       industryAverage: formatBeta(analytics.industryRollingBeta)
     },
     {
+      metric: `Expected Monthly Return (${analytics.rollingWindowMonths}M Beta)`,
+      company: formatExpectedReturn(expectedMonthlyReturnFromBeta(analytics.rollingBeta)),
+      industryAverage: formatExpectedReturn(expectedMonthlyReturnFromBeta(analytics.industryRollingBeta))
+    },
+    {
       metric: `Full Period Beta (${analytics.historyYears}Y)`,
       company: formatBeta(analytics.fullPeriodBeta),
       industryAverage: formatBeta(analytics.industryFullPeriodBeta)
+    },
+    {
+      metric: `Expected Monthly Return (${analytics.historyYears}Y Beta)`,
+      company: formatExpectedReturn(expectedMonthlyReturnFromBeta(analytics.fullPeriodBeta)),
+      industryAverage: formatExpectedReturn(expectedMonthlyReturnFromBeta(analytics.industryFullPeriodBeta))
     }
   ];
 }
@@ -2027,7 +2131,8 @@ export async function buildSymbolDetail(
     peers: enrichedPeers,
     benchmark: {
       ...benchmarkData,
-      comparisons: benchmarkComparisonRows(ratios.rows, benchmarkData)
+      comparisons: benchmarkComparisonRows(ratios.rows, benchmarkData),
+      valuationHistory: ratios.valuationHistory
     },
     statements: {
       income: hasStatementValues(yahooStatements.income) ? yahooStatements.income : secStatements?.income ?? koreaFinancial?.statements.income ?? yahooStatements.income,

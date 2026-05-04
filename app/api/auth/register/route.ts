@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { publicUserPayload } from "@/lib/admin";
 import { setSessionCookie } from "@/lib/auth";
 import { createAccount } from "@/lib/userStore";
 
@@ -18,12 +19,7 @@ export async function POST(request: NextRequest) {
       displayName: String(body.displayName || ""),
       email: String(body.email || "")
     });
-    const response = NextResponse.json({
-      user: {
-        username: record.username,
-        displayName: record.profile?.display_name || record.username
-      }
-    });
+    const response = NextResponse.json({ user: publicUserPayload(record) });
     setSessionCookie(response, record.username);
     return response;
   } catch (error) {
