@@ -777,7 +777,11 @@ function buildSearchCandidates(query: string) {
     "000660.KS"
   ];
   const matches = normalized ? universe.filter((symbol) => symbol.includes(normalized)).slice(0, 8) : universe.slice(0, 6);
-  return matches.includes(normalized) || !normalized ? matches : [normalized, ...matches].slice(0, 8);
+  if (!normalized) {
+    return matches;
+  }
+  const krwCandidate = /^[A-Z0-9]+$/.test(normalized) ? `${normalized}-KRW` : "";
+  return Array.from(new Set([normalized, krwCandidate, ...matches].filter(Boolean))).slice(0, 8);
 }
 
 function MarketPage({

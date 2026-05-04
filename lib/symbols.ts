@@ -1,4 +1,4 @@
-const CRYPTO_BASES = new Set([
+export const STATIC_CRYPTO_BASES = [
   "BTC",
   "ETH",
   "XRP",
@@ -37,7 +37,9 @@ const CRYPTO_BASES = new Set([
   "FIL",
   "ALGO",
   "ARB"
-]);
+];
+
+const CRYPTO_BASES = new Set(STATIC_CRYPTO_BASES);
 
 export const POPULAR_SYMBOLS = [
   "BTC-KRW",
@@ -88,10 +90,21 @@ export function cryptoQuoteSymbol(symbol: string) {
   return parts.length > 1 ? parts[1] : "";
 }
 
+export function isKrwCryptoPairSymbol(symbol: string) {
+  return /^[A-Z0-9]+-KRW$/.test(symbol.trim().toUpperCase());
+}
+
+export function isUsdCryptoPairSymbol(symbol: string) {
+  return /^[A-Z0-9]+-USD$/.test(symbol.trim().toUpperCase());
+}
+
 export function isCryptoSymbol(symbol: string) {
   const normalized = symbol.trim().toUpperCase();
   const base = cryptoBaseSymbol(normalized);
-  return CRYPTO_BASES.has(base) && (!normalized.includes("-") || ["KRW", "USD"].includes(cryptoQuoteSymbol(normalized)));
+  if (normalized.includes("-")) {
+    return isKrwCryptoPairSymbol(normalized) || isUsdCryptoPairSymbol(normalized);
+  }
+  return CRYPTO_BASES.has(base);
 }
 
 export function isKoreaSymbol(symbol: string) {

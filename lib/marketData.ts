@@ -1,6 +1,7 @@
 import { cryptoBaseSymbol, isCryptoSymbol, isKoreaSymbol, marketDataSymbol, normalizeSymbol } from "./symbols";
 import { getQuote, getQuotes } from "./prices";
 import { supabaseAdmin } from "./supabaseAdmin";
+import { getUpbitKrwSymbols, isUpbitKrwSymbol } from "./upbitMarkets";
 import type {
   ChartPoint,
   FinancialRatioRow,
@@ -418,6 +419,9 @@ function upbitChartSettings(range: ChartRange) {
 
 async function fetchUpbitChart(symbol: string, range: ChartRange = "1M"): Promise<ChartPoint[]> {
   const base = cryptoBaseSymbol(symbol);
+  if (!(await isUpbitKrwSymbol(`${base}-KRW`))) {
+    return [];
+  }
   const [path, count] = upbitChartSettings(range);
   const response = await fetch(`https://api.upbit.com/v1/candles/${path}?market=KRW-${encodeURIComponent(base)}&count=${count}`, {
     headers: { accept: "application/json" },
@@ -687,9 +691,10 @@ function buildMacroSeries(): MacroPoint[] {
 
 export async function buildMarketPage(market: MarketKey, range: ChartRange = "1D"): Promise<MarketPageResponse> {
   const config = MARKET_CONFIG[market];
-  const quoteMap = await getQuotes(Array.from(new Set([...config.indices, ...config.universe, config.representative])));
+  const universe = market === "crypto" ? await getUpbitKrwSymbols() : config.universe;
+  const quoteMap = await getQuotes(Array.from(new Set([...config.indices, ...universe, config.representative])));
   const representativeQuote = quoteMap.get(config.representative) || (await getQuote(config.representative));
-  const moverRows = config.universe.map((symbol) => quoteToMover(quoteMap.get(symbol) || { ...representativeQuote, symbol }));
+  const moverRows = universe.map((symbol) => quoteToMover(quoteMap.get(symbol) || { ...representativeQuote, symbol }));
 
   return {
     market,

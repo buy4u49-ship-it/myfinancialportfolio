@@ -1,6 +1,7 @@
 import { cryptoBaseSymbol, isCryptoSymbol, marketDataSymbol, normalizeSymbol } from "./symbols";
 import { supabaseAdmin } from "./supabaseAdmin";
 import type { Quote } from "./types";
+import { filterUpbitKrwSymbols, isUpbitKrwSymbol } from "./upbitMarkets";
 
 const MARKET_QUOTE_TABLE = "market_quote_cache";
 const MARKET_QUOTE_CACHE_MAX_AGE_MS = 90_000;
@@ -108,6 +109,9 @@ export async function getCachedMarketQuotes(symbols: string[]) {
 
 async function fetchUpbitKrwQuote(symbol: string): Promise<Quote> {
   const base = cryptoBaseSymbol(symbol);
+  if (!(await isUpbitKrwSymbol(`${base}-KRW`))) {
+    return emptyQuote(`${base}-KRW`, "KRW");
+  }
   const response = await fetch(`https://api.upbit.com/v1/ticker?markets=KRW-${encodeURIComponent(base)}`, {
     headers: { accept: "application/json" },
     cache: "no-store"
@@ -140,7 +144,7 @@ async function fetchUpbitKrwQuote(symbol: string): Promise<Quote> {
 }
 
 async function fetchUpbitKrwQuotes(symbols: string[]): Promise<Map<string, Quote>> {
-  const normalized = Array.from(new Set(symbols.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)));
+  const normalized = await filterUpbitKrwSymbols(Array.from(new Set(symbols.map((symbol) => normalizeSymbol(symbol)).filter(Boolean))));
   const markets = normalized.map((symbol) => `KRW-${cryptoBaseSymbol(symbol)}`);
   if (!markets.length) {
     return new Map<string, Quote>();
