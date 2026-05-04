@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, FormEvent, ReactNode, useEffect, useState } from "react";
+import { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import type {
   ChartPoint,
   FinancialLine,
@@ -152,6 +152,7 @@ export default function FinancialApp() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [error, setError] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [activeTrade, setActiveTrade] = useState<{ symbol: string; mode: TradeMode } | null>(null);
@@ -459,146 +460,156 @@ export default function FinancialApp() {
   }
 
   return (
-    <div className="app-frame">
-      <Sidebar
-        user={user}
-        portfolio={portfolio}
-        symbolDraft={symbolDraft}
-        benchmark={benchmark}
-        historyYears={historyYears}
-        rollingWindow={rollingWindow}
-        authMode={authMode}
-        credentials={credentials}
-        busy={busy}
-        settingsBusy={settingsBusy}
-        onSymbolDraft={setSymbolDraft}
-        onBenchmark={setBenchmark}
-        onHistoryYears={setHistoryYears}
-        onRollingWindow={setRollingWindow}
-        onAuthMode={setAuthMode}
-        onCredentials={setCredentials}
-        onSubmitAuth={submitAuth}
-        onConfirmSettings={confirmSettings}
-        onOpenSymbol={openSymbol}
-        onGoMyPage={() => setPage("my")}
-        onLogout={logout}
-      />
+    <div className={`app-frame ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <button
+        type="button"
+        className={`sidebar-toggle ${sidebarCollapsed ? "collapsed" : ""}`}
+        onClick={() => setSidebarCollapsed((prev) => !prev)}
+        aria-label={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
+        title={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
+      >
+        {sidebarCollapsed ? ">" : "<"}
+      </button>
+      {sidebarCollapsed ? null : (
+        <Sidebar
+          user={user}
+          portfolio={portfolio}
+          symbolDraft={symbolDraft}
+          benchmark={benchmark}
+          historyYears={historyYears}
+          rollingWindow={rollingWindow}
+          authMode={authMode}
+          credentials={credentials}
+          busy={busy}
+          settingsBusy={settingsBusy}
+          onSymbolDraft={setSymbolDraft}
+          onBenchmark={setBenchmark}
+          onHistoryYears={setHistoryYears}
+          onRollingWindow={setRollingWindow}
+          onAuthMode={setAuthMode}
+          onCredentials={setCredentials}
+          onSubmitAuth={submitAuth}
+          onConfirmSettings={confirmSettings}
+          onOpenSymbol={openSymbol}
+          onGoMyPage={() => setPage("my")}
+          onLogout={logout}
+        />
+      )}
       <main className="app-shell">
-      <header className="topbar app-topbar">
-        <div className="topbar-title-group">
-          <BrandWordmark />
-          <h1>{pageTitle}</h1>
-        </div>
-        <div className="topbar-actions">
-          <button className="ghost-button" onClick={refreshCurrentPage} disabled={busy}>
-            Refresh
-          </button>
-          {user ? (
-            <button className="ghost-button" onClick={logout}>
-              Logout
+        <header className="topbar app-topbar">
+          <div className="topbar-title-group">
+            <h1>{pageTitle}</h1>
+          </div>
+          <div className="topbar-actions">
+            <button className="ghost-button" onClick={refreshCurrentPage} disabled={busy}>
+              Refresh
             </button>
+            {user ? (
+              <button className="ghost-button" onClick={logout}>
+                Logout
+              </button>
+            ) : (
+              <button className="ghost-button" onClick={() => setPage("my")}>
+                Login
+              </button>
+            )}
+          </div>
+        </header>
+
+        <div className="nav-search-row">
+          <nav className="page-nav">
+            {PAGES.map((item) => (
+              <button
+                key={item.key}
+                className={page === item.key ? "active" : ""}
+                onClick={() => setPage(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="symbol-toolbar">
+            <input
+              value={symbolDraft}
+              placeholder="Symbol, e.g. BTC-KRW"
+              onChange={(event) => setSymbolDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  openSymbol(symbolDraft);
+                }
+              }}
+            />
+            <button className="primary-button" onClick={() => openSymbol(symbolDraft)}>
+              Search
+            </button>
+          </div>
+        </div>
+
+        {error ? <div className="alert">{error}</div> : null}
+
+        {page === "coin" || page === "us" || page === "korea" ? (
+          <MarketPage
+            data={marketData[page]}
+            range={marketRanges[page]}
+            onRange={(range) => changeMarketRange(page, range)}
+            onOpenSymbol={openSymbol}
+          />
+        ) : null}
+
+        {page === "symbol" ? (
+          <SymbolDetail
+            data={symbolDetail}
+            activeTab={symbolTab}
+            range={symbolRange}
+            onTab={setSymbolTab}
+            onRange={changeSymbolRange}
+            onOpenSymbol={openSymbol}
+            onSaveMapping={saveFinancialMapping}
+          />
+        ) : null}
+
+        {page === "my" ? (
+          user ? (
+            <MyPage
+              user={user}
+              portfolio={portfolio}
+              busy={busy}
+              newSymbol={newSymbol}
+              newCurrency={newCurrency}
+              activeTrade={activeTrade}
+              quantity={quantity}
+              price={price}
+              activeTab={myTab}
+              alertSymbol={alertSymbol}
+              alertDirection={alertDirection}
+              alertTarget={alertTarget}
+              profileDraft={profileDraft}
+              setNewSymbol={setNewSymbol}
+              setNewCurrency={setNewCurrency}
+              setActiveTrade={setActiveTrade}
+              setQuantity={setQuantity}
+              setPrice={setPrice}
+              setActiveTab={setMyTab}
+              setAlertSymbol={setAlertSymbol}
+              setAlertDirection={setAlertDirection}
+              setAlertTarget={setAlertTarget}
+              setProfileDraft={setProfileDraft}
+              submitTrade={submitTrade}
+              submitAlert={submitAlert}
+              patchPortfolio={patchPortfolio}
+            />
           ) : (
-            <button className="ghost-button" onClick={() => setPage("my")}>
-              Login
-            </button>
-          )}
-        </div>
-      </header>
-
-      <div className="nav-search-row">
-        <nav className="page-nav">
-          {PAGES.map((item) => (
-            <button
-              key={item.key}
-              className={page === item.key ? "active" : ""}
-              onClick={() => setPage(item.key)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        <div className="symbol-toolbar">
-          <input
-            value={symbolDraft}
-            placeholder="Symbol, e.g. BTC-KRW"
-            onChange={(event) => setSymbolDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                openSymbol(symbolDraft);
-              }
-            }}
-          />
-          <button className="primary-button" onClick={() => openSymbol(symbolDraft)}>
-            Search
-          </button>
-        </div>
-      </div>
-
-      {error ? <div className="alert">{error}</div> : null}
-
-      {page === "coin" || page === "us" || page === "korea" ? (
-        <MarketPage
-          data={marketData[page]}
-          range={marketRanges[page]}
-          onRange={(range) => changeMarketRange(page, range)}
-          onOpenSymbol={openSymbol}
-        />
-      ) : null}
-
-      {page === "symbol" ? (
-        <SymbolDetail
-          data={symbolDetail}
-          activeTab={symbolTab}
-          range={symbolRange}
-          onTab={setSymbolTab}
-          onRange={changeSymbolRange}
-          onOpenSymbol={openSymbol}
-          onSaveMapping={saveFinancialMapping}
-        />
-      ) : null}
-
-      {page === "my" ? (
-        user ? (
-          <MyPage
-            user={user}
-            portfolio={portfolio}
-            busy={busy}
-            newSymbol={newSymbol}
-            newCurrency={newCurrency}
-            activeTrade={activeTrade}
-            quantity={quantity}
-            price={price}
-            activeTab={myTab}
-            alertSymbol={alertSymbol}
-            alertDirection={alertDirection}
-            alertTarget={alertTarget}
-            profileDraft={profileDraft}
-            setNewSymbol={setNewSymbol}
-            setNewCurrency={setNewCurrency}
-            setActiveTrade={setActiveTrade}
-            setQuantity={setQuantity}
-            setPrice={setPrice}
-            setActiveTab={setMyTab}
-            setAlertSymbol={setAlertSymbol}
-            setAlertDirection={setAlertDirection}
-            setAlertTarget={setAlertTarget}
-            setProfileDraft={setProfileDraft}
-            submitTrade={submitTrade}
-            submitAlert={submitAlert}
-            patchPortfolio={patchPortfolio}
-          />
-        ) : (
-          <AuthPanel
-            mode={authMode}
-            credentials={credentials}
-            busy={busy}
-            onMode={setAuthMode}
-            onCredentials={setCredentials}
-            onSubmit={submitAuth}
-          />
-        )
-      ) : null}
+            <AuthPanel
+              mode={authMode}
+              credentials={credentials}
+              busy={busy}
+              onMode={setAuthMode}
+              onCredentials={setCredentials}
+              onSubmit={submitAuth}
+            />
+          )
+        ) : null}
       </main>
     </div>
   );
@@ -653,13 +664,13 @@ function Sidebar({
   const candidates = buildSearchCandidates(symbolDraft);
   return (
     <aside className="side-panel">
-      <section className="side-section">
-        <h2>Login</h2>
-        <p className="muted">{user ? user.displayName : "Not signed in"}</p>
+      <section className="side-section side-brand-section" aria-label="Application brand">
+        <BrandWordmark />
       </section>
 
       {user && portfolio ? (
         <section className="side-section side-summary">
+          <p className="side-user-name">{user.displayName}</p>
           <MiniMetric label="Current Wealth" value={formatMoney(portfolio.summary.currentValue, currency)} />
           <MiniMetric label="Total Investment" value={formatMoney(portfolio.summary.costBasis, currency)} />
           <MiniMetric label="Total Gain/Loss" value={formatMoney(portfolio.summary.unrealizedGainLoss, currency)} tone={signedClass(portfolio.summary.unrealizedGainLoss)} />
@@ -1170,8 +1181,13 @@ function metricPath<T>(
 }
 
 function MetricLineChart({ points, yLabel }: { points: SymbolDetailResponse["benchmark"]["monthlyLogReturns"]; yLabel: string }) {
-  const width = 1280;
-  const height = 320;
+  const { ref: chartRef, width, height } = useResponsiveSvgSize<HTMLDivElement>({
+    defaultWidth: 1280,
+    minWidth: 420,
+    minHeight: 320,
+    maxHeight: 520,
+    heightRatio: 0.24
+  });
   const margin = { top: 24, right: 42, bottom: 58, left: 88 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
@@ -1187,8 +1203,8 @@ function MetricLineChart({ points, yLabel }: { points: SymbolDetailResponse["ben
   }
 
   return (
-    <div className="chart-shell historical-chart-shell">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+    <div ref={chartRef} className="chart-shell historical-chart-shell">
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img">
         {axisTicks(min, max).map((tick) => (
           <g key={tick}>
             <line className="chart-grid-line" x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} />
@@ -1221,8 +1237,13 @@ function RiskLineChart({
   points: SymbolDetailResponse["benchmark"]["monthlyRisk"];
   rollingWindow: number;
 }) {
-  const width = 1280;
-  const height = 340;
+  const { ref: chartRef, width, height } = useResponsiveSvgSize<HTMLDivElement>({
+    defaultWidth: 1280,
+    minWidth: 420,
+    minHeight: 340,
+    maxHeight: 540,
+    heightRatio: 0.25
+  });
   const margin = { top: 26, right: 88, bottom: 58, left: 88 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
@@ -1244,8 +1265,8 @@ function RiskLineChart({
   }
 
   return (
-    <div className="chart-shell historical-chart-shell">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+    <div ref={chartRef} className="chart-shell historical-chart-shell">
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img">
         {axisTicks(betaExtent.min, betaExtent.max).map((tick) => (
           <g key={tick}>
             <line className="chart-grid-line" x1={margin.left} x2={width - margin.right} y1={betaY(tick)} y2={betaY(tick)} />
@@ -2119,10 +2140,56 @@ function chartTickAnchor(tickIndex: number, totalTicks: number) {
   return "middle";
 }
 
+function useResponsiveSvgSize<T extends HTMLElement>({
+  defaultWidth,
+  minWidth,
+  minHeight,
+  maxHeight,
+  heightRatio
+}: {
+  defaultWidth: number;
+  minWidth: number;
+  minHeight: number;
+  maxHeight: number;
+  heightRatio: number;
+}) {
+  const ref = useRef<T | null>(null);
+  const [contentWidth, setContentWidth] = useState(defaultWidth);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) {
+      return;
+    }
+
+    const updateWidth = () => {
+      const style = window.getComputedStyle(node);
+      const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+      const nextWidth = Math.max(0, node.getBoundingClientRect().width - horizontalPadding);
+      setContentWidth(Math.round(nextWidth) || defaultWidth);
+    };
+
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [defaultWidth]);
+
+  const width = Math.max(minWidth, contentWidth);
+  const height = Math.max(minHeight, Math.min(maxHeight, Math.round(width * heightRatio)));
+
+  return { ref, width, height };
+}
+
 function LineChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
   const pricePoints = points.filter(validPricePoint);
-  const width = 1280;
-  const height = 360;
+  const { ref: chartRef, width, height } = useResponsiveSvgSize<HTMLDivElement>({
+    defaultWidth: 1280,
+    minWidth: 420,
+    minHeight: 360,
+    maxHeight: 620,
+    heightRatio: 0.28
+  });
   const margin = { top: 26, right: 28, bottom: 74, left: 142 };
   const xTickY = height - 42;
   const xTitleY = height - 8;
@@ -2137,10 +2204,10 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
   const xTicks = chartXTicks(pricePoints);
 
   return (
-    <div className="chart-shell full-chart">
+    <div ref={chartRef} className="chart-shell full-chart">
       {pricePoints.length ? (
         <>
-          <svg viewBox={`0 0 ${width} ${height}`} role="img">
+          <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img">
             {ticks.map((tick) => (
               <g key={tick}>
                 <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
@@ -2178,8 +2245,13 @@ function LineChart({ points, currency, range }: { points: ChartPoint[]; currency
 
 function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; currency: string; range: ChartRange }) {
   const pricePoints = points.filter(validPricePoint);
-  const width = 1280;
-  const height = 360;
+  const { ref: chartRef, width, height } = useResponsiveSvgSize<HTMLDivElement>({
+    defaultWidth: 1280,
+    minWidth: 420,
+    minHeight: 360,
+    maxHeight: 620,
+    heightRatio: 0.28
+  });
   const margin = { top: 26, right: 28, bottom: 74, left: 142 };
   const xTickY = height - 42;
   const xTitleY = height - 8;
@@ -2192,10 +2264,10 @@ function PriceBarChart({ points, currency, range }: { points: ChartPoint[]; curr
   const xTicks = chartXTicks(pricePoints);
 
   return (
-    <div className="chart-shell full-chart">
+    <div ref={chartRef} className="chart-shell full-chart">
       {pricePoints.length ? (
         <>
-          <svg viewBox={`0 0 ${width} ${height}`} role="img">
+          <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img">
             {ticks.map((tick) => (
               <g key={tick}>
                 <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
@@ -2295,8 +2367,13 @@ function MacroLineChart({
 }) {
   const countries = Array.from(new Set(points.map((point) => point.country)));
   const colors = ["#2563eb", "#dc2626", "#16a34a", "#f59e0b", "#7c3aed"];
-  const width = 520;
-  const height = 250;
+  const { ref: chartRef, width, height } = useResponsiveSvgSize<HTMLElement>({
+    defaultWidth: 520,
+    minWidth: 360,
+    minHeight: 250,
+    maxHeight: 420,
+    heightRatio: 0.3
+  });
   const margin = { top: 18, right: 18, bottom: 42, left: 64 };
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
@@ -2310,9 +2387,9 @@ function MacroLineChart({
   const ticks = Array.from({ length: 5 }, (_, index) => max - (span / 4) * index);
 
   return (
-    <article className="macro-card">
+    <article ref={chartRef} className="macro-card">
       <h3>{title}</h3>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img">
         {ticks.map((tick) => (
           <g key={tick}>
             <line x1={margin.left} x2={width - margin.right} y1={yFor(tick)} y2={yFor(tick)} className="chart-grid-line" />
