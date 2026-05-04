@@ -47,7 +47,7 @@ button:disabled {
 .app-shell {
   width: min(100%, calc(100vw - 32px));
   margin: 0 auto;
-  padding: 36px 0 56px;
+  padding: 22px 0 56px;
 }
 
 .app-frame {
@@ -60,17 +60,52 @@ button:disabled {
 
 .app-frame .app-shell {
   width: 100%;
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.app-frame.sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-frame.sidebar-collapsed .app-shell {
+  grid-column: 1;
+  padding-left: 42px;
 }
 
 .side-panel {
   position: sticky;
   top: 0;
+  grid-column: 1;
+  grid-row: 1;
   align-self: start;
   height: 100vh;
   overflow-y: auto;
   background: #eef1f6;
   border-right: 1px solid var(--line);
   padding: 28px 18px;
+}
+
+.sidebar-toggle {
+  position: fixed;
+  top: 14px;
+  left: 276px;
+  z-index: 30;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 18px;
+  font-weight: 900;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.sidebar-toggle.collapsed {
+  left: 14px;
 }
 
 .side-section {
@@ -84,6 +119,21 @@ button:disabled {
 .side-section h2 {
   margin: 0;
   font-size: 18px;
+}
+
+.side-brand-section {
+  padding-bottom: 18px;
+}
+
+.side-brand-section .brand-wordmark {
+  width: 100%;
+  max-width: 248px;
+}
+
+.side-user-name {
+  margin: -4px 0 2px;
+  color: var(--muted);
+  font-weight: 650;
 }
 
 .side-section label {
@@ -560,7 +610,7 @@ select {
 
 .chart-shell svg {
   width: 100%;
-  height: clamp(340px, 28vw, 620px);
+  height: auto;
   display: block;
   overflow: visible;
 }
@@ -576,7 +626,7 @@ select {
 }
 
 .historical-chart-shell svg {
-  height: clamp(330px, 24vw, 520px);
+  height: auto;
 }
 
 .chart-empty {
@@ -689,7 +739,8 @@ select {
 
 .macro-card svg {
   width: 100%;
-  height: 250px;
+  height: auto;
+  display: block;
 }
 
 .macro-legend {
@@ -1189,6 +1240,11 @@ th {
     width: min(100%, calc(100vw - 24px));
   }
 
+  .app-frame .app-shell,
+  .app-frame.sidebar-collapsed .app-shell {
+    grid-column: auto;
+  }
+
   .side-panel {
     position: static;
     height: auto;
@@ -1196,6 +1252,16 @@ th {
     border-bottom: 1px solid var(--line);
     border-radius: 8px;
     margin: 12px auto 0;
+  }
+
+  .sidebar-toggle {
+    left: auto;
+    right: 18px;
+  }
+
+  .sidebar-toggle.collapsed {
+    left: 14px;
+    right: auto;
   }
 
   .auth-panel,
@@ -1255,6 +1321,7 @@ th {
   select,
   .ghost-button,
   .mini-ghost,
+  .sidebar-toggle,
   .page-nav button,
   .subtabs button,
   .range-control button,
