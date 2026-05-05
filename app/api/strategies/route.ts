@@ -5,6 +5,16 @@ import { getUserRecord } from "@/lib/userStore";
 
 export const runtime = "nodejs";
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message || "");
+  }
+  return String(error || "");
+}
+
 export async function POST(request: NextRequest) {
   try {
     const username = readSessionUsername(request);
@@ -19,6 +29,6 @@ export async function POST(request: NextRequest) {
     const evaluation = await evaluateStrategy(body.strategy);
     return NextResponse.json(evaluation);
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Strategy evaluation failed." }, { status: 400 });
+    return NextResponse.json({ error: errorMessage(error) || "Strategy evaluation failed." }, { status: 400 });
   }
 }

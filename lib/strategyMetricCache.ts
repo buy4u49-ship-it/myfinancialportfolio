@@ -187,6 +187,28 @@ function isCacheFresh(refreshedAt: string | undefined) {
   return Number.isFinite(refreshed) && Date.now() - refreshed <= STRATEGY_METRIC_CACHE_MAX_AGE_MS;
 }
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message || "");
+  }
+  return String(error || "");
+}
+
+function isMissingStrategyMetricCacheTable(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code || "") : "";
+  const message = errorMessage(error).toLowerCase();
+  return (
+    code === "42P01" ||
+    code === "PGRST205" ||
+    message.includes("does not exist") ||
+    message.includes("could not find the table") ||
+    message.includes("schema cache")
+  );
+}
+
 function normalizeMarket(input: unknown): StrategyMarket | null {
   const market = String(input || "").trim().toLowerCase();
   return market === "us" || market === "korea" || market === "crypto" ? market : null;
@@ -397,10 +419,10 @@ export async function readStrategyMetricCache(symbols: string[], markets?: Strat
     }
     const { data, error } = await query;
     if (error) {
-      if (error.code === "42P01" || error.message.toLowerCase().includes("does not exist")) {
+      if (isMissingStrategyMetricCacheTable(error)) {
         return new Map<string, StrategyMetricSnapshot>();
       }
-      throw error;
+      throw new Error(errorMessage(error) || "Strategy metric cache read failed.");
     }
     rows.push(...((data || []) as Record<string, unknown>[]));
   }
@@ -425,7 +447,7 @@ export async function writeStrategyMetricCache(snapshots: StrategyMetricSnapshot
       .from(STRATEGY_METRIC_CACHE_TABLE)
       .upsert(rowChunk, { onConflict: "symbol,market" });
     if (error) {
-      throw error;
+      throw new Error(errorMessage(error) || "Strategy metric cache write failed.");
     }
   }
 }

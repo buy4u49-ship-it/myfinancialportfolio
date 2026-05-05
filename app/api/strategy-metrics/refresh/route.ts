@@ -4,6 +4,16 @@ import type { StrategyMarket } from "@/lib/types";
 
 export const runtime = "nodejs";
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message || "");
+  }
+  return String(error || "");
+}
+
 function requireSecret(request: NextRequest) {
   const secret = process.env.STRATEGY_METRICS_SECRET || process.env.STRATEGY_WATCH_SECRET || process.env.CRON_SECRET || "";
   if (!secret) {
@@ -34,7 +44,7 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
     });
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Strategy metrics refresh failed." }, { status: 400 });
+    return NextResponse.json({ error: errorMessage(error) || "Strategy metrics refresh failed." }, { status: 400 });
   }
 }
 
