@@ -5,6 +5,10 @@ import type { UserRecord } from "./types";
 
 const USER_TABLE = "app_user_records";
 
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
 export function utcNowIso() {
   return new Date().toISOString();
 }
@@ -88,6 +92,22 @@ export async function saveUserRecord(username: string, record: UserRecord) {
   }
 }
 
+export async function assertEmailAvailable(email: string, currentUsername = "") {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return;
+  }
+  const normalizedCurrentUsername = normalizeUsername(currentUsername);
+  const records = await listUserRecords();
+  const existing = records.find((record) => {
+    const recordEmail = normalizeEmail(record.profile?.email || "");
+    return recordEmail === normalizedEmail && normalizeUsername(record.username) !== normalizedCurrentUsername;
+  });
+  if (existing) {
+    throw new Error("That email is already used by another account.");
+  }
+}
+
 export async function createAccount(input: {
   username: string;
   password: string;
@@ -105,6 +125,7 @@ export async function createAccount(input: {
   if (existing) {
     throw new Error("That username already exists.");
   }
+  await assertEmailAvailable(input.email || "", username);
 
   const { salt, digest } = hashPassword(input.password);
   const record = defaultUserRecord(username);
@@ -112,7 +133,7 @@ export async function createAccount(input: {
   record.password_hash = digest;
   record.profile = {
     display_name: input.displayName?.trim() || username,
-    email: input.email?.trim() || ""
+    email: normalizeEmail(input.email || "")
   };
   await saveUserRecord(username, record);
   return record;

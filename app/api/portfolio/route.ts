@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSessionUsername } from "@/lib/auth";
 import { addPriceAlert, applyTrade, buildPortfolioResponse, deletePriceAlert, togglePriceAlert, updateProfile } from "@/lib/portfolio";
-import { getUserRecord, saveUserRecord } from "@/lib/userStore";
+import { assertEmailAvailable, getUserRecord, saveUserRecord } from "@/lib/userStore";
 import type { TradeInput } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -46,6 +46,7 @@ export async function PATCH(request: NextRequest) {
     } else if (action === "delete_alert") {
       deletePriceAlert(record, String(body.alertId || ""));
     } else if (action === "update_profile") {
+      await assertEmailAvailable(String(body.email || ""), record.username);
       updateProfile(record, {
         displayName: String(body.displayName || ""),
         email: String(body.email || "")

@@ -289,12 +289,11 @@ export default function FinancialApp() {
     }
   }, [page, user?.isAdmin]);
 
-  async function submitAuth(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitAuthRequest(mode: "login" | "register") {
     setBusy(true);
     setError("");
     try {
-      const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+      const endpoint = mode === "login" ? "/api/auth/login" : "/api/auth/register";
       const data = await parseJsonResponse<{ user: User }>(
         await fetch(endpoint, {
           method: "POST",
@@ -309,6 +308,15 @@ export default function FinancialApp() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await submitAuthRequest(authMode);
+  }
+
+  async function createAccountFromSidebar() {
+    await submitAuthRequest("register");
   }
 
   async function logout() {
@@ -537,9 +545,10 @@ export default function FinancialApp() {
           onHistoryYears={setHistoryYears}
           onRollingWindow={setRollingWindow}
           onAuthMode={setAuthMode}
-          onCredentials={setCredentials}
-          onSubmitAuth={submitAuth}
-          onConfirmSettings={confirmSettings}
+        onCredentials={setCredentials}
+        onSubmitAuth={submitAuth}
+        onCreateAccount={createAccountFromSidebar}
+        onConfirmSettings={confirmSettings}
           onOpenSymbol={openSymbol}
           onGoMyPage={() => setPage("my")}
           onLogout={logout}
@@ -700,6 +709,7 @@ function Sidebar({
   onAuthMode,
   onCredentials,
   onSubmitAuth,
+  onCreateAccount,
   onConfirmSettings,
   onOpenSymbol,
   onGoMyPage,
@@ -722,6 +732,7 @@ function Sidebar({
   onAuthMode: (mode: "login" | "register") => void;
   onCredentials: (value: { username: string; password: string; displayName: string; email: string }) => void;
   onSubmitAuth: (event: FormEvent<HTMLFormElement>) => void;
+  onCreateAccount: () => void;
   onConfirmSettings: () => void;
   onOpenSymbol: (value: string) => void;
   onGoMyPage: () => void;
@@ -782,7 +793,18 @@ function Sidebar({
             <button className="primary-button" disabled={busy}>
               {busy ? "Working..." : authMode === "login" ? "Login" : "Create account"}
             </button>
-            <button type="button" className="ghost-button" onClick={() => onAuthMode(authMode === "login" ? "register" : "login")}>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => {
+                if (authMode === "login") {
+                  onCreateAccount();
+                } else {
+                  onAuthMode("login");
+                }
+              }}
+              disabled={busy}
+            >
               {authMode === "login" ? "Create account" : "Use existing account"}
             </button>
           </form>
@@ -894,6 +916,7 @@ function AdminPage({
                 </div>
               </div>
               <form
+                key={selected.user.username}
                 className="admin-form-grid"
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -937,19 +960,21 @@ function AdminPage({
               <AdminAddPositionForm busy={busy} onPatch={onPatch} />
             </article>
 
-            <article className="panel">
+            <article className="panel admin-transaction-panel">
               <div className="panel-heading">
                 <div>
                   <h2>Transactions</h2>
                 </div>
               </div>
-              <div className="admin-editor-list">
-                {selected.transactions.map((transaction) => (
-                  <AdminTransactionEditor key={transaction.id} transaction={transaction} busy={busy} onPatch={onPatch} />
-                ))}
-                {!selected.transactions.length ? <div className="empty-cell">No transactions recorded.</div> : null}
+              <div className="admin-horizontal-scroll">
+                <div className="admin-editor-list admin-transaction-list">
+                  {selected.transactions.map((transaction) => (
+                    <AdminTransactionEditor key={transaction.id} transaction={transaction} busy={busy} onPatch={onPatch} />
+                  ))}
+                  {!selected.transactions.length ? <div className="empty-cell">No transactions recorded.</div> : null}
+                </div>
+                <AdminAddTransactionForm busy={busy} onPatch={onPatch} />
               </div>
-              <AdminAddTransactionForm busy={busy} onPatch={onPatch} />
             </article>
           </>
         )}
@@ -1021,7 +1046,7 @@ function AdminAddPositionForm({
 }) {
   return (
     <form
-      className="admin-add-form admin-position-row"
+      className="admin-add-form admin-add-position-form"
       onSubmit={(event) => {
         event.preventDefault();
         const formElement = event.currentTarget;
@@ -1551,6 +1576,13 @@ function ValuationMetricChart({
   const yFor = (value: number) => margin.top + innerHeight - ((value - min) / span) * innerHeight;
   const tickValues = Array.from({ length: 4 }, (_, index) => min + (span / 3) * index);
   const formatMetric = (value: number) => (valueType === "percent" ? `${(value * 100).toFixed(1)}%` : value.toFixed(1));
+  const industryLabel = industry || "Industry";
+  const industryTextEndX = width - margin.right;
+  const industryTextStartX = industryTextEndX - estimateSvgTextWidth(industryLabel, 11, 650);
+  const industrySwatchX = Math.max(margin.left, industryTextStartX - 18);
+  const companyTextEndX = Math.max(margin.left + 76, industrySwatchX - 24);
+  const companyTextStartX = companyTextEndX - estimateSvgTextWidth("Company", 11, 650);
+  const companySwatchX = Math.max(margin.left, companyTextStartX - 18);
 
   return (
     <div ref={chartRef} className="valuation-chart-card">
@@ -1599,18 +1631,23 @@ function ValuationMetricChart({
           );
         })}
         <g className="valuation-chart-legend">
-          <rect x={width - 210} y={10} width={10} height={10} rx="2" fill="#2563eb" />
-          <text x={width - 194} y={20} className="chart-axis-label">
+          <rect x={companySwatchX} y={10} width={10} height={10} rx="2" fill="#2563eb" />
+          <text x={companyTextEndX} y={20} className="chart-axis-label" textAnchor="end">
             Company
           </text>
-          <rect x={width - 116} y={10} width={10} height={10} rx="2" fill="#94a3b8" />
-          <text x={width - 100} y={20} className="chart-axis-label">
-            {industry || "Industry"}
+          <rect x={industrySwatchX} y={10} width={10} height={10} rx="2" fill="#94a3b8" />
+          <text x={industryTextEndX} y={20} className="chart-axis-label" textAnchor="end">
+            {industryLabel}
           </text>
         </g>
       </svg>
     </div>
   );
+}
+
+function estimateSvgTextWidth(text: string, fontSize: number, fontWeight: number) {
+  const weightFactor = fontWeight >= 700 ? 0.62 : 0.56;
+  return Math.max(0, text.length * fontSize * weightFactor);
 }
 
 function HistoricalAnalyticsCharts({ data }: { data: SymbolDetailResponse }) {
@@ -1894,11 +1931,11 @@ function FinancialDataNotes({
                 <tr>
                   <th className="text-cell">Statement</th>
                   <th className="text-cell">OpenDART Account</th>
-                  <th className="text-cell">Account ID</th>
-                  <th className="number-cell">Sample Value</th>
-                  <th className="text-cell">Years</th>
                   <th className="text-cell">Map To</th>
                   <th className="text-cell">Action</th>
+                  <th className="number-cell">Sample Value</th>
+                  <th className="text-cell">Years</th>
+                  <th className="text-cell">Account ID</th>
                 </tr>
               </thead>
               <tbody>
@@ -1911,9 +1948,6 @@ function FinancialDataNotes({
                     <tr key={key}>
                       <td className="text-cell">{candidate.statement}</td>
                       <td className="text-cell strong">{candidate.accountName}</td>
-                      <td className="text-cell">{candidate.accountId || "N/A"}</td>
-                      <td className="number-cell">{candidate.sampleValue}</td>
-                      <td className="text-cell">{candidate.years.join(", ")}</td>
                       <td className="text-cell">
                         <select
                           className="mapping-target-select"
@@ -1944,6 +1978,9 @@ function FinancialDataNotes({
                           {isSaving ? "Saving" : "Save"}
                         </button>
                       </td>
+                      <td className="number-cell">{candidate.sampleValue}</td>
+                      <td className="text-cell">{candidate.years.join(", ")}</td>
+                      <td className="text-cell">{candidate.accountId || "N/A"}</td>
                     </tr>
                   );
                 })}

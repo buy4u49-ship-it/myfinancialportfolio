@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdminRecord } from "@/lib/admin";
 import { buildPortfolioResponse } from "@/lib/portfolio";
 import { inferCurrency, normalizeSymbol } from "@/lib/symbols";
-import { getUserRecord, listUserRecords, saveUserRecord } from "@/lib/userStore";
+import { assertEmailAvailable, getUserRecord, listUserRecords, saveUserRecord } from "@/lib/userStore";
 import type { AdminManagedPosition, AdminResponse, AdminUserSummary, PortfolioTransaction, Position, UserRecord } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -186,6 +186,7 @@ export async function PATCH(request: NextRequest) {
     }
     const action = String(body.action || "");
     if (action === "update_profile") {
+      await assertEmailAvailable(String(body.email || ""), target.username);
       target.profile = {
         display_name: String(body.displayName || target.profile?.display_name || target.username).trim(),
         email: String(body.email || "").trim()

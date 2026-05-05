@@ -1337,6 +1337,20 @@ th {
   grid-template-columns: minmax(130px, 1fr) 120px 120px 90px 80px 80px;
 }
 
+.admin-add-position-form {
+  grid-template-columns: minmax(180px, 1fr) 150px 150px 110px 160px;
+}
+
+.admin-horizontal-scroll {
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.admin-transaction-list,
+.admin-transaction-panel .admin-add-form {
+  min-width: 1220px;
+}
+
 .admin-transaction-row {
   grid-template-columns: 82px minmax(120px, 1fr) 96px 110px 82px 120px 120px minmax(180px, 1fr) 70px 78px;
 }
@@ -1408,6 +1422,7 @@ th {
   }
 
   .admin-position-row,
+  .admin-add-position-form,
   .admin-transaction-row {
     grid-template-columns: 1fr;
   }

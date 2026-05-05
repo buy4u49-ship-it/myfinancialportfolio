@@ -1243,7 +1243,8 @@ function isKoreaFinancialPayload(payload: unknown): payload is KoreaFinancialPay
     record.statements !== null &&
     typeof record.statements === "object" &&
     record.ratioValues !== null &&
-    typeof record.ratioValues === "object"
+    typeof record.ratioValues === "object" &&
+    Array.isArray(record.ratioHistory)
   );
 }
 
@@ -1252,7 +1253,8 @@ function hasKoreaFinancialValues(payload: KoreaFinancialPayload) {
     hasStatementValues(payload.statements.income) ||
     hasStatementValues(payload.statements.balance) ||
     hasStatementValues(payload.statements.cashflow) ||
-    Object.values(payload.ratioValues).some((value) => value !== null)
+    Object.values(payload.ratioValues).some((value) => value !== null) ||
+    Boolean(payload.ratioHistory?.some((row) => row.per !== null || row.roe !== null))
   );
 }
 
@@ -1729,7 +1731,7 @@ function openDartRatioValuesForYear(
     dartRowMatches(row, {
       sjDiv: "IS",
       accountIds: ["ifrs-full_BasicEarningsLossPerShare", "ifrs-full_DilutedEarningsLossPerShare"],
-      accountNames: ["기본주당이익", "희석주당이익"]
+      accountNames: ["기본주당이익", "희석주당이익", "기본및희석주당이익"]
     })
   );
   const eps = dartNumber(epsRow?.thstrm_amount);
