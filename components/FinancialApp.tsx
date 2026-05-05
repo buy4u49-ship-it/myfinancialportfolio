@@ -2607,12 +2607,14 @@ function StrategiesPanel({
   const [evaluation, setEvaluation] = useState<StrategyEvaluation | null>(null);
   const [strategyBusy, setStrategyBusy] = useState(false);
   const [strategyStatus, setStrategyStatus] = useState("");
+  const shouldAutoEvaluateRef = useRef(false);
 
   function updateDraft(patch: Partial<StrategyDefinition>) {
     setDraft((prev) => ({ ...prev, ...patch }));
   }
 
   function toggleMarket(market: StrategyMarket) {
+    shouldAutoEvaluateRef.current = true;
     setDraft((prev) => {
       const markets = prev.markets.includes(market) ? prev.markets.filter((item) => item !== market) : [...prev.markets, market];
       return { ...prev, markets: markets.length ? markets : prev.markets };
@@ -2620,6 +2622,7 @@ function StrategiesPanel({
   }
 
   function updateCondition(id: string, patch: Partial<StrategyDefinition["conditions"][number]>) {
+    shouldAutoEvaluateRef.current = true;
     setDraft((prev) => ({
       ...prev,
       conditions: prev.conditions.map((condition) => (condition.id === id ? { ...condition, ...patch } : condition))
@@ -2631,6 +2634,7 @@ function StrategiesPanel({
   }
 
   function addCondition() {
+    shouldAutoEvaluateRef.current = true;
     setDraft((prev) => ({
       ...prev,
       conditions: [...prev.conditions, { ...defaultStrategyCondition(prev.conditions.length + 1), id: nextClientId("condition") }]
@@ -2638,6 +2642,7 @@ function StrategiesPanel({
   }
 
   function removeCondition(id: string) {
+    shouldAutoEvaluateRef.current = true;
     setDraft((prev) => ({ ...prev, conditions: prev.conditions.length > 1 ? prev.conditions.filter((condition) => condition.id !== id) : prev.conditions }));
   }
 
@@ -2653,7 +2658,13 @@ function StrategiesPanel({
         })
       );
       setEvaluation(data);
-      setStrategyStatus(`Matched ${data.matches.length} symbol${data.matches.length === 1 ? "" : "s"}.`);
+      const coverage =
+        data.universeCount && data.cachedCount !== undefined
+          ? ` Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()} strategy metrics${
+              data.staleCount ? `, ${data.staleCount.toLocaleString()} stale` : ""
+            }.`
+          : "";
+      setStrategyStatus(`Matched ${data.matches.length} symbol${data.matches.length === 1 ? "" : "s"}.${coverage}`);
       return data;
     } catch (err) {
       setStrategyStatus(err instanceof Error ? err.message : "Strategy evaluation failed.");
@@ -2662,6 +2673,18 @@ function StrategiesPanel({
       setStrategyBusy(false);
     }
   }
+
+  const strategyRuleKey = JSON.stringify({ markets: draft.markets, conditions: draft.conditions });
+
+  useEffect(() => {
+    if (!shouldAutoEvaluateRef.current) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void evaluateDraft(draft);
+    }, 900);
+    return () => window.clearTimeout(timeoutId);
+  }, [strategyRuleKey]);
 
   async function saveDraft() {
     const strategyToSave = {
@@ -2693,11 +2716,20 @@ function StrategiesPanel({
           <h2>Strategies</h2>
         </div>
         <div className="strategy-actions">
-          <button className="ghost-button" disabled={busy || strategyBusy} onClick={() => setDraft(cloneStrategy())}>
+          <button
+            className="ghost-button"
+            disabled={busy || strategyBusy}
+            onClick={() => {
+              shouldAutoEvaluateRef.current = false;
+              setDraft(cloneStrategy());
+              setEvaluation(null);
+              setStrategyStatus("");
+            }}
+          >
             New strategy
           </button>
           <button className="ghost-button" disabled={busy || strategyBusy || !draft.conditions.length} onClick={() => evaluateDraft()}>
-            {strategyBusy ? "Screening..." : "Find matches"}
+            {strategyBusy ? "Screening..." : "Refresh matches"}
           </button>
           <button className="primary-button" disabled={busy || strategyBusy || !draft.name.trim()} onClick={saveDraft}>
             Save strategy
@@ -2821,7 +2853,11 @@ function StrategiesPanel({
               </tbody>
             </table>
           </div>
-          {evaluation?.errors.length ? <p className="muted strategy-error-note">{evaluation.errors.length} symbols could not be evaluated.</p> : null}
+          {evaluation?.errors.length ? (
+            <p className="muted strategy-error-note">
+              Some symbols are not in the strategy metric cache yet. The background refresh job will keep filling them.
+            </p>
+          ) : null}
         </section>
 
         <section className="strategy-results-block">
@@ -2839,11 +2875,18 @@ function StrategiesPanel({
                   </span>
                 </div>
                 <div className="trade-buttons">
-                  <button className="mini-ghost" onClick={() => setDraft(cloneStrategy(strategy))}>
+                  <button
+                    className="mini-ghost"
+                    onClick={() => {
+                      shouldAutoEvaluateRef.current = false;
+                      setDraft(cloneStrategy(strategy));
+                      setStrategyStatus(`Loaded ${strategy.name}.`);
+                    }}
+                  >
                     Load
                   </button>
                   <button className="mini-ghost" disabled={strategyBusy} onClick={() => evaluateDraft(strategy)}>
-                    Evaluate
+                    Refresh
                   </button>
                   <button className="mini-ghost" disabled={busy} onClick={() => onSave({ ...strategy, active: !strategy.active })}>
                     {strategy.active ? "Pause" : "Activate"}

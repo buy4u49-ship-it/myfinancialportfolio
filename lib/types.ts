@@ -331,6 +331,23 @@ export type StrategyEvaluation = {
   matches: StrategyMatch[];
   evaluatedAt: string;
   errors: Array<{ symbol: string; message: string }>;
+  universeCount?: number;
+  cachedCount?: number;
+  staleCount?: number;
+  cacheRefreshedAt?: string;
+};
+
+export type StrategyMetricSnapshot = {
+  symbol: string;
+  market: StrategyMarket;
+  name: string;
+  sector: string;
+  industry: string;
+  price: number | null;
+  changePct: number | null;
+  metrics: Partial<Record<StrategyMetricKey, number | null>>;
+  source: string;
+  refreshedAt: string;
 };
 
 export type StrategySnapshot = {

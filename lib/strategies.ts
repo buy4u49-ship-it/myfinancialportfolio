@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
-import { buildSymbolDetail, strategyUniverseSymbols } from "./marketData";
-import { normalizeSymbol } from "./symbols";
 import { defaultStrategyCondition, strategyMetricLabel, STRATEGY_METRICS, STRATEGY_OPERATORS } from "./strategyConfig";
+import { getStrategyUniverse, readStrategyMetricCache, strategyMetricSnapshotFresh } from "./strategyMetricCache";
 import type {
   StrategyCondition,
   StrategyDefinition,
@@ -9,8 +8,8 @@ import type {
   StrategyMarket,
   StrategyMetricKey,
   StrategyOperator,
-  StrategyRightOperand,
-  SymbolDetailResponse
+  StrategyMetricSnapshot,
+  StrategyRightOperand
 } from "./types";
 
 const VALID_MARKETS = new Set<StrategyMarket>(["us", "korea", "crypto"]);
@@ -87,28 +86,6 @@ export function normalizeStrategies(record: { strategies?: StrategyDefinition[] 
     .map((strategy) => normalizeStrategy(strategy));
 }
 
-function currentValuation(detail: SymbolDetailResponse) {
-  return detail.benchmark.valuationHistory.find((point) => point.label === "Current") || detail.benchmark.valuationHistory[0];
-}
-
-function symbolMetrics(detail: SymbolDetailResponse): Partial<Record<StrategyMetricKey, number | null>> {
-  const valuation = currentValuation(detail);
-  return {
-    price: detail.quote.price,
-    changePct: detail.quote.changePct,
-    oneMonthReturnPct: detail.metrics.avgReturnPct,
-    oneMonthVolatilityPct: detail.metrics.volatilityPct,
-    companyPer: valuation?.companyPer ?? null,
-    industryPer: valuation?.industryPer ?? null,
-    companyRoe: valuation?.companyRoe === null || valuation?.companyRoe === undefined ? null : valuation.companyRoe * 100,
-    industryRoe: valuation?.industryRoe === null || valuation?.industryRoe === undefined ? null : valuation.industryRoe * 100,
-    rollingBeta: detail.benchmark.rollingBeta,
-    industryRollingBeta: detail.benchmark.industryRollingBeta,
-    fullPeriodBeta: detail.benchmark.fullPeriodBeta,
-    industryFullPeriodBeta: detail.benchmark.industryFullPeriodBeta
-  };
-}
-
 function rightValue(right: StrategyRightOperand, metrics: Partial<Record<StrategyMetricKey, number | null>>) {
   return right.type === "number" ? right.value : metrics[right.metric] ?? null;
 }
@@ -140,24 +117,12 @@ function conditionReason(condition: StrategyCondition, metrics: Partial<Record<S
   return `${leftLabel} ${condition.operator} ${rightLabel} (${left ?? "N/A"} vs ${right ?? "N/A"})`;
 }
 
-function defaultBenchmark(market: StrategyMarket) {
-  if (market === "korea") {
-    return "^KS11";
-  }
-  if (market === "crypto") {
-    return "BTC-KRW";
-  }
-  return "SPY";
-}
-
-async function evaluateSymbol(symbol: string, market: StrategyMarket, strategy: StrategyDefinition) {
-  const normalized = normalizeSymbol(symbol);
-  const detail = await buildSymbolDetail(normalized, "1M", {
-    benchmark: defaultBenchmark(market),
-    historyYears: 20,
-    rollingWindow: 36
-  });
-  const metrics = symbolMetrics(detail);
+function evaluateSnapshot(snapshot: StrategyMetricSnapshot, strategy: StrategyDefinition) {
+  const metrics = {
+    ...snapshot.metrics,
+    price: snapshot.metrics.price ?? snapshot.price,
+    changePct: snapshot.metrics.changePct ?? snapshot.changePct
+  };
   const passed = strategy.conditions.every((condition) =>
     compare(metrics[condition.leftMetric], condition.operator, rightValue(condition.right, metrics))
   );
@@ -165,11 +130,11 @@ async function evaluateSymbol(symbol: string, market: StrategyMarket, strategy: 
     return null;
   }
   return {
-    symbol: detail.symbol,
-    name: detail.profile.name || detail.symbol,
-    market,
-    price: detail.quote.price,
-    changePct: detail.quote.changePct,
+    symbol: snapshot.symbol,
+    name: snapshot.name || snapshot.symbol,
+    market: snapshot.market,
+    price: snapshot.price,
+    changePct: snapshot.changePct,
     metrics,
     reasons: strategy.conditions.map((condition) => conditionReason(condition, metrics))
   };
@@ -177,27 +142,33 @@ async function evaluateSymbol(symbol: string, market: StrategyMarket, strategy: 
 
 export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluation> {
   const strategy = normalizeStrategy(input);
-  const symbols = strategy.markets.flatMap((market) => strategyUniverseSymbols(market).map((symbol) => ({ symbol, market })));
+  const universeByMarket = await Promise.all(strategy.markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
+  const symbols = universeByMarket.flatMap((item) => item.symbols);
+  const cache = await readStrategyMetricCache(symbols, strategy.markets);
   const matches: StrategyEvaluation["matches"] = [];
   const errors: StrategyEvaluation["errors"] = [];
-  const batchSize = 4;
 
-  for (let index = 0; index < symbols.length; index += batchSize) {
-    const batch = symbols.slice(index, index + batchSize);
-    const settled = await Promise.allSettled(batch.map((item) => evaluateSymbol(item.symbol, item.market, strategy)));
-    settled.forEach((result, resultIndex) => {
-      const item = batch[resultIndex];
-      if (result.status === "fulfilled") {
-        if (result.value) {
-          matches.push(result.value);
-        }
-      } else {
-        errors.push({ symbol: item.symbol, message: result.reason instanceof Error ? result.reason.message : "Evaluation failed." });
+  universeByMarket.forEach(({ market, symbols: marketSymbols }) => {
+    let missingCount = 0;
+    marketSymbols.forEach((symbol) => {
+      const snapshot = cache.get(`${market}:${symbol}`);
+      if (!snapshot) {
+        missingCount += 1;
+        return;
+      }
+      const match = evaluateSnapshot(snapshot, strategy);
+      if (match) {
+        matches.push(match);
       }
     });
-  }
+    if (missingCount) {
+      errors.push({ symbol: `${market}:cache`, message: `${missingCount} symbols do not have cached strategy metrics yet.` });
+    }
+  });
 
   const evaluatedAt = utcNowIso();
+  const snapshots = Array.from(cache.values()).filter((snapshot) => strategy.markets.includes(snapshot.market));
+  const refreshedTimes = snapshots.map((snapshot) => Date.parse(snapshot.refreshedAt)).filter((value) => Number.isFinite(value));
   return {
     strategy: {
       ...strategy,
@@ -206,6 +177,10 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
     },
     matches: matches.sort((a, b) => a.market.localeCompare(b.market) || a.symbol.localeCompare(b.symbol)),
     evaluatedAt,
-    errors
+    errors,
+    universeCount: universeByMarket.reduce((sum, item) => sum + item.symbols.length, 0),
+    cachedCount: snapshots.length,
+    staleCount: snapshots.filter((snapshot) => !strategyMetricSnapshotFresh(snapshot)).length,
+    cacheRefreshedAt: refreshedTimes.length ? new Date(Math.max(...refreshedTimes)).toISOString() : undefined
   };
 }
