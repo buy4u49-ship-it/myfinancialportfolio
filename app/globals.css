@@ -1355,6 +1355,10 @@ th {
   grid-template-columns: 82px minmax(120px, 1fr) 96px 110px 82px 120px 120px minmax(180px, 1fr) 70px 78px;
 }
 
+.admin-add-transaction-form .primary-button {
+  grid-column: 9 / 11;
+}
+
 .admin-add-form {
   padding: 10px 22px 22px;
 }
@@ -1425,6 +1429,10 @@ th {
   .admin-add-position-form,
   .admin-transaction-row {
     grid-template-columns: 1fr;
+  }
+
+  .admin-add-transaction-form .primary-button {
+    grid-column: auto;
   }
 
   .symbol-toolbar {
