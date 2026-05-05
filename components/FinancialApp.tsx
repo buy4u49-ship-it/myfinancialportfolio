@@ -2289,6 +2289,7 @@ function MyPage({
 
       {activeTab === "strategies" ? (
         <StrategiesPanel
+          isAdmin={Boolean(user.isAdmin)}
           strategies={portfolio?.strategies || []}
           busy={busy}
           onSave={(strategy) => patchPortfolio({ action: "save_strategy", strategy })}
@@ -2593,11 +2594,13 @@ function formatStrategyMetricValue(metric: StrategyMetricKey, value: number | nu
 }
 
 function StrategiesPanel({
+  isAdmin,
   strategies,
   busy,
   onSave,
   onDelete
 }: {
+  isAdmin: boolean;
   strategies: StrategyDefinition[];
   busy: boolean;
   onSave: (strategy: StrategyDefinition) => Promise<PortfolioResponse | null>;
@@ -2606,6 +2609,7 @@ function StrategiesPanel({
   const [draft, setDraft] = useState<StrategyDefinition>(() => cloneStrategy());
   const [evaluation, setEvaluation] = useState<StrategyEvaluation | null>(null);
   const [strategyBusy, setStrategyBusy] = useState(false);
+  const [cacheBusy, setCacheBusy] = useState(false);
   const [strategyStatus, setStrategyStatus] = useState("");
   const shouldAutoEvaluateRef = useRef(false);
 
@@ -2700,6 +2704,36 @@ function StrategiesPanel({
     }
   }
 
+  async function refreshMetricCache() {
+    setCacheBusy(true);
+    setStrategyStatus("");
+    try {
+      const data = await parseJsonResponse<{
+        refreshedCount: number;
+        universeCount: number;
+        cachedCount: number;
+        staleCount: number;
+        errors: Array<{ symbol: string; message: string }>;
+      }>(
+        await fetch("/api/strategy-metrics/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ markets: draft.markets, limit: 25 })
+        })
+      );
+      setStrategyStatus(
+        `Refreshed ${data.refreshedCount.toLocaleString()} strategy metrics. Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()}${
+          data.staleCount ? `, ${data.staleCount.toLocaleString()} stale` : ""
+        }${data.errors.length ? `. ${data.errors.length} refresh errors` : ""}.`
+      );
+      await evaluateDraft();
+    } catch (err) {
+      setStrategyStatus(err instanceof Error ? err.message : "Strategy metric cache refresh failed.");
+    } finally {
+      setCacheBusy(false);
+    }
+  }
+
   const resultMetrics = Array.from(
     new Set<StrategyMetricKey>(
       draft.conditions.flatMap((condition) => [
@@ -2731,6 +2765,11 @@ function StrategiesPanel({
           <button className="ghost-button" disabled={busy || strategyBusy || !draft.conditions.length} onClick={() => evaluateDraft()}>
             {strategyBusy ? "Screening..." : "Refresh matches"}
           </button>
+          {isAdmin ? (
+            <button className="ghost-button" disabled={busy || strategyBusy || cacheBusy || !draft.markets.length} onClick={refreshMetricCache}>
+              {cacheBusy ? "Warming..." : "Warm metric cache"}
+            </button>
+          ) : null}
           <button className="primary-button" disabled={busy || strategyBusy || !draft.name.trim()} onClick={saveDraft}>
             Save strategy
           </button>

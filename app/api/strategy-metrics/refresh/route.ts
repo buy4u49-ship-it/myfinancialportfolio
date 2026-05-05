@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAdminRecord } from "@/lib/admin";
 import { refreshStrategyMetricCache } from "@/lib/strategyMetricCache";
 import type { StrategyMarket } from "@/lib/types";
 
@@ -14,8 +15,18 @@ function errorMessage(error: unknown) {
   return String(error || "");
 }
 
+function configuredSecret() {
+  return process.env.STRATEGY_METRICS_SECRET || process.env.STRATEGY_WATCH_SECRET || process.env.CRON_SECRET || "";
+}
+
+function hasValidSecret(request: NextRequest) {
+  const secret = configuredSecret();
+  const header = request.headers.get("authorization") || "";
+  return Boolean(secret && header === `Bearer ${secret}`);
+}
+
 function requireSecret(request: NextRequest) {
-  const secret = process.env.STRATEGY_METRICS_SECRET || process.env.STRATEGY_WATCH_SECRET || process.env.CRON_SECRET || "";
+  const secret = configuredSecret();
   if (!secret) {
     throw new Error("STRATEGY_METRICS_SECRET, STRATEGY_WATCH_SECRET, or CRON_SECRET is not configured.");
   }
@@ -23,6 +34,17 @@ function requireSecret(request: NextRequest) {
   if (header !== `Bearer ${secret}`) {
     throw new Error("Invalid strategy metrics refresh secret.");
   }
+}
+
+async function requireRefreshAccess(request: NextRequest) {
+  if (hasValidSecret(request)) {
+    return;
+  }
+  if (request.method === "POST") {
+    await requireAdminRecord(request);
+    return;
+  }
+  requireSecret(request);
 }
 
 function parseMarkets(input: unknown): StrategyMarket[] | undefined {
@@ -35,7 +57,7 @@ function parseMarkets(input: unknown): StrategyMarket[] | undefined {
 
 async function refresh(request: NextRequest, body: Record<string, unknown> = {}) {
   try {
-    requireSecret(request);
+    await requireRefreshAccess(request);
     const params = request.nextUrl.searchParams;
     const result = await refreshStrategyMetricCache({
       markets: parseMarkets(body.markets ?? body.market ?? params.get("market")),
