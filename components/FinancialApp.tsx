@@ -1140,7 +1140,7 @@ function AdminAddTransactionForm({
 }) {
   return (
     <form
-      className="admin-add-form admin-transaction-row"
+      className="admin-add-form admin-transaction-row admin-add-transaction-form"
       onSubmit={(event) => {
         event.preventDefault();
         const formElement = event.currentTarget;
