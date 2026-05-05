@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import { publicUserPayload } from "./admin";
 import { getQuotes } from "./prices";
+import { normalizePushTokens, sendPushToUser } from "./push";
 import { inferCurrency, normalizeSymbol } from "./symbols";
+import { normalizeStrategy, normalizeStrategies } from "./strategies";
 import type {
   PortfolioProjection,
   PortfolioResponse,
@@ -10,6 +12,7 @@ import type {
   PortfolioTransaction,
   Position,
   PriceAlert,
+  StrategyDefinition,
   TradeInput,
   TriggeredAlert,
   UserRecord
@@ -125,6 +128,7 @@ export async function evaluatePriceAlerts(record: UserRecord): Promise<Triggered
     }
     const isTriggered = alert.direction === "above" ? price >= alert.target_price : price <= alert.target_price;
     if (isTriggered) {
+      const shouldNotify = !alert.last_triggered_at;
       alert.last_triggered_at = alert.last_triggered_at || new Date().toISOString();
       triggered.push({
         id: alert.id,
@@ -134,6 +138,17 @@ export async function evaluatePriceAlerts(record: UserRecord): Promise<Triggered
         price,
         currency: quote?.currency || alert.currency || inferCurrency(alert.symbol)
       });
+      if (shouldNotify) {
+        await sendPushToUser(record, {
+          title: "Price alert triggered",
+          body: `${alert.symbol} is ${alert.direction === "above" ? "at or above" : "at or below"} ${alert.target_price}. Current price: ${price}.`,
+          data: {
+            type: "price_alert",
+            alertId: alert.id,
+            symbol: alert.symbol
+          }
+        });
+      }
     }
   }
   return triggered;
@@ -177,12 +192,16 @@ export async function buildPortfolioResponse(record: UserRecord): Promise<Portfo
   const transactions = Array.isArray(record.transactions) ? record.transactions : [];
   const summary = buildPortfolioSummary(rows, transactions);
   const triggeredAlerts = await evaluatePriceAlerts(record);
+  const pushTokens = normalizePushTokens(record);
   return {
     user: publicUserPayload(record),
     rows,
     transactions: [...transactions].reverse(),
     alerts: normalizeAlerts(record),
     triggeredAlerts,
+    pushEnabled: pushTokens.some((token) => token.enabled),
+    pushTokenCount: pushTokens.filter((token) => token.enabled).length,
+    strategies: normalizeStrategies(record),
     summary,
     projection: buildProjection(rows),
     refreshedAt: new Date().toISOString()
@@ -317,6 +336,23 @@ export function togglePriceAlert(record: UserRecord, alertId: string) {
 
 export function deletePriceAlert(record: UserRecord, alertId: string) {
   record.alerts = normalizeAlerts(record).filter((alert) => alert.id !== alertId);
+  return record;
+}
+
+export function saveStrategy(record: UserRecord, input: unknown) {
+  const strategies = normalizeStrategies(record);
+  const candidate = input && typeof input === "object" ? (input as Partial<StrategyDefinition>) : {};
+  const existing = strategies.find((strategy) => strategy.id === candidate.id);
+  const next = normalizeStrategy(input, existing);
+  record.strategies = existing ? strategies.map((strategy) => (strategy.id === next.id ? next : strategy)) : [...strategies, next];
+  return record;
+}
+
+export function deleteStrategy(record: UserRecord, strategyId: string) {
+  record.strategies = normalizeStrategies(record).filter((strategy) => strategy.id !== strategyId);
+  record.strategy_snapshots = (Array.isArray(record.strategy_snapshots) ? record.strategy_snapshots : []).filter(
+    (snapshot) => snapshot.strategy_id !== strategyId
+  );
   return record;
 }
 

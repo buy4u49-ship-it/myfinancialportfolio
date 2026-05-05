@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/strategy-watch",
+      "schedule": "0 * * * *"
+    }
+  ]
+}

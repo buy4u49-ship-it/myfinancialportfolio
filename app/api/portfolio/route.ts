@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readSessionUsername } from "@/lib/auth";
-import { addPriceAlert, applyTrade, buildPortfolioResponse, deletePriceAlert, togglePriceAlert, updateProfile } from "@/lib/portfolio";
+import {
+  addPriceAlert,
+  applyTrade,
+  buildPortfolioResponse,
+  deletePriceAlert,
+  deleteStrategy,
+  saveStrategy,
+  togglePriceAlert,
+  updateProfile
+} from "@/lib/portfolio";
+import { deletePushToken, registerPushToken } from "@/lib/push";
 import { assertEmailAvailable, getUserRecord, saveUserRecord } from "@/lib/userStore";
 import type { TradeInput } from "@/lib/types";
 
@@ -45,6 +55,17 @@ export async function PATCH(request: NextRequest) {
       togglePriceAlert(record, String(body.alertId || ""));
     } else if (action === "delete_alert") {
       deletePriceAlert(record, String(body.alertId || ""));
+    } else if (action === "register_push_token") {
+      registerPushToken(record, {
+        token: String(body.token || ""),
+        userAgent: String(body.userAgent || request.headers.get("user-agent") || "")
+      });
+    } else if (action === "delete_push_token") {
+      deletePushToken(record, String(body.tokenOrId || ""));
+    } else if (action === "save_strategy") {
+      saveStrategy(record, body.strategy);
+    } else if (action === "delete_strategy") {
+      deleteStrategy(record, String(body.strategyId || ""));
     } else if (action === "update_profile") {
       await assertEmailAvailable(String(body.email || ""), record.username);
       updateProfile(record, {

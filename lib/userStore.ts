@@ -24,6 +24,9 @@ export function defaultUserRecord(username: string): UserRecord {
     portfolio: [],
     transactions: [],
     alerts: [],
+    push_tokens: [],
+    strategies: [],
+    strategy_snapshots: [],
     remember_tokens: []
   };
 }
@@ -52,6 +55,9 @@ export async function getUserRecord(username: string) {
   record.portfolio = Array.isArray(record.portfolio) ? record.portfolio : [];
   record.transactions = Array.isArray(record.transactions) ? record.transactions : [];
   record.alerts = Array.isArray(record.alerts) ? record.alerts : [];
+  record.push_tokens = Array.isArray(record.push_tokens) ? record.push_tokens : [];
+  record.strategies = Array.isArray(record.strategies) ? record.strategies : [];
+  record.strategy_snapshots = Array.isArray(record.strategy_snapshots) ? record.strategy_snapshots : [];
   return record;
 }
 
@@ -75,6 +81,9 @@ export async function listUserRecords() {
       record.portfolio = Array.isArray(record.portfolio) ? record.portfolio : [];
       record.transactions = Array.isArray(record.transactions) ? record.transactions : [];
       record.alerts = Array.isArray(record.alerts) ? record.alerts : [];
+      record.push_tokens = Array.isArray(record.push_tokens) ? record.push_tokens : [];
+      record.strategies = Array.isArray(record.strategies) ? record.strategies : [];
+      record.strategy_snapshots = Array.isArray(record.strategy_snapshots) ? record.strategy_snapshots : [];
       return record.username ? record : null;
     })
     .filter((record): record is UserRecord => record !== null);

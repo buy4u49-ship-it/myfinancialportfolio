@@ -2154,3 +2154,7 @@ export async function buildSymbolDetail(
 export function marketKeys() {
   return Object.keys(MARKET_CONFIG) as MarketKey[];
 }
+
+export function strategyUniverseSymbols(market: MarketKey) {
+  return [...MARKET_CONFIG[market].universe];
+}

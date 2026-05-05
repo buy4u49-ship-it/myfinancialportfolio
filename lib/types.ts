@@ -12,6 +12,9 @@ export type UserRecord = {
   portfolio?: Position[];
   transactions?: PortfolioTransaction[];
   alerts?: PriceAlert[];
+  push_tokens?: PushToken[];
+  strategies?: StrategyDefinition[];
+  strategy_snapshots?: StrategySnapshot[];
   remember_tokens?: unknown[];
   portfolio_calculation?: unknown;
 };
@@ -255,6 +258,87 @@ export type TriggeredAlert = {
   currency: string;
 };
 
+export type PushToken = {
+  id: string;
+  provider: "fcm_web";
+  token: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  user_agent?: string;
+  last_used_at?: string;
+};
+
+export type StrategyMarket = "us" | "korea" | "crypto";
+
+export type StrategyMetricKey =
+  | "price"
+  | "changePct"
+  | "oneMonthReturnPct"
+  | "oneMonthVolatilityPct"
+  | "companyPer"
+  | "industryPer"
+  | "companyRoe"
+  | "industryRoe"
+  | "rollingBeta"
+  | "industryRollingBeta"
+  | "fullPeriodBeta"
+  | "industryFullPeriodBeta";
+
+export type StrategyOperator = "<" | "<=" | "=" | ">=" | ">";
+
+export type StrategyRightOperand =
+  | {
+      type: "metric";
+      metric: StrategyMetricKey;
+    }
+  | {
+      type: "number";
+      value: number;
+    };
+
+export type StrategyCondition = {
+  id: string;
+  leftMetric: StrategyMetricKey;
+  operator: StrategyOperator;
+  right: StrategyRightOperand;
+};
+
+export type StrategyDefinition = {
+  id: string;
+  name: string;
+  markets: StrategyMarket[];
+  conditions: StrategyCondition[];
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+  last_evaluated_at?: string;
+  last_match_count?: number;
+};
+
+export type StrategyMatch = {
+  symbol: string;
+  name: string;
+  market: StrategyMarket;
+  price: number | null;
+  changePct: number | null;
+  metrics: Partial<Record<StrategyMetricKey, number | null>>;
+  reasons: string[];
+};
+
+export type StrategyEvaluation = {
+  strategy: StrategyDefinition;
+  matches: StrategyMatch[];
+  evaluatedAt: string;
+  errors: Array<{ symbol: string; message: string }>;
+};
+
+export type StrategySnapshot = {
+  strategy_id: string;
+  symbols: string[];
+  updated_at: string;
+};
+
 export type PortfolioResponse = {
   user: {
     username: string;
@@ -266,6 +350,9 @@ export type PortfolioResponse = {
   transactions: PortfolioTransaction[];
   alerts: PriceAlert[];
   triggeredAlerts: TriggeredAlert[];
+  pushEnabled: boolean;
+  pushTokenCount: number;
+  strategies: StrategyDefinition[];
   summary: PortfolioSummary;
   projection: PortfolioProjection;
   refreshedAt: string;

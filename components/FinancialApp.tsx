@@ -14,9 +14,23 @@ import type {
   PortfolioRow,
   PortfolioTransaction,
   Quote,
+  StrategyDefinition,
+  StrategyEvaluation,
+  StrategyMarket,
+  StrategyMetricKey,
+  StrategyOperator,
+  StrategyRightOperand,
   SymbolDetailResponse
 } from "@/lib/types";
 import { KOREA_STOCK_NAMES } from "@/lib/symbols";
+import {
+  defaultStrategyCondition,
+  defaultStrategyDefinition,
+  STRATEGY_MARKETS,
+  STRATEGY_METRICS,
+  STRATEGY_OPERATORS,
+  strategyMetricLabel
+} from "@/lib/strategyConfig";
 
 type User = {
   username: string;
@@ -28,7 +42,7 @@ type User = {
 type PageKey = "coin" | "us" | "korea" | "symbol" | "my" | "admin";
 type TradeMode = "BUY" | "SELL";
 type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
-type MyTab = "portfolio" | "alerts" | "account";
+type MyTab = "portfolio" | "alerts" | "strategies" | "account";
 type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
 type MappingOption = { statement: string; lineKey: string; label: string };
 
@@ -132,6 +146,76 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
     throw new Error(payload.error || "Request failed.");
   }
   return payload;
+}
+
+function firebaseConfig() {
+  return {
+    apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "",
+    authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "",
+    projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "",
+    messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "",
+    appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || ""
+  };
+}
+
+function firebaseReady() {
+  const config = firebaseConfig();
+  return Boolean(config.apiKey && config.projectId && config.messagingSenderId && config.appId && process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY);
+}
+
+async function loadBrowserScript(src: string) {
+  if (document.querySelector(`script[src="${src}"]`)) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Could not load ${src}.`));
+    document.head.appendChild(script);
+  });
+}
+
+async function registerFirebaseWebPushToken() {
+  if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+    throw new Error("This browser does not support web push notifications.");
+  }
+  if (!firebaseReady()) {
+    throw new Error("Firebase web push environment variables are not configured.");
+  }
+  await loadBrowserScript("https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js");
+  await loadBrowserScript("https://www.gstatic.com/firebasejs/10.12.4/firebase-messaging-compat.js");
+
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    throw new Error("Notification permission was not granted.");
+  }
+
+  const win = window as typeof window & {
+    firebase?: {
+      apps: unknown[];
+      initializeApp: (config: Record<string, string>) => unknown;
+      messaging: () => {
+        getToken: (options: { vapidKey: string; serviceWorkerRegistration: ServiceWorkerRegistration }) => Promise<string>;
+      };
+    };
+  };
+  if (!win.firebase) {
+    throw new Error("Firebase SDK did not load.");
+  }
+  if (!win.firebase.apps.length) {
+    win.firebase.initializeApp(firebaseConfig());
+  }
+  const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+  const token = await win.firebase.messaging().getToken({
+    vapidKey: process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY || "",
+    serviceWorkerRegistration: registration
+  });
+  if (!token) {
+    throw new Error("Firebase did not return a push token.");
+  }
+  return token;
 }
 
 export default function FinancialApp() {
@@ -2112,6 +2196,7 @@ function MyPage({
         {[
           ["portfolio", "Portfolio"],
           ["alerts", "Price Alerts"],
+          ["strategies", "Strategies"],
           ["account", "Account"]
         ].map(([key, label]) => (
           <button key={key} className={activeTab === key ? "active" : ""} onClick={() => setActiveTab(key as MyTab)}>
@@ -2186,6 +2271,8 @@ function MyPage({
       {activeTab === "alerts" ? (
         <PriceAlertsPanel
           alerts={portfolio?.alerts || []}
+          pushEnabled={portfolio?.pushEnabled || false}
+          pushTokenCount={portfolio?.pushTokenCount || 0}
           symbol={alertSymbol}
           direction={alertDirection}
           target={alertTarget}
@@ -2194,8 +2281,18 @@ function MyPage({
           onDirection={setAlertDirection}
           onTarget={setAlertTarget}
           onSubmit={submitAlert}
+          onRegisterPush={(token) => patchPortfolio({ action: "register_push_token", token, userAgent: navigator.userAgent })}
           onToggle={(alertId) => patchPortfolio({ action: "toggle_alert", alertId })}
           onDelete={(alertId) => patchPortfolio({ action: "delete_alert", alertId })}
+        />
+      ) : null}
+
+      {activeTab === "strategies" ? (
+        <StrategiesPanel
+          strategies={portfolio?.strategies || []}
+          busy={busy}
+          onSave={(strategy) => patchPortfolio({ action: "save_strategy", strategy })}
+          onDelete={(strategyId) => patchPortfolio({ action: "delete_strategy", strategyId })}
         />
       ) : null}
 
@@ -2336,6 +2433,8 @@ function AllocationDonut({ rows, currency }: { rows: PortfolioRow[]; currency: s
 
 function PriceAlertsPanel({
   alerts,
+  pushEnabled,
+  pushTokenCount,
   symbol,
   direction,
   target,
@@ -2344,10 +2443,13 @@ function PriceAlertsPanel({
   onDirection,
   onTarget,
   onSubmit,
+  onRegisterPush,
   onToggle,
   onDelete
 }: {
   alerts: PriceAlert[];
+  pushEnabled: boolean;
+  pushTokenCount: number;
   symbol: string;
   direction: "above" | "below";
   target: string;
@@ -2356,15 +2458,47 @@ function PriceAlertsPanel({
   onDirection: (value: "above" | "below") => void;
   onTarget: (value: string) => void;
   onSubmit: () => void;
+  onRegisterPush: (token: string) => Promise<PortfolioResponse | null>;
   onToggle: (alertId: string) => void;
   onDelete: (alertId: string) => void;
 }) {
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushStatus, setPushStatus] = useState("");
+
+  async function enablePush() {
+    setPushBusy(true);
+    setPushStatus("");
+    try {
+      const token = await registerFirebaseWebPushToken();
+      await onRegisterPush(token);
+      setPushStatus("Web push notifications are enabled for this browser.");
+    } catch (err) {
+      setPushStatus(err instanceof Error ? err.message : "Web push registration failed.");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
   return (
     <section className="panel">
       <div className="panel-heading">
         <div>
           <h2>Price Alerts</h2>
         </div>
+        <div className="push-controls">
+          <span className={pushEnabled ? "positive" : "muted"}>
+            {pushEnabled ? `Web push enabled (${pushTokenCount})` : "Web push disabled"}
+          </span>
+          <button className="ghost-button" disabled={busy || pushBusy || !firebaseReady()} onClick={enablePush}>
+            {pushBusy ? "Enabling..." : "Enable Web Push"}
+          </button>
+        </div>
+      </div>
+      {pushStatus ? <div className="inline-status">{pushStatus}</div> : null}
+      {!firebaseReady() ? (
+        <div className="inline-status muted">Firebase web push env values are needed before browser notifications can be enabled.</div>
+      ) : null}
+      <div className="panel-heading alert-panel-heading">
         <div className="alert-form">
           <input placeholder="Symbol" value={symbol} onChange={(event) => onSymbol(event.target.value)} />
           <select value={direction} onChange={(event) => onDirection(event.target.value === "below" ? "below" : "above")}>
@@ -2420,6 +2554,309 @@ function PriceAlertsPanel({
             ) : null}
           </tbody>
         </table>
+      </div>
+    </section>
+  );
+}
+
+function cloneStrategy(strategy?: StrategyDefinition): StrategyDefinition {
+  const source = strategy || defaultStrategyDefinition();
+  return {
+    ...source,
+    markets: [...source.markets],
+    conditions: source.conditions.map((condition) => ({
+      ...condition,
+      right: condition.right.type === "number" ? { ...condition.right } : { ...condition.right }
+    }))
+  };
+}
+
+function nextClientId(prefix: string) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatStrategyMetricValue(metric: StrategyMetricKey, value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "N/A";
+  }
+  const kind = STRATEGY_METRICS.find((item) => item.key === metric)?.kind;
+  if (kind === "percent") {
+    return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+  }
+  if (kind === "beta") {
+    return value.toFixed(4);
+  }
+  return formatNumber(value, kind === "price" ? 2 : 4);
+}
+
+function StrategiesPanel({
+  strategies,
+  busy,
+  onSave,
+  onDelete
+}: {
+  strategies: StrategyDefinition[];
+  busy: boolean;
+  onSave: (strategy: StrategyDefinition) => Promise<PortfolioResponse | null>;
+  onDelete: (strategyId: string) => Promise<PortfolioResponse | null>;
+}) {
+  const [draft, setDraft] = useState<StrategyDefinition>(() => cloneStrategy());
+  const [evaluation, setEvaluation] = useState<StrategyEvaluation | null>(null);
+  const [strategyBusy, setStrategyBusy] = useState(false);
+  const [strategyStatus, setStrategyStatus] = useState("");
+
+  function updateDraft(patch: Partial<StrategyDefinition>) {
+    setDraft((prev) => ({ ...prev, ...patch }));
+  }
+
+  function toggleMarket(market: StrategyMarket) {
+    setDraft((prev) => {
+      const markets = prev.markets.includes(market) ? prev.markets.filter((item) => item !== market) : [...prev.markets, market];
+      return { ...prev, markets: markets.length ? markets : prev.markets };
+    });
+  }
+
+  function updateCondition(id: string, patch: Partial<StrategyDefinition["conditions"][number]>) {
+    setDraft((prev) => ({
+      ...prev,
+      conditions: prev.conditions.map((condition) => (condition.id === id ? { ...condition, ...patch } : condition))
+    }));
+  }
+
+  function updateRightOperand(id: string, right: StrategyRightOperand) {
+    updateCondition(id, { right });
+  }
+
+  function addCondition() {
+    setDraft((prev) => ({
+      ...prev,
+      conditions: [...prev.conditions, { ...defaultStrategyCondition(prev.conditions.length + 1), id: nextClientId("condition") }]
+    }));
+  }
+
+  function removeCondition(id: string) {
+    setDraft((prev) => ({ ...prev, conditions: prev.conditions.length > 1 ? prev.conditions.filter((condition) => condition.id !== id) : prev.conditions }));
+  }
+
+  async function evaluateDraft(target = draft) {
+    setStrategyBusy(true);
+    setStrategyStatus("");
+    try {
+      const data = await parseJsonResponse<StrategyEvaluation>(
+        await fetch("/api/strategies", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ strategy: target })
+        })
+      );
+      setEvaluation(data);
+      setStrategyStatus(`Matched ${data.matches.length} symbol${data.matches.length === 1 ? "" : "s"}.`);
+      return data;
+    } catch (err) {
+      setStrategyStatus(err instanceof Error ? err.message : "Strategy evaluation failed.");
+      return null;
+    } finally {
+      setStrategyBusy(false);
+    }
+  }
+
+  async function saveDraft() {
+    const strategyToSave = {
+      ...draft,
+      id: draft.id || nextClientId("strategy"),
+      created_at: draft.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    const saved = await onSave(strategyToSave);
+    if (saved) {
+      setDraft(cloneStrategy(strategyToSave));
+      setStrategyStatus("Strategy saved. Automatic membership-change notifications can run through the strategy-watch endpoint.");
+    }
+  }
+
+  const resultMetrics = Array.from(
+    new Set<StrategyMetricKey>(
+      draft.conditions.flatMap((condition) => [
+        condition.leftMetric,
+        condition.right.type === "metric" ? condition.right.metric : condition.leftMetric
+      ])
+    )
+  ).slice(0, 5);
+
+  return (
+    <section className="panel strategy-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>Strategies</h2>
+        </div>
+        <div className="strategy-actions">
+          <button className="ghost-button" disabled={busy || strategyBusy} onClick={() => setDraft(cloneStrategy())}>
+            New strategy
+          </button>
+          <button className="ghost-button" disabled={busy || strategyBusy || !draft.conditions.length} onClick={() => evaluateDraft()}>
+            {strategyBusy ? "Screening..." : "Find matches"}
+          </button>
+          <button className="primary-button" disabled={busy || strategyBusy || !draft.name.trim()} onClick={saveDraft}>
+            Save strategy
+          </button>
+        </div>
+      </div>
+      {strategyStatus ? <div className="inline-status">{strategyStatus}</div> : null}
+
+      <div className="strategy-builder">
+        <label>
+          Strategy name
+          <input value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} />
+        </label>
+        <div className="strategy-market-picker">
+          {STRATEGY_MARKETS.map((market) => (
+            <button
+              type="button"
+              key={market.key}
+              className={draft.markets.includes(market.key) ? "active" : ""}
+              onClick={() => toggleMarket(market.key)}
+            >
+              {market.label}
+            </button>
+          ))}
+        </div>
+        <div className="strategy-conditions">
+          {draft.conditions.map((condition, index) => (
+            <div className="strategy-condition-row" key={condition.id}>
+              <span className="condition-index">{index === 0 ? "Where" : "And"}</span>
+              <select
+                value={condition.leftMetric}
+                onChange={(event) => updateCondition(condition.id, { leftMetric: event.target.value as StrategyMetricKey })}
+              >
+                {STRATEGY_METRICS.map((metric) => (
+                  <option key={metric.key} value={metric.key}>
+                    {metric.label}
+                  </option>
+                ))}
+              </select>
+              <select value={condition.operator} onChange={(event) => updateCondition(condition.id, { operator: event.target.value as StrategyOperator })}>
+                {STRATEGY_OPERATORS.map((operator) => (
+                  <option key={operator} value={operator}>
+                    {operator}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={condition.right.type === "number" ? "__number__" : condition.right.metric}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  updateRightOperand(condition.id, value === "__number__" ? { type: "number", value: 0 } : { type: "metric", metric: value as StrategyMetricKey });
+                }}
+              >
+                {STRATEGY_METRICS.map((metric) => (
+                  <option key={metric.key} value={metric.key}>
+                    {metric.label}
+                  </option>
+                ))}
+                <option value="__number__">Number input</option>
+              </select>
+              {condition.right.type === "number" ? (
+                <input
+                  type="number"
+                  step="any"
+                  value={condition.right.value}
+                  onChange={(event) => updateRightOperand(condition.id, { type: "number", value: Number(event.target.value) })}
+                />
+              ) : null}
+              <button className="mini-ghost" onClick={() => removeCondition(condition.id)}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+        <button className="ghost-button add-condition-button" onClick={addCondition}>
+          Add condition
+        </button>
+      </div>
+
+      <div className="strategy-results-grid">
+        <section className="strategy-results-block">
+          <h3>Current Matches</h3>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th className="text-cell">Market</th>
+                  <th className="text-cell">Symbol</th>
+                  <th className="text-cell">Name</th>
+                  <th className="number-cell">Price</th>
+                  <th className="number-cell">Change</th>
+                  {resultMetrics.map((metric) => (
+                    <th key={metric} className="number-cell">
+                      {strategyMetricLabel(metric)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {evaluation?.matches.map((match) => (
+                  <tr key={`${match.market}-${match.symbol}`}>
+                    <td className="text-cell">{STRATEGY_MARKETS.find((market) => market.key === match.market)?.label || match.market}</td>
+                    <td className="text-cell strong">{match.symbol}</td>
+                    <td className="text-cell">{match.name}</td>
+                    <td className="number-cell">{formatNumber(match.price, 2)}</td>
+                    <td className={`number-cell ${signedClass(match.changePct)}`}>{formatPct(match.changePct)}</td>
+                    {resultMetrics.map((metric) => (
+                      <td key={metric} className="number-cell">
+                        {formatStrategyMetricValue(metric, match.metrics[metric])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+                {!evaluation?.matches.length ? (
+                  <tr>
+                    <td className="empty-cell" colSpan={5 + resultMetrics.length}>
+                      Run the strategy screener to see current matches.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+          {evaluation?.errors.length ? <p className="muted strategy-error-note">{evaluation.errors.length} symbols could not be evaluated.</p> : null}
+        </section>
+
+        <section className="strategy-results-block">
+          <h3>Saved Strategies</h3>
+          <div className="saved-strategy-list">
+            {strategies.map((strategy) => (
+              <article className="saved-strategy-card" key={strategy.id}>
+                <div>
+                  <strong>{strategy.name}</strong>
+                  <span>
+                    {strategy.markets.map((market) => STRATEGY_MARKETS.find((item) => item.key === market)?.label || market).join(", ")}
+                    {" · "}
+                    {strategy.conditions.length} condition{strategy.conditions.length === 1 ? "" : "s"}
+                    {strategy.last_match_count !== undefined ? ` · ${strategy.last_match_count} matches` : ""}
+                  </span>
+                </div>
+                <div className="trade-buttons">
+                  <button className="mini-ghost" onClick={() => setDraft(cloneStrategy(strategy))}>
+                    Load
+                  </button>
+                  <button className="mini-ghost" disabled={strategyBusy} onClick={() => evaluateDraft(strategy)}>
+                    Evaluate
+                  </button>
+                  <button className="mini-ghost" disabled={busy} onClick={() => onSave({ ...strategy, active: !strategy.active })}>
+                    {strategy.active ? "Pause" : "Activate"}
+                  </button>
+                  <button className="sell-button" disabled={busy} onClick={() => onDelete(strategy.id)}>
+                    Delete
+                  </button>
+                </div>
+              </article>
+            ))}
+            {!strategies.length ? <div className="empty-cell">No saved strategies yet.</div> : null}
+          </div>
+        </section>
       </div>
     </section>
   );

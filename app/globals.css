@@ -917,6 +917,133 @@ select {
   align-items: center;
 }
 
+.alert-panel-heading {
+  justify-content: flex-start;
+  padding-top: 0;
+}
+
+.push-controls,
+.strategy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.inline-status {
+  margin: 0 22px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.strategy-panel {
+  overflow: hidden;
+}
+
+.strategy-builder {
+  display: grid;
+  gap: 14px;
+  padding: 18px 22px;
+  border-top: 1px solid var(--line);
+}
+
+.strategy-builder label {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.strategy-market-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.strategy-market-picker button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: #253044;
+  padding: 9px 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.strategy-market-picker button.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.strategy-conditions {
+  display: grid;
+  gap: 10px;
+}
+
+.strategy-condition-row {
+  display: grid;
+  grid-template-columns: 72px minmax(170px, 1fr) 86px minmax(190px, 1fr) minmax(120px, 0.5fr) 88px;
+  gap: 10px;
+  align-items: center;
+}
+
+.condition-index {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.add-condition-button {
+  justify-self: start;
+}
+
+.strategy-results-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+  gap: 18px;
+  padding: 0 22px 22px;
+}
+
+.strategy-results-block {
+  min-width: 0;
+}
+
+.strategy-results-block h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.saved-strategy-list {
+  display: grid;
+  gap: 10px;
+}
+
+.saved-strategy-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.saved-strategy-card strong,
+.saved-strategy-card span {
+  display: block;
+}
+
+.saved-strategy-card span,
+.strategy-error-note {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
 .account-form {
   max-width: 560px;
   display: grid;
@@ -1418,6 +1545,7 @@ th {
   .peer-list,
   .macro-chart-grid,
   .valuation-chart-grid,
+  .strategy-results-grid,
   .admin-layout,
   .admin-form-grid,
   .portfolio-analytics,
@@ -1441,6 +1569,10 @@ th {
 
   .alert-form {
     width: 100%;
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-condition-row {
     grid-template-columns: 1fr;
   }
 
