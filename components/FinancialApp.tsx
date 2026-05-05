@@ -176,6 +176,7 @@ export default function FinancialApp() {
     displayName: "",
     email: ""
   });
+  const liveRefreshInFlightRef = useRef(false);
 
   async function loadSession() {
     try {
@@ -240,24 +241,48 @@ export default function FinancialApp() {
     return data;
   }
 
-  async function refreshCurrentPage() {
-    setBusy(true);
-    setError("");
+  async function refreshLiveData(showBusy = false) {
+    if (liveRefreshInFlightRef.current) {
+      return;
+    }
+    liveRefreshInFlightRef.current = true;
+    if (showBusy) {
+      setBusy(true);
+      setError("");
+    }
     try {
+      const tasks: Array<Promise<unknown>> = [];
       if (page === "coin" || page === "us" || page === "korea") {
-        await loadMarket(page, marketRanges[page]);
+        tasks.push(loadMarket(page, marketRanges[page]));
       } else if (page === "symbol") {
-        await loadSymbol(symbol, symbolRange);
+        tasks.push(loadSymbol(symbol, symbolRange));
       } else if (page === "admin" && user?.isAdmin) {
-        await loadAdmin();
-      } else if (user) {
-        await loadPortfolio();
+        tasks.push(loadAdmin());
+      }
+
+      if (user) {
+        tasks.push(loadPortfolio(true));
+      }
+
+      const results = await Promise.allSettled(tasks);
+      const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failed && showBusy) {
+        throw failed.reason;
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Refresh failed.");
+      if (showBusy) {
+        setError(err instanceof Error ? err.message : "Refresh failed.");
+      }
     } finally {
-      setBusy(false);
+      liveRefreshInFlightRef.current = false;
+      if (showBusy) {
+        setBusy(false);
+      }
     }
+  }
+
+  async function refreshCurrentPage() {
+    await refreshLiveData(true);
   }
 
   useEffect(() => {
@@ -288,6 +313,28 @@ export default function FinancialApp() {
       }
     }
   }, [page, user?.isAdmin]);
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      void refreshLiveData(false);
+    }, 30_000);
+    return () => window.clearInterval(intervalId);
+  }, [
+    loading,
+    page,
+    marketRanges,
+    symbol,
+    symbolRange,
+    benchmark,
+    historyYears,
+    rollingWindow,
+    user?.username,
+    user?.isAdmin,
+    adminSelectedUsername
+  ]);
 
   async function submitAuthRequest(mode: "login" | "register") {
     setBusy(true);
