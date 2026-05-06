@@ -271,6 +271,8 @@ export type PushToken = {
 
 export type StrategyMarket = "us" | "korea" | "crypto";
 
+export type StrategyConditionCategory = "price" | "volatility" | "volume" | "fundamental";
+
 export type StrategyMetricKey =
   | "price"
   | "changePct"
@@ -278,13 +280,31 @@ export type StrategyMetricKey =
   | "oneMonthVolatilityPct"
   | "companyEps"
   | "companyPer"
+  | "companyPbr"
   | "industryPer"
   | "companyRoe"
+  | "companyRoa"
+  | "companyNetMargin"
+  | "companyOperatingMargin"
+  | "companyEvEbitda"
+  | "revenueGrowthPct"
+  | "operatingIncomeGrowthPct"
+  | "earningsGrowthPct"
   | "industryRoe"
   | "rollingBeta"
   | "industryRollingBeta"
   | "fullPeriodBeta"
-  | "industryFullPeriodBeta";
+  | "industryFullPeriodBeta"
+  | "standardDeviationPct"
+  | "movingAverageBreakoutUp"
+  | "movingAverageBreakoutDown"
+  | "goldenCross"
+  | "deadCross"
+  | "macdSignal"
+  | "rsi"
+  | "bollingerBandPosition"
+  | "volumeSpike"
+  | "volumeProfile";
 
 export type StrategyOperator = "<" | "<=" | "=" | ">=" | ">";
 
@@ -300,15 +320,18 @@ export type StrategyRightOperand =
 
 export type StrategyCondition = {
   id: string;
+  category?: StrategyConditionCategory;
   leftMetric: StrategyMetricKey;
   operator: StrategyOperator;
   right: StrategyRightOperand;
+  params?: Record<string, number | string | boolean>;
 };
 
 export type StrategyDefinition = {
   id: string;
   name: string;
   markets: StrategyMarket[];
+  sectors?: string[];
   conditions: StrategyCondition[];
   active: boolean;
   created_at: string;
@@ -335,6 +358,8 @@ export type StrategyEvaluation = {
   universeCount?: number;
   cachedCount?: number;
   staleCount?: number;
+  priceCachedCount?: number;
+  priceMissingCount?: number;
   cacheRefreshedAt?: string;
 };
 
@@ -347,6 +372,13 @@ export type StrategyMetricSnapshot = {
   price: number | null;
   changePct: number | null;
   metrics: Partial<Record<StrategyMetricKey, number | null>>;
+  technical?: {
+    daily: Array<{
+      time: string;
+      close: number;
+      volume: number | null;
+    }>;
+  };
   source: string;
   refreshedAt: string;
 };

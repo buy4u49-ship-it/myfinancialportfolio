@@ -59,7 +59,7 @@ DEFAULT_CRYPTO_SYMBOLS = [
 UPBIT_MARKET_URL = "https://api.upbit.com/v1/market/all?isDetails=false"
 UPBIT_WEBSOCKET_URL = "wss://api.upbit.com/websocket/v1"
 SUPABASE_MARKET_QUOTE_TABLE = "market_quote_cache"
-YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
+YAHOO_SPARK_URL = "https://query1.finance.yahoo.com/v7/finance/spark"
 
 
 def ignore_dead_local_proxy() -> None:
@@ -256,8 +256,12 @@ def row_from_upbit_ticker(message: dict[str, object]) -> dict[str, object] | Non
     if not market.startswith("KRW-"):
         return None
 
-    price = message.get("trade_price")
-    previous_close = message.get("prev_closing_price")
+    price = float_or_none(message.get("trade_price"))
+    if price is None or price <= 0:
+        return None
+    previous_close = float_or_none(message.get("prev_closing_price"))
+    if previous_close is not None and previous_close <= 0:
+        previous_close = None
     signed_change_rate = message.get("signed_change_rate")
     change_pct = None
     try:
@@ -289,22 +293,38 @@ def float_or_none(value: object) -> float | None:
         return None
 
 
-def row_from_yahoo_quote(item: dict[str, object]) -> dict[str, object] | None:
+def pct_change(price: float | None, previous_close: float | None) -> float | None:
+    if price is None or previous_close is None or previous_close == 0:
+        return None
+    return (price / previous_close - 1) * 100
+
+
+def row_from_yahoo_spark(item: dict[str, object]) -> dict[str, object] | None:
     symbol = str(item.get("symbol") or "").upper().strip()
     if not symbol:
         return None
-    price = float_or_none(item.get("regularMarketPrice") or item.get("postMarketPrice") or item.get("preMarketPrice"))
-    previous_close = float_or_none(item.get("regularMarketPreviousClose"))
-    change_pct = float_or_none(item.get("regularMarketChangePercent"))
+    response = item.get("response")
+    first_response = response[0] if isinstance(response, list) and response else None
+    meta = first_response.get("meta") if isinstance(first_response, dict) else None
+    if not isinstance(meta, dict):
+        return None
+
+    price = float_or_none(meta.get("regularMarketPrice") or meta.get("postMarketPrice") or meta.get("preMarketPrice"))
+    if price is None or price <= 0:
+        return None
+    previous_close = float_or_none(meta.get("chartPreviousClose") or meta.get("previousClose") or meta.get("regularMarketPreviousClose"))
+    if previous_close is not None and previous_close <= 0:
+        previous_close = None
+    change_pct = float_or_none(meta.get("regularMarketChangePercent")) or pct_change(price, previous_close)
     return {
       "symbol": symbol,
       "provider_symbol": symbol,
       "price": price,
       "previous_close": previous_close,
       "change_pct": change_pct,
-      "currency": str(item.get("currency") or "").upper(),
-      "exchange": str(item.get("fullExchangeName") or item.get("exchange") or "Yahoo Quote"),
-      "source": "yahoo_quote_worker",
+      "currency": str(meta.get("currency") or "").upper(),
+      "exchange": str(meta.get("fullExchangeName") or meta.get("exchangeName") or meta.get("exchange") or "Yahoo Spark"),
+      "source": "yahoo_spark_worker",
       "payload": item,
       "updated_at": utc_now_iso(),
     }
@@ -322,23 +342,33 @@ async def poll_yahoo_quotes(symbols: list[str], interval: float, batch_size: int
     batches = chunked(symbols, max(1, batch_size))
     while True:
         updated = 0
+        skipped = 0
         for batch in batches:
             try:
-                query = urllib.parse.urlencode({"symbols": ",".join(batch)})
-                payload = fetch_json(f"{YAHOO_QUOTE_URL}?{query}")
+                query = urllib.parse.urlencode({"symbols": ",".join(batch), "range": "1d", "interval": "1m"})
+                payload = fetch_json(f"{YAHOO_SPARK_URL}?{query}")
                 results = []
                 if isinstance(payload, dict):
-                    quote_response = payload.get("quoteResponse")
-                    if isinstance(quote_response, dict) and isinstance(quote_response.get("result"), list):
-                        results = quote_response["result"]
-                rows = [row for row in (row_from_yahoo_quote(item) for item in results if isinstance(item, dict)) if row]
+                    spark = payload.get("spark")
+                    if isinstance(spark, dict) and isinstance(spark.get("result"), list):
+                        results = spark["result"]
+                rows = []
+                for item in results:
+                    if not isinstance(item, dict):
+                        skipped += 1
+                        continue
+                    row = row_from_yahoo_spark(item)
+                    if row:
+                        rows.append(row)
+                    else:
+                        skipped += 1
                 if rows:
                     supabase_upsert(rows)
                     updated += len(rows)
             except Exception as exc:
                 print(f"{utc_now_iso()} yahoo quote batch failed: {exc}", flush=True)
             await asyncio.sleep(0.3)
-        print(f"{utc_now_iso()} upserted {updated} stock quotes", flush=True)
+        print(f"{utc_now_iso()} upserted {updated} stock quotes; skipped {skipped} invalid or missing quote rows", flush=True)
         await asyncio.sleep(interval)
 
 
@@ -386,7 +416,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols", nargs="*", default=DEFAULT_CRYPTO_SYMBOLS, help="App symbols such as BTC-KRW ETH-KRW.")
     parser.add_argument("--stock-symbols", nargs="*", default=[], help="Stock symbols such as AAPL MSFT 005930.KS.")
     parser.add_argument("--stock-symbols-file", default="", help="Optional file with comma/newline separated stock symbols.")
-    parser.add_argument("--stock-poll-interval", type=float, default=float(os.environ.get("PRICE_WORKER_STOCK_POLL_INTERVAL", "300")), help="Seconds between full stock quote polling passes.")
+    parser.add_argument("--stock-poll-interval", type=float, default=float(os.environ.get("PRICE_WORKER_STOCK_POLL_INTERVAL", "60")), help="Seconds between full stock quote polling passes.")
     parser.add_argument("--stock-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_STOCK_BATCH_SIZE", "80")), help="Yahoo quote symbols per request.")
     parser.add_argument("--universe-url", default="", help="Optional URL returning JSON strategy universe symbols.")
     parser.add_argument("--universe-secret", default="", help="Bearer secret for the strategy universe URL.")

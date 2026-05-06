@@ -5,12 +5,13 @@ import {
   STRATEGY_QUOTE_CACHE_MAX_AGE_MS
 } from "./financialFundamentalsCache";
 import { getCachedMarketQuotes } from "./prices";
-import { defaultStrategyCondition, strategyMetricLabel, STRATEGY_METRICS, STRATEGY_OPERATORS } from "./strategyConfig";
+import { defaultStrategyCondition, strategyMetricLabel, strategyMetricOption, STRATEGY_METRICS, STRATEGY_OPERATORS } from "./strategyConfig";
 import { getStrategyUniverse, readStrategyMetricCache, strategyMetricSnapshotFresh } from "./strategyMetricCache";
 import type {
   FinancialFundamentalSnapshot,
   Quote,
   StrategyCondition,
+  StrategyConditionCategory,
   StrategyDefinition,
   StrategyEvaluation,
   StrategyMarket,
@@ -23,6 +24,7 @@ import type {
 const VALID_MARKETS = new Set<StrategyMarket>(["us", "korea", "crypto"]);
 const VALID_METRICS = new Set<StrategyMetricKey>(STRATEGY_METRICS.map((item) => item.key));
 const VALID_OPERATORS = new Set<StrategyOperator>(STRATEGY_OPERATORS);
+const VALID_CATEGORIES = new Set<StrategyConditionCategory>(["price", "volatility", "volume", "fundamental"]);
 
 function utcNowIso() {
   return new Date().toISOString();
@@ -38,6 +40,36 @@ function isStrategyMetric(value: string): value is StrategyMetricKey {
 
 function isStrategyOperator(value: string): value is StrategyOperator {
   return VALID_OPERATORS.has(value as StrategyOperator);
+}
+
+function isStrategyCategory(value: string): value is StrategyConditionCategory {
+  return VALID_CATEGORIES.has(value as StrategyConditionCategory);
+}
+
+function normalizeConditionParams(input: unknown) {
+  const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return Object.entries(source).reduce<Record<string, number | string | boolean>>((next, [key, value]) => {
+    if (!key) {
+      return next;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      next[key] = value;
+    } else if (typeof value === "string" || typeof value === "boolean") {
+      next[key] = value;
+    }
+    return next;
+  }, {});
+}
+
+function normalizeSectors(input: unknown, previous?: string[]) {
+  const raw = Array.isArray(input) ? input : previous || [];
+  return Array.from(
+    new Set(
+      raw
+        .map((sector) => String(sector || "").trim())
+        .filter((sector) => sector && sector !== "All Industries")
+    )
+  );
 }
 
 function normalizeRightOperand(input: unknown): StrategyRightOperand {
@@ -65,11 +97,15 @@ export function normalizeStrategy(input: unknown, previous?: StrategyDefinition)
           if (!isStrategyMetric(leftMetric) || !isStrategyOperator(operator)) {
             return null;
           }
+          const category = String(raw.category || "");
+          const inferredCategory = strategyMetricOption(leftMetric)?.category || "fundamental";
           return {
             id: String(raw.id || `condition-${index + 1}`),
+            category: isStrategyCategory(category) ? category : inferredCategory,
             leftMetric,
             operator,
-            right: normalizeRightOperand(raw.right)
+            right: normalizeRightOperand(raw.right),
+            params: normalizeConditionParams(raw.params)
           };
         })
         .filter((condition): condition is StrategyCondition => condition !== null)
@@ -79,6 +115,7 @@ export function normalizeStrategy(input: unknown, previous?: StrategyDefinition)
     id: String(candidate.id || previous?.id || crypto.randomUUID()),
     name: String(candidate.name || previous?.name || "New Strategy").trim() || "New Strategy",
     markets: markets.length ? markets : ["us", "korea"],
+    sectors: normalizeSectors(candidate.sectors, previous?.sectors),
     conditions: conditions.length ? conditions : [defaultStrategyCondition()],
     active: candidate.active === undefined ? previous?.active !== false : candidate.active !== false,
     created_at: String(candidate.created_at || previous?.created_at || now),
@@ -117,11 +154,15 @@ function compare(left: number | null | undefined, operator: StrategyOperator, ri
   return Math.abs(left - right) <= Math.max(0.000001, Math.abs(right) * 0.000001);
 }
 
-function conditionReason(condition: StrategyCondition, metrics: Partial<Record<StrategyMetricKey, number | null>>) {
+function conditionReason(
+  condition: StrategyCondition,
+  metrics: Partial<Record<StrategyMetricKey, number | null>>,
+  snapshot: EvaluationSnapshot
+) {
   const leftLabel = strategyMetricLabel(condition.leftMetric);
   const rightLabel = condition.right.type === "number" ? String(condition.right.value) : strategyMetricLabel(condition.right.metric);
-  const left = metrics[condition.leftMetric];
-  const right = rightValue(condition.right, metrics);
+  const left = metricValue(condition.leftMetric, metrics, snapshot, condition.params);
+  const right = rightValueForCondition(condition.right, metrics, snapshot, condition.params);
   return `${leftLabel} ${condition.operator} ${rightLabel} (${left ?? "N/A"} vs ${right ?? "N/A"})`;
 }
 
@@ -129,10 +170,12 @@ type EvaluationSnapshot = {
   symbol: string;
   market: StrategyMarket;
   name: string;
+  sector: string;
   industry: string;
   price: number | null;
   changePct: number | null;
   metrics: Partial<Record<StrategyMetricKey, number | null>>;
+  technical?: StrategyMetricSnapshot["technical"];
   fresh: boolean;
   refreshedAt: string;
 };
@@ -166,12 +209,7 @@ function strategyUsesIndustryMedians(strategy: StrategyDefinition) {
 }
 
 function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, quote: Quote | undefined) {
-  const marketCap = positiveNumber(fundamental.marketCap);
-  const netIncome = nonZeroNumber(fundamental.netIncome);
-  if (marketCap !== null && netIncome !== null) {
-    return marketCap / netIncome;
-  }
-  const price = positiveNumber(quote?.price) ?? positiveNumber(fundamental.priceAtRefresh);
+  const price = positiveNumber(quote?.price);
   const eps = nonZeroNumber(fundamental.eps);
   if (price === null || eps === null) {
     return null;
@@ -184,11 +222,12 @@ function evaluationFromFundamental(
   quote: Quote | undefined,
   supplemental?: StrategyMetricSnapshot
 ): EvaluationSnapshot {
-  const price = positiveNumber(quote?.price) ?? positiveNumber(fundamental.priceAtRefresh);
+  const price = positiveNumber(quote?.price);
+  const changePct = finiteNumber(quote?.changePct);
   const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
     ...supplemental?.metrics,
     price,
-    changePct: quote?.changePct ?? supplemental?.changePct ?? null,
+    changePct,
     companyEps: fundamental.eps,
     companyPer: companyPerFromFundamental(fundamental, quote),
     companyRoe: fundamental.roePct
@@ -197,28 +236,34 @@ function evaluationFromFundamental(
     symbol: fundamental.symbol,
     market: fundamental.market,
     name: fundamental.name || supplemental?.name || fundamental.symbol,
+    sector: fundamental.sector || supplemental?.sector || "Unclassified",
     industry: fundamental.industry || fundamental.sector || supplemental?.industry || supplemental?.sector || "Unclassified",
     price,
-    changePct: quote?.changePct ?? supplemental?.changePct ?? null,
+    changePct,
     metrics,
+    technical: supplemental?.technical,
     fresh: financialFundamentalFresh(fundamental),
     refreshedAt: fundamental.refreshedAt
   };
 }
 
-function evaluationFromSupplemental(snapshot: StrategyMetricSnapshot): EvaluationSnapshot {
+function evaluationFromSupplemental(snapshot: StrategyMetricSnapshot, quote: Quote | undefined): EvaluationSnapshot {
+  const price = positiveNumber(quote?.price);
+  const changePct = finiteNumber(quote?.changePct);
   return {
     symbol: snapshot.symbol,
     market: snapshot.market,
     name: snapshot.name || snapshot.symbol,
+    sector: snapshot.sector || "Unclassified",
     industry: snapshot.industry || snapshot.sector || "Unclassified",
-    price: snapshot.price,
-    changePct: snapshot.changePct,
+    price,
+    changePct,
     metrics: {
       ...snapshot.metrics,
-      price: snapshot.metrics.price ?? snapshot.price,
-      changePct: snapshot.metrics.changePct ?? snapshot.changePct
+      price,
+      changePct
     },
+    technical: snapshot.technical,
     fresh: strategyMetricSnapshotFresh(snapshot),
     refreshedAt: snapshot.refreshedAt
   };
@@ -233,8 +278,208 @@ function median(values: Array<number | null | undefined>) {
   return valid.length % 2 ? valid[middle] : (valid[middle - 1] + valid[middle]) / 2;
 }
 
+function average(values: number[]) {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function movingAverage(values: number[], endExclusive: number, period: number) {
+  if (period <= 0 || endExclusive < period) {
+    return null;
+  }
+  return average(values.slice(endExclusive - period, endExclusive));
+}
+
+function stddev(values: number[]) {
+  const mean = average(values);
+  if (mean === null || values.length < 2) {
+    return null;
+  }
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function conditionParam(params: StrategyCondition["params"], key: string, fallback: number) {
+  const value = Number(params?.[key]);
+  return Number.isFinite(value) ? Math.max(1, Math.round(value)) : fallback;
+}
+
+function decimalConditionParam(params: StrategyCondition["params"], key: string, fallback: number) {
+  const value = Number(params?.[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function ema(values: number[], period: number) {
+  if (period <= 0 || values.length < period) {
+    return [];
+  }
+  const multiplier = 2 / (period + 1);
+  const output: number[] = [];
+  let current = average(values.slice(0, period));
+  if (current === null) {
+    return [];
+  }
+  output.push(current);
+  for (let index = period; index < values.length; index += 1) {
+    current = (values[index] - current) * multiplier + current;
+    output.push(current);
+  }
+  return output;
+}
+
+function rsi(values: number[], period: number) {
+  if (values.length <= period) {
+    return null;
+  }
+  const window = values.slice(values.length - period - 1);
+  let gains = 0;
+  let losses = 0;
+  for (let index = 1; index < window.length; index += 1) {
+    const change = window[index] - window[index - 1];
+    if (change >= 0) {
+      gains += change;
+    } else {
+      losses += Math.abs(change);
+    }
+  }
+  const averageGain = gains / period;
+  const averageLoss = losses / period;
+  if (averageLoss === 0) {
+    return 100;
+  }
+  const rs = averageGain / averageLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+function technicalMetricValue(metric: StrategyMetricKey, snapshot: EvaluationSnapshot, params?: StrategyCondition["params"]) {
+  const daily = snapshot.technical?.daily || [];
+  const points = daily.filter((point) => Number.isFinite(point.close));
+  const closes = points.map((point) => point.close);
+  if (!closes.length) {
+    return null;
+  }
+  const currentIndex = closes.length;
+  const previousIndex = closes.length - 1;
+  if (metric === "movingAverageBreakoutUp" || metric === "movingAverageBreakoutDown") {
+    const period = conditionParam(params, "period", 20);
+    const currentMa = movingAverage(closes, currentIndex, period);
+    const previousMa = movingAverage(closes, previousIndex, period);
+    if (currentMa === null || previousMa === null || closes.length < 2) {
+      return null;
+    }
+    const upward = closes.at(-1)! > currentMa && closes.at(-2)! <= previousMa;
+    const downward = closes.at(-1)! < currentMa && closes.at(-2)! >= previousMa;
+    return metric === "movingAverageBreakoutUp" ? (upward ? 1 : 0) : downward ? 1 : 0;
+  }
+  if (metric === "goldenCross" || metric === "deadCross") {
+    const shortPeriod = conditionParam(params, "shortPeriod", 20);
+    const longPeriod = conditionParam(params, "longPeriod", 50);
+    const currentShort = movingAverage(closes, currentIndex, shortPeriod);
+    const currentLong = movingAverage(closes, currentIndex, longPeriod);
+    const previousShort = movingAverage(closes, previousIndex, shortPeriod);
+    const previousLong = movingAverage(closes, previousIndex, longPeriod);
+    if (currentShort === null || currentLong === null || previousShort === null || previousLong === null) {
+      return null;
+    }
+    const golden = currentShort > currentLong && previousShort <= previousLong;
+    const dead = currentShort < currentLong && previousShort >= previousLong;
+    return metric === "goldenCross" ? (golden ? 1 : 0) : dead ? 1 : 0;
+  }
+  if (metric === "macdSignal") {
+    const fastPeriod = conditionParam(params, "fastPeriod", 12);
+    const slowPeriod = conditionParam(params, "slowPeriod", 26);
+    const signalPeriod = conditionParam(params, "signalPeriod", 9);
+    const fast = ema(closes, fastPeriod);
+    const slow = ema(closes, slowPeriod);
+    const overlap = Math.min(fast.length, slow.length);
+    if (overlap < signalPeriod) {
+      return null;
+    }
+    const macd = fast.slice(-overlap).map((value, index) => value - slow.slice(-overlap)[index]);
+    const signal = ema(macd, signalPeriod);
+    if (!signal.length) {
+      return null;
+    }
+    return macd.at(-1)! - signal.at(-1)!;
+  }
+  if (metric === "rsi") {
+    return rsi(closes, conditionParam(params, "period", 14));
+  }
+  if (metric === "bollingerBandPosition") {
+    const period = conditionParam(params, "period", 20);
+    const deviation = decimalConditionParam(params, "deviation", 2);
+    if (closes.length < period) {
+      return null;
+    }
+    const window = closes.slice(-period);
+    const mean = average(window);
+    const sigma = stddev(window);
+    if (mean === null || sigma === null || sigma === 0) {
+      return null;
+    }
+    const lower = mean - sigma * deviation;
+    const upper = mean + sigma * deviation;
+    if (upper === lower) {
+      return null;
+    }
+    return ((closes.at(-1)! - lower) / (upper - lower)) * 100;
+  }
+  if (metric === "volumeSpike" || metric === "volumeProfile") {
+    const period = conditionParam(params, "lookbackDays", metric === "volumeSpike" ? 20 : 60);
+    const volumes = points.map((point) => (point.volume !== null && Number.isFinite(point.volume) ? point.volume : null));
+    const currentVolume = volumes.at(-1);
+    if (currentVolume === null || currentVolume === undefined || currentVolume <= 0 || points.length <= period) {
+      return null;
+    }
+    const previousPoints = points.slice(-period - 1, -1);
+    const previousVolumes = previousPoints.map((point) => (point.volume !== null && Number.isFinite(point.volume) ? point.volume : 0));
+    const averageVolume = average(previousVolumes.filter((value) => value > 0));
+    if (averageVolume === null || averageVolume <= 0) {
+      return null;
+    }
+    if (metric === "volumeSpike") {
+      return currentVolume / averageVolume;
+    }
+    const volumeSum = previousPoints.reduce((sum, point) => sum + (point.volume || 0), 0);
+    if (volumeSum <= 0) {
+      return null;
+    }
+    const vwap = previousPoints.reduce((sum, point) => sum + point.close * (point.volume || 0), 0) / volumeSum;
+    return vwap > 0 ? (points.at(-1)!.close / vwap - 1) * 100 : null;
+  }
+  return null;
+}
+
+function metricValue(
+  metric: StrategyMetricKey,
+  metrics: Partial<Record<StrategyMetricKey, number | null>>,
+  snapshot: EvaluationSnapshot,
+  params?: StrategyCondition["params"]
+) {
+  const stored = metrics[metric];
+  if (stored !== undefined) {
+    return stored;
+  }
+  return technicalMetricValue(metric, snapshot, params);
+}
+
+function rightValueForCondition(
+  right: StrategyRightOperand,
+  metrics: Partial<Record<StrategyMetricKey, number | null>>,
+  snapshot: EvaluationSnapshot,
+  params?: StrategyCondition["params"]
+) {
+  return right.type === "number" ? right.value : metricValue(right.metric, metrics, snapshot, params);
+}
+
 function industryGroupKey(snapshot: EvaluationSnapshot) {
   return `${snapshot.market}:${snapshot.industry || "Unclassified"}`;
+}
+
+function strategySectorMatches(strategy: StrategyDefinition, snapshot: EvaluationSnapshot) {
+  if (!strategy.sectors?.length || snapshot.market === "crypto") {
+    return true;
+  }
+  return strategy.sectors.includes(snapshot.sector);
 }
 
 function isIndustryMedianEligible(snapshot: EvaluationSnapshot) {
@@ -269,6 +514,9 @@ function universeIndustryMetrics(snapshots: EvaluationSnapshot[]) {
 }
 
 function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefinition, industryMetrics: Map<string, { per: number | null; roe: number | null; count: number }>) {
+  if (!strategySectorMatches(strategy, snapshot)) {
+    return null;
+  }
   const industry = industryMetrics.get(industryGroupKey(snapshot));
   if (strategyUsesIndustryMedians(strategy)) {
     if (!industry || industry.count < INDUSTRY_MEDIAN_MIN_COMPANIES || !isIndustryMedianEligible(snapshot)) {
@@ -282,8 +530,19 @@ function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefini
     industryPer: industry?.per ?? snapshot.metrics.industryPer ?? null,
     industryRoe: industry?.roe ?? snapshot.metrics.industryRoe ?? null
   };
+  const resolvedMetrics = { ...metrics };
+  strategy.conditions.forEach((condition) => {
+    resolvedMetrics[condition.leftMetric] = metricValue(condition.leftMetric, metrics, snapshot, condition.params);
+    if (condition.right.type === "metric") {
+      resolvedMetrics[condition.right.metric] = metricValue(condition.right.metric, metrics, snapshot, condition.params);
+    }
+  });
   const passed = strategy.conditions.every((condition) =>
-    compare(metrics[condition.leftMetric], condition.operator, rightValue(condition.right, metrics))
+    compare(
+      metricValue(condition.leftMetric, metrics, snapshot, condition.params),
+      condition.operator,
+      rightValueForCondition(condition.right, metrics, snapshot, condition.params)
+    )
   );
   if (!passed) {
     return null;
@@ -294,8 +553,8 @@ function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefini
     market: snapshot.market,
     price: snapshot.price,
     changePct: snapshot.changePct,
-    metrics,
-    reasons: strategy.conditions.map((condition) => conditionReason(condition, metrics))
+    metrics: resolvedMetrics,
+    reasons: strategy.conditions.map((condition) => conditionReason(condition, metrics, snapshot))
   };
 }
 
@@ -323,20 +582,26 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
   for (const supplemental of supplementalCache.values()) {
     const key = `${supplemental.market}:${supplemental.symbol}`;
     if (!evaluationSnapshots.has(key) && supplemental.market === "crypto") {
-      evaluationSnapshots.set(key, evaluationFromSupplemental(supplemental));
+      evaluationSnapshots.set(key, evaluationFromSupplemental(supplemental, quoteCache.get(supplemental.symbol)));
     }
   }
 
   const cachedSnapshots = Array.from(evaluationSnapshots.values()).filter((snapshot) => strategy.markets.includes(snapshot.market));
   const industryMetrics = universeIndustryMetrics(cachedSnapshots);
+  const priceCachedCount = cachedSnapshots.filter((snapshot) => snapshot.price !== null).length;
+  const priceMissingCount = Math.max(0, cachedSnapshots.length - priceCachedCount);
 
   universeByMarket.forEach(({ market, symbols: marketSymbols }) => {
     let missingCount = 0;
+    let missingPriceCount = 0;
     marketSymbols.forEach((symbol) => {
       const snapshot = evaluationSnapshots.get(`${market}:${symbol}`);
       if (!snapshot) {
         missingCount += 1;
         return;
+      }
+      if (snapshot.price === null) {
+        missingPriceCount += 1;
       }
       const match = evaluateSnapshot(snapshot, strategy, industryMetrics);
       if (match) {
@@ -345,6 +610,9 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
     });
     if (missingCount) {
       errors.push({ symbol: `${market}:cache`, message: `${missingCount} symbols do not have cached fundamentals or strategy metrics yet.` });
+    }
+    if (missingPriceCount) {
+      errors.push({ symbol: `${market}:price-cache`, message: `${missingPriceCount} cached symbols do not have a fresh positive quote cache row yet.` });
     }
   });
 
@@ -362,6 +630,8 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
     universeCount: universeByMarket.reduce((sum, item) => sum + item.symbols.length, 0),
     cachedCount: cachedSnapshots.length,
     staleCount: cachedSnapshots.filter((snapshot) => !snapshot.fresh).length,
+    priceCachedCount,
+    priceMissingCount,
     cacheRefreshedAt: refreshedTimes.length ? new Date(Math.max(...refreshedTimes)).toISOString() : undefined
   };
 }

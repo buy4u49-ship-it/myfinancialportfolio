@@ -957,6 +957,10 @@ select {
   font-weight: 800;
 }
 
+.strategy-sector-select {
+  max-width: 320px;
+}
+
 .strategy-market-picker {
   display: flex;
   flex-wrap: wrap;
@@ -986,9 +990,22 @@ select {
 
 .strategy-condition-row {
   display: grid;
-  grid-template-columns: 72px minmax(170px, 1fr) 86px minmax(190px, 1fr) minmax(120px, 0.5fr) 88px;
+  grid-template-columns: 72px minmax(150px, 0.8fr) minmax(170px, 1fr) 86px minmax(180px, 1fr) minmax(120px, 0.5fr) minmax(112px, 0.45fr) 88px;
   gap: 10px;
   align-items: center;
+}
+
+.condition-param {
+  display: grid;
+  gap: 4px;
+  min-width: 108px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.condition-param input {
+  min-width: 0;
 }
 
 .condition-index {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminRecord } from "@/lib/admin";
 import { refreshFinancialFundamentalsCache } from "@/lib/financialFundamentalsCache";
+import { refreshStrategyMetricCache } from "@/lib/strategyMetricCache";
 import type { StrategyMarket } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -59,12 +60,31 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
   try {
     await requireRefreshAccess(request);
     const params = request.nextUrl.searchParams;
-    const result = await refreshFinancialFundamentalsCache({
-      markets: parseMarkets(body.markets ?? body.market ?? params.get("market")),
-      limit: Number(body.limit ?? params.get("limit") ?? 50),
-      force: body.force === true || params.get("force") === "true"
+    const markets = parseMarkets(body.markets ?? body.market ?? params.get("market"));
+    const limit = Number(body.limit ?? params.get("limit") ?? 50);
+    const force = body.force === true || params.get("force") === "true";
+    const [fundamentalResult, metricResult] = await Promise.all([
+      refreshFinancialFundamentalsCache({
+        markets,
+        limit,
+        force
+      }),
+      refreshStrategyMetricCache({
+        markets,
+        limit,
+        force
+      })
+    ]);
+    return NextResponse.json({
+      ok: true,
+      ...fundamentalResult,
+      universeCount: Math.max(fundamentalResult.universeCount, metricResult.universeCount),
+      metricRefreshedCount: metricResult.refreshedCount,
+      metricCachedCount: metricResult.cachedCount,
+      metricStaleCount: metricResult.staleCount,
+      metricErrors: metricResult.errors,
+      errors: [...fundamentalResult.errors, ...metricResult.errors]
     });
-    return NextResponse.json({ ok: true, ...result });
   } catch (error) {
     return NextResponse.json({ error: errorMessage(error) || "Strategy metrics refresh failed." }, { status: 400 });
   }

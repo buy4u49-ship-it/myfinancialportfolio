@@ -1,4 +1,4 @@
-import { buildSymbolDetail } from "./marketData";
+import { buildSymbolDetail, fetchChart } from "./marketData";
 import { normalizeSymbol } from "./symbols";
 import { supabaseAdmin } from "./supabaseAdmin";
 import { getUpbitKrwSymbols } from "./upbitMarkets";
@@ -7,6 +7,7 @@ import type { StrategyMarket, StrategyMetricKey, StrategyMetricSnapshot, SymbolD
 const STRATEGY_METRIC_CACHE_TABLE = "strategy_metric_cache";
 export const STRATEGY_METRIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const UNIVERSE_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+type StrategyTechnicalDailyPoint = NonNullable<StrategyMetricSnapshot["technical"]>["daily"][number];
 
 type UniverseCacheEntry = {
   symbols: string[];
@@ -209,6 +210,11 @@ function isMissingStrategyMetricCacheTable(error: unknown) {
   );
 }
 
+function isMissingTechnicalPayloadColumn(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("technical_payload") && (message.includes("column") || message.includes("schema cache"));
+}
+
 function normalizeMarket(input: unknown): StrategyMarket | null {
   const market = String(input || "").trim().toLowerCase();
   return market === "us" || market === "korea" || market === "crypto" ? market : null;
@@ -235,6 +241,7 @@ function detailMetrics(detail: SymbolDetailResponse): Partial<Record<StrategyMet
     changePct: detail.quote.changePct,
     oneMonthReturnPct: detail.metrics.avgReturnPct,
     oneMonthVolatilityPct: detail.metrics.volatilityPct,
+    standardDeviationPct: detail.metrics.volatilityPct,
     companyPer: valuation?.companyPer ?? null,
     industryPer: valuation?.industryPer ?? null,
     companyRoe: valuation?.companyRoe === null || valuation?.companyRoe === undefined ? null : valuation.companyRoe * 100,
@@ -260,6 +267,23 @@ function cachedSnapshot(row: Record<string, unknown>): StrategyMetricSnapshot | 
   }, {});
   const price = Number(row.price);
   const changePct = Number(row.change_pct ?? row.changePct);
+  const rawTechnical = row.technical_payload && typeof row.technical_payload === "object" ? (row.technical_payload as Record<string, unknown>) : {};
+  const rawDaily = Array.isArray(rawTechnical.daily) ? rawTechnical.daily : [];
+  const daily = rawDaily
+    .map((point): StrategyTechnicalDailyPoint | null => {
+      const record = point && typeof point === "object" ? (point as Record<string, unknown>) : {};
+      const close = Number(record.close);
+      const volume = Number(record.volume);
+      if (!String(record.time || "") || !Number.isFinite(close)) {
+        return null;
+      }
+      return {
+        time: String(record.time),
+        close,
+        volume: Number.isFinite(volume) ? volume : null
+      };
+    })
+    .filter((point): point is StrategyTechnicalDailyPoint => point !== null);
   return {
     symbol,
     market,
@@ -269,6 +293,7 @@ function cachedSnapshot(row: Record<string, unknown>): StrategyMetricSnapshot | 
     price: Number.isFinite(price) ? price : null,
     changePct: Number.isFinite(changePct) ? changePct : null,
     metrics,
+    technical: daily.length ? { daily } : undefined,
     source: String(row.source || "strategy_metric_cache"),
     refreshedAt: String(row.refreshed_at || row.refreshedAt || "")
   };
@@ -284,6 +309,7 @@ function cacheRow(snapshot: StrategyMetricSnapshot) {
     price: snapshot.price,
     change_pct: snapshot.changePct,
     metrics: snapshot.metrics,
+    technical_payload: snapshot.technical || null,
     source: snapshot.source,
     refreshed_at: snapshot.refreshedAt,
     updated_at: new Date().toISOString()
@@ -412,12 +438,26 @@ export async function readStrategyMetricCache(symbols: string[], markets?: Strat
   for (const symbolChunk of chunk(uniqueSymbols, 250)) {
     let query = supabaseAdmin()
       .from(STRATEGY_METRIC_CACHE_TABLE)
-      .select("symbol,market,name,sector,industry,price,change_pct,metrics,source,refreshed_at")
+      .select("symbol,market,name,sector,industry,price,change_pct,metrics,technical_payload,source,refreshed_at")
       .in("symbol", symbolChunk);
     if (markets?.length) {
       query = query.in("market", markets);
     }
-    const { data, error } = await query;
+    const response = await query;
+    let data = response.data as Record<string, unknown>[] | null;
+    let error = response.error;
+    if (error && isMissingTechnicalPayloadColumn(error)) {
+      let fallbackQuery = supabaseAdmin()
+        .from(STRATEGY_METRIC_CACHE_TABLE)
+        .select("symbol,market,name,sector,industry,price,change_pct,metrics,source,refreshed_at")
+        .in("symbol", symbolChunk);
+      if (markets?.length) {
+        fallbackQuery = fallbackQuery.in("market", markets);
+      }
+      const fallback = await fallbackQuery;
+      data = fallback.data as Record<string, unknown>[] | null;
+      error = fallback.error;
+    }
     if (error) {
       if (isMissingStrategyMetricCacheTable(error)) {
         return new Map<string, StrategyMetricSnapshot>();
@@ -446,6 +486,16 @@ export async function writeStrategyMetricCache(snapshots: StrategyMetricSnapshot
     const { error } = await supabaseAdmin()
       .from(STRATEGY_METRIC_CACHE_TABLE)
       .upsert(rowChunk, { onConflict: "symbol,market" });
+    if (error && isMissingTechnicalPayloadColumn(error)) {
+      const fallbackRows = rowChunk.map(({ technical_payload: _technicalPayload, ...row }) => row);
+      const fallback = await supabaseAdmin()
+        .from(STRATEGY_METRIC_CACHE_TABLE)
+        .upsert(fallbackRows, { onConflict: "symbol,market" });
+      if (!fallback.error) {
+        continue;
+      }
+      throw new Error(errorMessage(fallback.error) || "Strategy metric cache write failed.");
+    }
     if (error) {
       throw new Error(errorMessage(error) || "Strategy metric cache write failed.");
     }
@@ -454,11 +504,21 @@ export async function writeStrategyMetricCache(snapshots: StrategyMetricSnapshot
 
 export async function buildStrategyMetricSnapshot(symbol: string, market: StrategyMarket): Promise<StrategyMetricSnapshot> {
   const normalized = normalizeSymbol(symbol);
-  const detail = await buildSymbolDetail(normalized, "1M", {
-    benchmark: defaultBenchmark(market),
-    historyYears: 20,
-    rollingWindow: 36
-  });
+  const [detail, technicalChart] = await Promise.all([
+    buildSymbolDetail(normalized, "1M", {
+      benchmark: defaultBenchmark(market),
+      historyYears: 20,
+      rollingWindow: 36
+    }),
+    fetchChart(normalized, "1Y").catch(() => [])
+  ]);
+  const daily = technicalChart
+    .filter((point) => Number.isFinite(point.close))
+    .map((point) => ({
+      time: point.time,
+      close: point.close,
+      volume: point.volume
+    }));
   return {
     symbol: detail.symbol,
     market,
@@ -468,6 +528,7 @@ export async function buildStrategyMetricSnapshot(symbol: string, market: Strate
     price: detail.quote.price,
     changePct: detail.quote.changePct,
     metrics: detailMetrics(detail),
+    technical: daily.length ? { daily } : undefined,
     source: "symbol_detail",
     refreshedAt: new Date().toISOString()
   };
