@@ -314,6 +314,11 @@ function numberOrNull(value: unknown) {
   return Number.isFinite(num) ? num : null;
 }
 
+function positiveNumberOrNull(value: unknown) {
+  const num = numberOrNull(value);
+  return num !== null && num > 0 ? num : null;
+}
+
 function quoteToMover(quote: Quote): MarketMoverRow {
   return {
     symbol: quote.symbol,
@@ -902,6 +907,75 @@ const SEC_CIKS: Record<string, string> = {
   CVX: "0000093410"
 };
 
+let secTickerMapPromise: Promise<Map<string, string>> | null = null;
+
+function secTickerCandidates(symbol: string) {
+  const normalized = marketDataSymbol(symbol).toUpperCase();
+  return Array.from(new Set([normalized, normalized.replace("-", ".")]));
+}
+
+function cikString(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return String(Math.trunc(numeric)).padStart(10, "0");
+}
+
+async function fetchSecTickerMap() {
+  try {
+    const response = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", {
+      headers: {
+        accept: "application/json",
+        "user-agent": "myfinancialportfolio-next/1.0 contact@example.com"
+      },
+      next: { revalidate: 21_600 }
+    });
+    if (!response.ok) {
+      return new Map<string, string>();
+    }
+    const payload = (await response.json()) as { fields?: string[]; data?: unknown[][] };
+    const fields = payload.fields || [];
+    const tickerIndex = fields.indexOf("ticker");
+    const cikIndex = fields.indexOf("cik");
+    if (tickerIndex < 0 || cikIndex < 0 || !Array.isArray(payload.data)) {
+      return new Map<string, string>();
+    }
+    const map = new Map<string, string>();
+    for (const row of payload.data) {
+      const ticker = String(row[tickerIndex] || "").toUpperCase().trim();
+      const cik = cikString(row[cikIndex]);
+      if (ticker && cik && !map.has(ticker)) {
+        map.set(ticker, cik);
+      }
+    }
+    return map;
+  } catch {
+    return new Map<string, string>();
+  }
+}
+
+async function resolveSecCik(symbol: string) {
+  for (const candidate of secTickerCandidates(symbol)) {
+    if (SEC_CIKS[candidate]) {
+      return SEC_CIKS[candidate];
+    }
+  }
+  secTickerMapPromise ||= fetchSecTickerMap();
+  const tickerMap = await secTickerMapPromise;
+  for (const candidate of secTickerCandidates(symbol)) {
+    const cik = tickerMap.get(candidate);
+    if (cik) {
+      return cik;
+    }
+  }
+  return null;
+}
+
 const SEC_FACT_FIELDS: Record<string, string[]> = {
   total_assets: ["Assets"],
   current_assets: ["AssetsCurrent"],
@@ -971,7 +1045,7 @@ type SecCompanyFacts = {
 };
 
 async function fetchSecCompanyFacts(symbol: string): Promise<SecCompanyFacts | null> {
-  const cik = SEC_CIKS[marketDataSymbol(symbol)];
+  const cik = await resolveSecCik(symbol);
   if (!cik) {
     return null;
   }
@@ -1813,8 +1887,8 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
   const financialData = (summary.financialData || {}) as Record<string, unknown>;
   const stats = (summary.defaultKeyStatistics || {}) as Record<string, unknown>;
   const eps = numberOrNull(rawValue(stats.trailingEps));
-  const marketPrice = numberOrNull(rawValue(price.regularMarketPrice));
-  const per = numberOrNull(rawValue(stats.trailingPE)) ?? (eps && marketPrice ? marketPrice / eps : null);
+  const marketPrice = positiveNumberOrNull(rawValue(price.regularMarketPrice));
+  const per = numberOrNull(rawValue(stats.trailingPE)) ?? (eps !== null && eps !== 0 && marketPrice ? marketPrice / eps : null);
   return {
     eps,
     per,
@@ -1839,7 +1913,7 @@ function secRatioValuesForYear(facts: SecCompanyFacts | null, fiscalYear: number
   const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
   return {
     eps,
-    per: eps !== null && eps !== 0 && marketPrice !== null ? marketPrice / eps : null,
+    per: eps !== null && eps !== 0 && marketPrice !== null && marketPrice > 0 ? marketPrice / eps : null,
     netMargin: revenue !== null && revenue !== 0 && netIncome !== null ? netIncome / revenue : null,
     operatingMargin: revenue !== null && revenue !== 0 && operatingIncome !== null ? operatingIncome / revenue : null,
     roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null
@@ -2044,8 +2118,10 @@ export async function buildFinancialFundamentalFromSources(
   };
   const priceModule = (summary.price || {}) as Record<string, unknown>;
   const resolvedProfile = fallbackProfile(normalized, profile, priceModule);
-  const summaryPrice = numberOrNull(rawValue(priceModule.regularMarketPrice));
-  const marketPrice = quote?.price ?? summaryPrice;
+  const summaryPrice = positiveNumberOrNull(rawValue(priceModule.regularMarketPrice));
+  const quotePrice = positiveNumberOrNull(quote?.price);
+  const marketPrice = quotePrice ?? summaryPrice;
+  const marketCap = positiveNumberOrNull(rawValue(priceModule.marketCap));
   let source = "yahoo_summary";
   let fiscalYear: number | null = null;
   let company = ratioValues(summary);
@@ -2090,6 +2166,7 @@ export async function buildFinancialFundamentalFromSources(
     roePct: company.roe === null || company.roe === undefined ? null : company.roe * 100,
     netIncome,
     averageEquity,
+    marketCap,
     priceAtRefresh: marketPrice,
     source,
     refreshedAt: new Date().toISOString()

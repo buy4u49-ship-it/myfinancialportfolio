@@ -137,12 +137,46 @@ type EvaluationSnapshot = {
   refreshedAt: string;
 };
 
+const INDUSTRY_MEDIAN_MIN_COMPANIES = 5;
+
+function finiteNumber(value: number | null | undefined) {
+  return value !== null && value !== undefined && Number.isFinite(value) ? value : null;
+}
+
+function positiveNumber(value: number | null | undefined) {
+  const num = finiteNumber(value);
+  return num !== null && num > 0 ? num : null;
+}
+
+function nonZeroNumber(value: number | null | undefined) {
+  const num = finiteNumber(value);
+  return num !== null && num !== 0 ? num : null;
+}
+
+function metricReferencesIndustryMedian(metric: StrategyMetricKey) {
+  return metric === "industryPer" || metric === "industryRoe";
+}
+
+function strategyUsesIndustryMedians(strategy: StrategyDefinition) {
+  return strategy.conditions.some(
+    (condition) =>
+      metricReferencesIndustryMedian(condition.leftMetric) ||
+      (condition.right.type === "metric" && metricReferencesIndustryMedian(condition.right.metric))
+  );
+}
+
 function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, quote: Quote | undefined) {
-  const price = quote?.price ?? fundamental.priceAtRefresh;
-  if (price === null || price === undefined || fundamental.eps === null || fundamental.eps === undefined || fundamental.eps <= 0) {
+  const marketCap = positiveNumber(fundamental.marketCap);
+  const netIncome = nonZeroNumber(fundamental.netIncome);
+  if (marketCap !== null && netIncome !== null) {
+    return marketCap / netIncome;
+  }
+  const price = positiveNumber(quote?.price) ?? positiveNumber(fundamental.priceAtRefresh);
+  const eps = nonZeroNumber(fundamental.eps);
+  if (price === null || eps === null) {
     return null;
   }
-  return price / fundamental.eps;
+  return price / eps;
 }
 
 function evaluationFromFundamental(
@@ -150,7 +184,7 @@ function evaluationFromFundamental(
   quote: Quote | undefined,
   supplemental?: StrategyMetricSnapshot
 ): EvaluationSnapshot {
-  const price = quote?.price ?? fundamental.priceAtRefresh;
+  const price = positiveNumber(quote?.price) ?? positiveNumber(fundamental.priceAtRefresh);
   const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
     ...supplemental?.metrics,
     price,
@@ -199,24 +233,34 @@ function median(values: Array<number | null | undefined>) {
   return valid.length % 2 ? valid[middle] : (valid[middle - 1] + valid[middle]) / 2;
 }
 
-function positiveMedian(values: Array<number | null | undefined>) {
-  return median(values.filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value) && value > 0));
-}
-
 function industryGroupKey(snapshot: EvaluationSnapshot) {
   return `${snapshot.market}:${snapshot.industry || "Unclassified"}`;
+}
+
+function isIndustryMedianEligible(snapshot: EvaluationSnapshot) {
+  const industry = snapshot.industry.trim();
+  const per = finiteNumber(snapshot.metrics.companyPer);
+  const roe = finiteNumber(snapshot.metrics.companyRoe);
+  return (
+    Boolean(industry && industry !== "Unclassified") &&
+    per !== null &&
+    roe !== null
+  );
 }
 
 function universeIndustryMetrics(snapshots: EvaluationSnapshot[]) {
   const groups = new Map<string, EvaluationSnapshot[]>();
   snapshots.forEach((snapshot) => {
+    if (!isIndustryMedianEligible(snapshot)) {
+      return;
+    }
     const key = industryGroupKey(snapshot);
     groups.set(key, [...(groups.get(key) || []), snapshot]);
   });
   const metrics = new Map<string, { per: number | null; roe: number | null; count: number }>();
   groups.forEach((items, key) => {
     metrics.set(key, {
-      per: positiveMedian(items.map((item) => item.metrics.companyPer)),
+      per: median(items.map((item) => item.metrics.companyPer)),
       roe: median(items.map((item) => item.metrics.companyRoe)),
       count: items.length
     });
@@ -226,6 +270,11 @@ function universeIndustryMetrics(snapshots: EvaluationSnapshot[]) {
 
 function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefinition, industryMetrics: Map<string, { per: number | null; roe: number | null; count: number }>) {
   const industry = industryMetrics.get(industryGroupKey(snapshot));
+  if (strategyUsesIndustryMedians(strategy)) {
+    if (!industry || industry.count < INDUSTRY_MEDIAN_MIN_COMPANIES || !isIndustryMedianEligible(snapshot)) {
+      return null;
+    }
+  }
   const metrics = {
     ...snapshot.metrics,
     price: snapshot.metrics.price ?? snapshot.price,
