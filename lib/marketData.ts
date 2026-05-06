@@ -4,6 +4,7 @@ import { supabaseAdmin } from "./supabaseAdmin";
 import { getUpbitKrwSymbols, isUpbitKrwSymbol } from "./upbitMarkets";
 import type {
   ChartPoint,
+  FinancialFundamentalSnapshot,
   FinancialRatioRow,
   FinancialStatement,
   FinancialStatementMappingCandidate,
@@ -11,6 +12,7 @@ import type {
   MarketMoverRow,
   MarketPageResponse,
   Quote,
+  StrategyMarket,
   SymbolDetailResponse,
   ValuationHistoryPoint
 } from "./types";
@@ -2024,6 +2026,74 @@ function benchmarkComparisonRows(ratioRows: FinancialRatioRow[], analytics: Benc
       industryAverage: formatExpectedReturn(expectedMonthlyReturnFromBeta(analytics.industryFullPeriodBeta))
     }
   ];
+}
+
+export async function buildFinancialFundamentalFromSources(
+  symbol: string,
+  market: Exclude<StrategyMarket, "crypto">,
+  quote: Quote | null = null
+): Promise<FinancialFundamentalSnapshot | null> {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized || isCryptoSymbol(normalized)) {
+    return null;
+  }
+  const summary = await fetchYahooSummary(normalized);
+  const profile = {
+    ...((summary.assetProfile || {}) as Record<string, unknown>),
+    ...((summary.summaryProfile || {}) as Record<string, unknown>)
+  };
+  const priceModule = (summary.price || {}) as Record<string, unknown>;
+  const resolvedProfile = fallbackProfile(normalized, profile, priceModule);
+  const summaryPrice = numberOrNull(rawValue(priceModule.regularMarketPrice));
+  const marketPrice = quote?.price ?? summaryPrice;
+  let source = "yahoo_summary";
+  let fiscalYear: number | null = null;
+  let company = ratioValues(summary);
+  let netIncome: number | null = null;
+  let averageEquity: number | null = null;
+
+  if (isKoreaSymbol(normalized)) {
+    const koreaFinancial = await koreaOpenDartFinancial(normalized, marketPrice);
+    if (koreaFinancial) {
+      source = "opendart_monthly_cache";
+      const latest = koreaFinancial.ratioHistory?.[0];
+      fiscalYear = latest?.fiscalYear ?? null;
+      company = mergeRatioValues(company, koreaFinancial.ratioValues ?? periodToRatioValues(latest));
+    }
+  } else {
+    const facts = await fetchSecCompanyFacts(normalized);
+    const periods = secPeriods(facts);
+    const latest = periods[0];
+    if (latest) {
+      source = "sec_company_facts";
+      fiscalYear = latest.fy;
+      const previousFiscalYear = periods[1]?.fy ?? null;
+      const secCompany = secRatioValuesForYear(facts, latest.fy, previousFiscalYear, marketPrice);
+      company = mergeRatioValues(company, secCompany);
+      netIncome = secValue(facts, SEC_FACT_FIELDS.net_income, latest.fy);
+      const equity = secValue(facts, SEC_FACT_FIELDS.total_equity, latest.fy);
+      const previousEquity = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.total_equity, previousFiscalYear) : null;
+      averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
+    }
+  }
+
+  const eps = company.eps ?? (company.per !== null && company.per !== 0 && marketPrice !== null ? marketPrice / company.per : null);
+  return {
+    symbol: normalized,
+    market,
+    name: resolvedProfile.name || quote?.name || normalized,
+    sector: resolvedProfile.sector || quote?.sector || "",
+    industry: resolvedProfile.industry || quote?.industry || "",
+    currency: quote?.currency || String(priceModule.currency || (isKoreaSymbol(normalized) ? "KRW" : "USD")).toUpperCase(),
+    fiscalYear,
+    eps,
+    roePct: company.roe === null || company.roe === undefined ? null : company.roe * 100,
+    netIncome,
+    averageEquity,
+    priceAtRefresh: marketPrice,
+    source,
+    refreshedAt: new Date().toISOString()
+  };
 }
 
 function financialStatementNotes(symbol: string, koreaFinancial: KoreaFinancialPayload | null, secStatements: { income: FinancialStatement; balance: FinancialStatement; cashflow: FinancialStatement } | null) {

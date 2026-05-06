@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminRecord } from "@/lib/admin";
-import { refreshStrategyMetricCache } from "@/lib/strategyMetricCache";
+import { refreshFinancialFundamentalsCache } from "@/lib/financialFundamentalsCache";
 import type { StrategyMarket } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -59,9 +59,9 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
   try {
     await requireRefreshAccess(request);
     const params = request.nextUrl.searchParams;
-    const result = await refreshStrategyMetricCache({
+    const result = await refreshFinancialFundamentalsCache({
       markets: parseMarkets(body.markets ?? body.market ?? params.get("market")),
-      limit: Number(body.limit ?? params.get("limit") ?? 25),
+      limit: Number(body.limit ?? params.get("limit") ?? 50),
       force: body.force === true || params.get("force") === "true"
     });
     return NextResponse.json({ ok: true, ...result });

@@ -1,7 +1,15 @@
 import crypto from "node:crypto";
+import {
+  financialFundamentalFresh,
+  readFinancialFundamentalsCache,
+  STRATEGY_QUOTE_CACHE_MAX_AGE_MS
+} from "./financialFundamentalsCache";
+import { getCachedMarketQuotes } from "./prices";
 import { defaultStrategyCondition, strategyMetricLabel, STRATEGY_METRICS, STRATEGY_OPERATORS } from "./strategyConfig";
 import { getStrategyUniverse, readStrategyMetricCache, strategyMetricSnapshotFresh } from "./strategyMetricCache";
 import type {
+  FinancialFundamentalSnapshot,
+  Quote,
   StrategyCondition,
   StrategyDefinition,
   StrategyEvaluation,
@@ -117,6 +125,71 @@ function conditionReason(condition: StrategyCondition, metrics: Partial<Record<S
   return `${leftLabel} ${condition.operator} ${rightLabel} (${left ?? "N/A"} vs ${right ?? "N/A"})`;
 }
 
+type EvaluationSnapshot = {
+  symbol: string;
+  market: StrategyMarket;
+  name: string;
+  industry: string;
+  price: number | null;
+  changePct: number | null;
+  metrics: Partial<Record<StrategyMetricKey, number | null>>;
+  fresh: boolean;
+  refreshedAt: string;
+};
+
+function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, quote: Quote | undefined) {
+  const price = quote?.price ?? fundamental.priceAtRefresh;
+  if (price === null || price === undefined || fundamental.eps === null || fundamental.eps === undefined || fundamental.eps <= 0) {
+    return null;
+  }
+  return price / fundamental.eps;
+}
+
+function evaluationFromFundamental(
+  fundamental: FinancialFundamentalSnapshot,
+  quote: Quote | undefined,
+  supplemental?: StrategyMetricSnapshot
+): EvaluationSnapshot {
+  const price = quote?.price ?? fundamental.priceAtRefresh;
+  const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
+    ...supplemental?.metrics,
+    price,
+    changePct: quote?.changePct ?? supplemental?.changePct ?? null,
+    companyEps: fundamental.eps,
+    companyPer: companyPerFromFundamental(fundamental, quote),
+    companyRoe: fundamental.roePct
+  };
+  return {
+    symbol: fundamental.symbol,
+    market: fundamental.market,
+    name: fundamental.name || supplemental?.name || fundamental.symbol,
+    industry: fundamental.industry || fundamental.sector || supplemental?.industry || supplemental?.sector || "Unclassified",
+    price,
+    changePct: quote?.changePct ?? supplemental?.changePct ?? null,
+    metrics,
+    fresh: financialFundamentalFresh(fundamental),
+    refreshedAt: fundamental.refreshedAt
+  };
+}
+
+function evaluationFromSupplemental(snapshot: StrategyMetricSnapshot): EvaluationSnapshot {
+  return {
+    symbol: snapshot.symbol,
+    market: snapshot.market,
+    name: snapshot.name || snapshot.symbol,
+    industry: snapshot.industry || snapshot.sector || "Unclassified",
+    price: snapshot.price,
+    changePct: snapshot.changePct,
+    metrics: {
+      ...snapshot.metrics,
+      price: snapshot.metrics.price ?? snapshot.price,
+      changePct: snapshot.metrics.changePct ?? snapshot.changePct
+    },
+    fresh: strategyMetricSnapshotFresh(snapshot),
+    refreshedAt: snapshot.refreshedAt
+  };
+}
+
 function median(values: Array<number | null | undefined>) {
   const valid = values.filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value)).sort((a, b) => a - b);
   if (!valid.length) {
@@ -130,12 +203,12 @@ function positiveMedian(values: Array<number | null | undefined>) {
   return median(values.filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value) && value > 0));
 }
 
-function industryGroupKey(snapshot: StrategyMetricSnapshot) {
-  return `${snapshot.market}:${snapshot.industry || snapshot.sector || "Unclassified"}`;
+function industryGroupKey(snapshot: EvaluationSnapshot) {
+  return `${snapshot.market}:${snapshot.industry || "Unclassified"}`;
 }
 
-function universeIndustryMetrics(snapshots: StrategyMetricSnapshot[]) {
-  const groups = new Map<string, StrategyMetricSnapshot[]>();
+function universeIndustryMetrics(snapshots: EvaluationSnapshot[]) {
+  const groups = new Map<string, EvaluationSnapshot[]>();
   snapshots.forEach((snapshot) => {
     const key = industryGroupKey(snapshot);
     groups.set(key, [...(groups.get(key) || []), snapshot]);
@@ -151,7 +224,7 @@ function universeIndustryMetrics(snapshots: StrategyMetricSnapshot[]) {
   return metrics;
 }
 
-function evaluateSnapshot(snapshot: StrategyMetricSnapshot, strategy: StrategyDefinition, industryMetrics: Map<string, { per: number | null; roe: number | null; count: number }>) {
+function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefinition, industryMetrics: Map<string, { per: number | null; roe: number | null; count: number }>) {
   const industry = industryMetrics.get(industryGroupKey(snapshot));
   const metrics = {
     ...snapshot.metrics,
@@ -181,16 +254,37 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
   const strategy = normalizeStrategy(input);
   const universeByMarket = await Promise.all(strategy.markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
   const symbols = universeByMarket.flatMap((item) => item.symbols);
-  const cache = await readStrategyMetricCache(symbols, strategy.markets);
+  const [fundamentalCache, supplementalCache, quoteCache] = await Promise.all([
+    readFinancialFundamentalsCache(symbols, strategy.markets),
+    readStrategyMetricCache(symbols, strategy.markets),
+    getCachedMarketQuotes(symbols, { maxAgeMs: STRATEGY_QUOTE_CACHE_MAX_AGE_MS })
+  ]);
   const matches: StrategyEvaluation["matches"] = [];
   const errors: StrategyEvaluation["errors"] = [];
-  const cachedSnapshots = Array.from(cache.values()).filter((snapshot) => strategy.markets.includes(snapshot.market));
+  const evaluationSnapshots = new Map<string, EvaluationSnapshot>();
+
+  for (const fundamental of fundamentalCache.values()) {
+    const key = `${fundamental.market}:${fundamental.symbol}`;
+    evaluationSnapshots.set(
+      key,
+      evaluationFromFundamental(fundamental, quoteCache.get(fundamental.symbol), supplementalCache.get(key))
+    );
+  }
+
+  for (const supplemental of supplementalCache.values()) {
+    const key = `${supplemental.market}:${supplemental.symbol}`;
+    if (!evaluationSnapshots.has(key) && supplemental.market === "crypto") {
+      evaluationSnapshots.set(key, evaluationFromSupplemental(supplemental));
+    }
+  }
+
+  const cachedSnapshots = Array.from(evaluationSnapshots.values()).filter((snapshot) => strategy.markets.includes(snapshot.market));
   const industryMetrics = universeIndustryMetrics(cachedSnapshots);
 
   universeByMarket.forEach(({ market, symbols: marketSymbols }) => {
     let missingCount = 0;
     marketSymbols.forEach((symbol) => {
-      const snapshot = cache.get(`${market}:${symbol}`);
+      const snapshot = evaluationSnapshots.get(`${market}:${symbol}`);
       if (!snapshot) {
         missingCount += 1;
         return;
@@ -201,7 +295,7 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
       }
     });
     if (missingCount) {
-      errors.push({ symbol: `${market}:cache`, message: `${missingCount} symbols do not have cached strategy metrics yet.` });
+      errors.push({ symbol: `${market}:cache`, message: `${missingCount} symbols do not have cached fundamentals or strategy metrics yet.` });
     }
   });
 
@@ -218,7 +312,7 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
     errors,
     universeCount: universeByMarket.reduce((sum, item) => sum + item.symbols.length, 0),
     cachedCount: cachedSnapshots.length,
-    staleCount: cachedSnapshots.filter((snapshot) => !strategyMetricSnapshotFresh(snapshot)).length,
+    staleCount: cachedSnapshots.filter((snapshot) => !snapshot.fresh).length,
     cacheRefreshedAt: refreshedTimes.length ? new Date(Math.max(...refreshedTimes)).toISOString() : undefined
   };
 }

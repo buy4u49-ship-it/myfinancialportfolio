@@ -2664,7 +2664,7 @@ function StrategiesPanel({
       setEvaluation(data);
       const coverage =
         data.universeCount && data.cachedCount !== undefined
-          ? ` Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()} strategy metrics${
+          ? ` Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()} fundamentals/metrics${
               data.staleCount ? `, ${data.staleCount.toLocaleString()} stale` : ""
             }.`
           : "";
@@ -2718,11 +2718,11 @@ function StrategiesPanel({
         await fetch("/api/strategy-metrics/refresh", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ markets: draft.markets, limit: 25 })
+          body: JSON.stringify({ markets: draft.markets, limit: 50 })
         })
       );
       setStrategyStatus(
-        `Refreshed ${data.refreshedCount.toLocaleString()} strategy metrics. Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()}${
+        `Refreshed ${data.refreshedCount.toLocaleString()} fundamentals. Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()}${
           data.staleCount ? `, ${data.staleCount.toLocaleString()} stale` : ""
         }${data.errors.length ? `. ${data.errors.length} refresh errors` : ""}.`
       );
@@ -2767,7 +2767,7 @@ function StrategiesPanel({
           </button>
           {isAdmin ? (
             <button className="ghost-button" disabled={busy || strategyBusy || cacheBusy || !draft.markets.length} onClick={refreshMetricCache}>
-              {cacheBusy ? "Warming..." : "Warm metric cache"}
+              {cacheBusy ? "Warming..." : "Warm fundamentals"}
             </button>
           ) : null}
           <button className="primary-button" disabled={busy || strategyBusy || !draft.name.trim()} onClick={saveDraft}>
@@ -2894,7 +2894,7 @@ function StrategiesPanel({
           </div>
           {evaluation?.errors.length ? (
             <p className="muted strategy-error-note">
-              Some symbols are not in the strategy metric cache yet. The background refresh job will keep filling them.
+              Some symbols are not in the fundamentals cache yet. The background refresh job will keep filling them.
             </p>
           ) : null}
         </section>

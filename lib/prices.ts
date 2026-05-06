@@ -47,7 +47,7 @@ function payloadNumber(payload: unknown, ...keys: string[]) {
   return null;
 }
 
-export async function getCachedMarketQuotes(symbols: string[]) {
+export async function getCachedMarketQuotes(symbols: string[], options: { maxAgeMs?: number } = {}) {
   const normalizedSymbols = Array.from(new Set(symbols.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)));
   if (!normalizedSymbols.length) {
     return new Map<string, Quote>();
@@ -83,7 +83,7 @@ export async function getCachedMarketQuotes(symbols: string[]) {
   for (const row of data) {
     const symbol = String(row.symbol || "").toUpperCase();
     const updatedAt = String(row.updated_at || "");
-    if (!symbol || quoteAgeMs(updatedAt) > MARKET_QUOTE_CACHE_MAX_AGE_MS) {
+    if (!symbol || quoteAgeMs(updatedAt) > (options.maxAgeMs ?? MARKET_QUOTE_CACHE_MAX_AGE_MS)) {
       continue;
     }
     const price = numberOrNull(row.price);
@@ -242,9 +242,13 @@ export async function getQuote(symbol: string): Promise<Quote> {
     return emptyQuote(symbol);
   }
 
+  const cached = await getCachedMarketQuotes([normalized]);
+  if (cached.has(normalized)) {
+    return cached.get(normalized)!;
+  }
+
   if (isCryptoSymbol(normalized) && normalized.endsWith("-KRW")) {
-    const cached = await getCachedMarketQuotes([normalized]);
-    return cached.get(normalized) || fetchUpbitKrwQuote(normalized);
+    return fetchUpbitKrwQuote(normalized);
   }
 
   return fetchYahooQuote(normalized);

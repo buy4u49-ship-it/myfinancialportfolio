@@ -11,6 +11,7 @@ export const STRATEGY_METRICS: Array<{ key: StrategyMetricKey; label: string; ki
   { key: "changePct", label: "Daily Change", kind: "percent" },
   { key: "oneMonthReturnPct", label: "1M Return", kind: "percent" },
   { key: "oneMonthVolatilityPct", label: "1M Volatility", kind: "percent" },
+  { key: "companyEps", label: "Company EPS", kind: "ratio" },
   { key: "companyPer", label: "Company PER", kind: "ratio" },
   { key: "industryPer", label: "Industry Median PER", kind: "ratio" },
   { key: "companyRoe", label: "Company ROE", kind: "percent" },

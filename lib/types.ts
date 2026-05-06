@@ -276,6 +276,7 @@ export type StrategyMetricKey =
   | "changePct"
   | "oneMonthReturnPct"
   | "oneMonthVolatilityPct"
+  | "companyEps"
   | "companyPer"
   | "industryPer"
   | "companyRoe"
@@ -346,6 +347,23 @@ export type StrategyMetricSnapshot = {
   price: number | null;
   changePct: number | null;
   metrics: Partial<Record<StrategyMetricKey, number | null>>;
+  source: string;
+  refreshedAt: string;
+};
+
+export type FinancialFundamentalSnapshot = {
+  symbol: string;
+  market: StrategyMarket;
+  name: string;
+  sector: string;
+  industry: string;
+  currency: string;
+  fiscalYear: number | null;
+  eps: number | null;
+  roePct: number | null;
+  netIncome: number | null;
+  averageEquity: number | null;
+  priceAtRefresh: number | null;
   source: string;
   refreshedAt: string;
 };

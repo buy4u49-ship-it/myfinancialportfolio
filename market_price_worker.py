@@ -59,6 +59,7 @@ DEFAULT_CRYPTO_SYMBOLS = [
 UPBIT_MARKET_URL = "https://api.upbit.com/v1/market/all?isDetails=false"
 UPBIT_WEBSOCKET_URL = "wss://api.upbit.com/websocket/v1"
 SUPABASE_MARKET_QUOTE_TABLE = "market_quote_cache"
+YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 
 
 def ignore_dead_local_proxy() -> None:
@@ -176,10 +177,10 @@ def supabase_upsert(rows: list[dict[str, object]]) -> None:
         raise RuntimeError(f"Supabase upsert failed ({exc.code}): {detail}") from exc
 
 
-def fetch_json(url: str) -> object:
+def fetch_json(url: str, headers: dict[str, str] | None = None) -> object:
     request = urllib.request.Request(
         url,
-        headers={"accept": "application/json", "User-Agent": "portfolio-price-worker/1.0"},
+        headers={"accept": "application/json", "User-Agent": "portfolio-price-worker/1.0", **(headers or {})},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -213,6 +214,43 @@ def discover_upbit_markets(symbols: list[str]) -> list[str]:
     return sorted(requested & supported)
 
 
+def parse_symbol_list(text: str) -> list[str]:
+    return sorted({item.strip().upper() for item in text.replace("\n", ",").split(",") if item.strip()})
+
+
+def read_symbols_file(path_text: str) -> list[str]:
+    if not path_text:
+        return []
+    path = Path(path_text)
+    if not path.exists():
+        return []
+    return parse_symbol_list(path.read_text(encoding="utf-8"))
+
+
+def load_stock_symbols(args: argparse.Namespace) -> list[str]:
+    symbols = parse_symbol_list(",".join(args.stock_symbols or []))
+    symbols.extend(parse_symbol_list(os.environ.get("PRICE_WORKER_STOCK_SYMBOLS", "")))
+    symbols.extend(read_symbols_file(args.stock_symbols_file or os.environ.get("PRICE_WORKER_STOCK_SYMBOLS_FILE", "")))
+    universe_url = args.universe_url or os.environ.get("STRATEGY_UNIVERSE_URL", "")
+    if universe_url:
+        try:
+            secret = args.universe_secret or os.environ.get("STRATEGY_UNIVERSE_SECRET", "") or os.environ.get("CRON_SECRET", "")
+            headers = {"Authorization": f"Bearer {secret}"} if secret else {}
+            payload = fetch_json(universe_url, headers=headers)
+            if isinstance(payload, dict):
+                raw_symbols = payload.get("symbols")
+                if isinstance(raw_symbols, list):
+                    symbols.extend(str(symbol) for symbol in raw_symbols)
+                raw_markets = payload.get("markets")
+                if isinstance(raw_markets, list):
+                    for market in raw_markets:
+                        if isinstance(market, dict) and isinstance(market.get("symbols"), list):
+                            symbols.extend(str(symbol) for symbol in market["symbols"])
+        except Exception as exc:
+            print(f"{utc_now_iso()} strategy universe load failed: {exc}", flush=True)
+    return sorted({symbol.strip().upper() for symbol in symbols if symbol.strip() and "-" not in symbol})
+
+
 def row_from_upbit_ticker(message: dict[str, object]) -> dict[str, object] | None:
     market = str(message.get("code") or "").upper()
     if not market.startswith("KRW-"):
@@ -240,6 +278,68 @@ def row_from_upbit_ticker(message: dict[str, object]) -> dict[str, object] | Non
         "payload": message,
         "updated_at": utc_now_iso(),
     }
+
+
+def float_or_none(value: object) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def row_from_yahoo_quote(item: dict[str, object]) -> dict[str, object] | None:
+    symbol = str(item.get("symbol") or "").upper().strip()
+    if not symbol:
+        return None
+    price = float_or_none(item.get("regularMarketPrice") or item.get("postMarketPrice") or item.get("preMarketPrice"))
+    previous_close = float_or_none(item.get("regularMarketPreviousClose"))
+    change_pct = float_or_none(item.get("regularMarketChangePercent"))
+    return {
+      "symbol": symbol,
+      "provider_symbol": symbol,
+      "price": price,
+      "previous_close": previous_close,
+      "change_pct": change_pct,
+      "currency": str(item.get("currency") or "").upper(),
+      "exchange": str(item.get("fullExchangeName") or item.get("exchange") or "Yahoo Quote"),
+      "source": "yahoo_quote_worker",
+      "payload": item,
+      "updated_at": utc_now_iso(),
+    }
+
+
+def chunked(items: list[str], size: int) -> list[list[str]]:
+    return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+async def poll_yahoo_quotes(symbols: list[str], interval: float, batch_size: int) -> None:
+    if not symbols:
+        print(f"{utc_now_iso()} stock quote polling disabled", flush=True)
+        return
+    print(f"{utc_now_iso()} polling {len(symbols)} stock quotes every {interval}s", flush=True)
+    batches = chunked(symbols, max(1, batch_size))
+    while True:
+        updated = 0
+        for batch in batches:
+            try:
+                query = urllib.parse.urlencode({"symbols": ",".join(batch)})
+                payload = fetch_json(f"{YAHOO_QUOTE_URL}?{query}")
+                results = []
+                if isinstance(payload, dict):
+                    quote_response = payload.get("quoteResponse")
+                    if isinstance(quote_response, dict) and isinstance(quote_response.get("result"), list):
+                        results = quote_response["result"]
+                rows = [row for row in (row_from_yahoo_quote(item) for item in results if isinstance(item, dict)) if row]
+                if rows:
+                    supabase_upsert(rows)
+                    updated += len(rows)
+            except Exception as exc:
+                print(f"{utc_now_iso()} yahoo quote batch failed: {exc}", flush=True)
+            await asyncio.sleep(0.3)
+        print(f"{utc_now_iso()} upserted {updated} stock quotes", flush=True)
+        await asyncio.sleep(interval)
 
 
 async def flush_quotes(latest_rows: dict[str, dict[str, object]], interval: float) -> None:
@@ -284,18 +384,32 @@ async def stream_upbit(markets: list[str], flush_interval: float, reconnect_dela
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stream Upbit crypto quotes into Supabase.")
     parser.add_argument("--symbols", nargs="*", default=DEFAULT_CRYPTO_SYMBOLS, help="App symbols such as BTC-KRW ETH-KRW.")
+    parser.add_argument("--stock-symbols", nargs="*", default=[], help="Stock symbols such as AAPL MSFT 005930.KS.")
+    parser.add_argument("--stock-symbols-file", default="", help="Optional file with comma/newline separated stock symbols.")
+    parser.add_argument("--stock-poll-interval", type=float, default=float(os.environ.get("PRICE_WORKER_STOCK_POLL_INTERVAL", "300")), help="Seconds between full stock quote polling passes.")
+    parser.add_argument("--stock-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_STOCK_BATCH_SIZE", "80")), help="Yahoo quote symbols per request.")
+    parser.add_argument("--universe-url", default="", help="Optional URL returning JSON strategy universe symbols.")
+    parser.add_argument("--universe-secret", default="", help="Bearer secret for the strategy universe URL.")
     parser.add_argument("--flush-interval", type=float, default=1.5, help="Seconds between Supabase quote upserts.")
     parser.add_argument("--reconnect-delay", type=float, default=5.0, help="Seconds to wait before reconnecting.")
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    start_health_server()
+async def run_worker(args: argparse.Namespace) -> None:
     markets = discover_upbit_markets(args.symbols)
     if not markets:
         raise SystemExit("No requested symbols are supported by Upbit KRW markets.")
-    asyncio.run(stream_upbit(markets, args.flush_interval, args.reconnect_delay))
+    stock_symbols = load_stock_symbols(args)
+    await asyncio.gather(
+        stream_upbit(markets, args.flush_interval, args.reconnect_delay),
+        poll_yahoo_quotes(stock_symbols, args.stock_poll_interval, args.stock_batch_size),
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    start_health_server()
+    asyncio.run(run_worker(args))
 
 
 if __name__ == "__main__":
