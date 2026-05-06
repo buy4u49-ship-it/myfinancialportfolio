@@ -3,7 +3,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdminRecord } from "@/lib/admin";
 import { buildPortfolioResponse } from "@/lib/portfolio";
 import { inferCurrency, normalizeSymbol } from "@/lib/symbols";
-import { assertEmailAvailable, getUserRecord, listUserRecords, saveUserRecord } from "@/lib/userStore";
+import {
+  assertEmailAvailable,
+  deleteUserRecord,
+  getUserRecord,
+  listUserRecords,
+  saveUserRecord,
+  validateAccountProfile
+} from "@/lib/userStore";
 import type { AdminManagedPosition, AdminResponse, AdminUserSummary, PortfolioTransaction, Position, UserRecord } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -177,7 +184,7 @@ export async function GET(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    await requireAdminRecord(request);
+    const adminRecord = await requireAdminRecord(request);
     const body = (await request.json()) as Record<string, unknown>;
     const targetUsername = String(body.targetUsername || "");
     const target = await getUserRecord(targetUsername);
@@ -185,11 +192,21 @@ export async function PATCH(request: NextRequest) {
       throw new Error("Target user not found.");
     }
     const action = String(body.action || "");
-    if (action === "update_profile") {
-      await assertEmailAvailable(String(body.email || ""), target.username);
+    if (action === "delete_user") {
+      if (target.username === adminRecord.username) {
+        throw new Error("You cannot delete the currently signed-in admin account.");
+      }
+      await deleteUserRecord(target.username);
+      return NextResponse.json(await buildAdminResponse(null));
+    } else if (action === "update_profile") {
+      const profile = validateAccountProfile({
+        displayName: String(body.displayName || ""),
+        email: String(body.email || "")
+      });
+      await assertEmailAvailable(profile.email, target.username);
       target.profile = {
-        display_name: String(body.displayName || target.profile?.display_name || target.username).trim(),
-        email: String(body.email || "").trim()
+        display_name: profile.displayName,
+        email: profile.email
       };
     } else if (action === "add_position") {
       addPosition(target, body);
