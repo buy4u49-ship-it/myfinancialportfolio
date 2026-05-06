@@ -11,7 +11,7 @@ import {
   updateProfile
 } from "@/lib/portfolio";
 import { deletePushToken, registerPushToken } from "@/lib/push";
-import { assertEmailAvailable, getUserRecord, saveUserRecord } from "@/lib/userStore";
+import { assertEmailAvailable, getUserRecord, saveUserRecord, validateAccountProfile } from "@/lib/userStore";
 import type { TradeInput } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -67,10 +67,14 @@ export async function PATCH(request: NextRequest) {
     } else if (action === "delete_strategy") {
       deleteStrategy(record, String(body.strategyId || ""));
     } else if (action === "update_profile") {
-      await assertEmailAvailable(String(body.email || ""), record.username);
-      updateProfile(record, {
+      const profile = validateAccountProfile({
         displayName: String(body.displayName || ""),
         email: String(body.email || "")
+      });
+      await assertEmailAvailable(profile.email, record.username);
+      updateProfile(record, {
+        displayName: profile.displayName,
+        email: profile.email
       });
     } else {
       throw new Error("Unsupported portfolio action.");

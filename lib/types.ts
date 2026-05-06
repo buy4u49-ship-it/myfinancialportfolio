@@ -9,6 +9,11 @@ export type UserRecord = {
   };
   password_salt?: string;
   password_hash?: string;
+  password_reset?: {
+    token_hash: string;
+    created_at: string;
+    expires_at: string;
+  };
   portfolio?: Position[];
   transactions?: PortfolioTransaction[];
   alerts?: PriceAlert[];

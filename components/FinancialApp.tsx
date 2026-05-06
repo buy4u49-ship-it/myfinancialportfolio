@@ -48,6 +48,9 @@ type PageKey = "coin" | "us" | "korea" | "symbol" | "my" | "admin";
 type TradeMode = "BUY" | "SELL";
 type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type MyTab = "portfolio" | "alerts" | "strategies" | "account";
+type AuthMode = "login" | "register";
+type AuthCredentials = { username: string; password: string; displayName: string; email: string };
+type RecoveryDraft = { email: string; token: string; newPassword: string };
 type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
 type MappingOption = { statement: string; lineKey: string; label: string };
 
@@ -247,7 +250,7 @@ export default function FinancialApp() {
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [error, setError] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [activeTrade, setActiveTrade] = useState<{ symbol: string; mode: TradeMode } | null>(null);
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
@@ -259,12 +262,18 @@ export default function FinancialApp() {
   const [alertDirection, setAlertDirection] = useState<"above" | "below">("above");
   const [alertTarget, setAlertTarget] = useState("");
   const [profileDraft, setProfileDraft] = useState({ displayName: "", email: "" });
-  const [credentials, setCredentials] = useState({
+  const [credentials, setCredentials] = useState<AuthCredentials>({
     username: "",
     password: "",
     displayName: "",
     email: ""
   });
+  const [recoveryDraft, setRecoveryDraft] = useState<RecoveryDraft>({
+    email: "",
+    token: "",
+    newPassword: ""
+  });
+  const [recoveryMessage, setRecoveryMessage] = useState("");
   const liveRefreshInFlightRef = useRef(false);
 
   async function loadSession() {
@@ -451,8 +460,52 @@ export default function FinancialApp() {
     await submitAuthRequest(authMode);
   }
 
-  async function createAccountFromSidebar() {
-    await submitAuthRequest("register");
+  async function submitRecovery(action: "find_username" | "request_password_reset" | "reset_password") {
+    setBusy(true);
+    setError("");
+    setRecoveryMessage("");
+    try {
+      const payload: Record<string, string> = {
+        action,
+        email: recoveryDraft.email
+      };
+      if (action === "reset_password") {
+        payload.token = recoveryDraft.token;
+        payload.password = recoveryDraft.newPassword;
+      }
+      const data = await parseJsonResponse<{
+        username?: string;
+        displayName?: string;
+        resetToken?: string;
+        user?: User;
+      }>(
+        await fetch("/api/auth/recovery", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        })
+      );
+      if (action === "find_username") {
+        setRecoveryMessage(`ID: ${data.username || "N/A"}${data.displayName ? ` (${data.displayName})` : ""}`);
+      } else if (action === "request_password_reset") {
+        setRecoveryDraft((prev) => ({ ...prev, token: data.resetToken || prev.token }));
+        setRecoveryMessage(
+          data.resetToken
+            ? `Reset code: ${data.resetToken}`
+            : "Password reset code was created. Check your email."
+        );
+      } else if (data.user) {
+        setUser(data.user);
+        setCredentials({ username: "", password: "", displayName: "", email: "" });
+        setRecoveryDraft({ email: "", token: "", newPassword: "" });
+        setRecoveryMessage("");
+        await loadPortfolio(true);
+      }
+    } catch (err) {
+      setRecoveryMessage(err instanceof Error ? err.message : "Account recovery failed.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function logout() {
@@ -595,7 +648,7 @@ export default function FinancialApp() {
         })
       );
       setAdminData(data);
-      setAdminSelectedUsername(data.selectedUsername || adminSelectedUsername);
+      setAdminSelectedUsername(data.selectedUsername || "");
       return data;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Admin update failed.");
@@ -674,6 +727,8 @@ export default function FinancialApp() {
           rollingWindow={rollingWindow}
           authMode={authMode}
           credentials={credentials}
+          recoveryDraft={recoveryDraft}
+          recoveryMessage={recoveryMessage}
           busy={busy}
           settingsBusy={settingsBusy}
           onSymbolDraft={setSymbolDraft}
@@ -681,10 +736,13 @@ export default function FinancialApp() {
           onHistoryYears={setHistoryYears}
           onRollingWindow={setRollingWindow}
           onAuthMode={setAuthMode}
-        onCredentials={setCredentials}
-        onSubmitAuth={submitAuth}
-        onCreateAccount={createAccountFromSidebar}
-        onConfirmSettings={confirmSettings}
+          onCredentials={setCredentials}
+          onRecoveryDraft={setRecoveryDraft}
+          onSubmitAuth={submitAuth}
+          onFindUsername={() => submitRecovery("find_username")}
+          onRequestPasswordReset={() => submitRecovery("request_password_reset")}
+          onResetPassword={() => submitRecovery("reset_password")}
+          onConfirmSettings={confirmSettings}
           onOpenSymbol={openSymbol}
           onGoMyPage={() => setPage("my")}
           onLogout={logout}
@@ -815,9 +873,15 @@ export default function FinancialApp() {
             <AuthPanel
               mode={authMode}
               credentials={credentials}
+              recoveryDraft={recoveryDraft}
+              recoveryMessage={recoveryMessage}
               busy={busy}
               onMode={setAuthMode}
               onCredentials={setCredentials}
+              onRecoveryDraft={setRecoveryDraft}
+              onFindUsername={() => submitRecovery("find_username")}
+              onRequestPasswordReset={() => submitRecovery("request_password_reset")}
+              onResetPassword={() => submitRecovery("reset_password")}
               onSubmit={submitAuth}
             />
           )
@@ -836,6 +900,8 @@ function Sidebar({
   rollingWindow,
   authMode,
   credentials,
+  recoveryDraft,
+  recoveryMessage,
   busy,
   settingsBusy,
   onSymbolDraft,
@@ -844,8 +910,11 @@ function Sidebar({
   onRollingWindow,
   onAuthMode,
   onCredentials,
+  onRecoveryDraft,
   onSubmitAuth,
-  onCreateAccount,
+  onFindUsername,
+  onRequestPasswordReset,
+  onResetPassword,
   onConfirmSettings,
   onOpenSymbol,
   onGoMyPage,
@@ -857,18 +926,23 @@ function Sidebar({
   benchmark: string;
   historyYears: number;
   rollingWindow: number;
-  authMode: "login" | "register";
-  credentials: { username: string; password: string; displayName: string; email: string };
+  authMode: AuthMode;
+  credentials: AuthCredentials;
+  recoveryDraft: RecoveryDraft;
+  recoveryMessage: string;
   busy: boolean;
   settingsBusy: boolean;
   onSymbolDraft: (value: string) => void;
   onBenchmark: (value: string) => void;
   onHistoryYears: (value: number) => void;
   onRollingWindow: (value: number) => void;
-  onAuthMode: (mode: "login" | "register") => void;
-  onCredentials: (value: { username: string; password: string; displayName: string; email: string }) => void;
+  onAuthMode: (mode: AuthMode) => void;
+  onCredentials: (value: AuthCredentials) => void;
+  onRecoveryDraft: (value: RecoveryDraft) => void;
   onSubmitAuth: (event: FormEvent<HTMLFormElement>) => void;
-  onCreateAccount: () => void;
+  onFindUsername: () => void;
+  onRequestPasswordReset: () => void;
+  onResetPassword: () => void;
   onConfirmSettings: () => void;
   onOpenSymbol: (value: string) => void;
   onGoMyPage: () => void;
@@ -918,11 +992,22 @@ function Sidebar({
               <>
                 <label>
                   Display name
-                  <input value={credentials.displayName} onChange={(event) => onCredentials({ ...credentials, displayName: event.target.value })} />
+                  <input
+                    value={credentials.displayName}
+                    onChange={(event) => onCredentials({ ...credentials, displayName: event.target.value })}
+                    autoComplete="nickname"
+                    required
+                  />
                 </label>
                 <label>
                   Email
-                  <input type="email" value={credentials.email} onChange={(event) => onCredentials({ ...credentials, email: event.target.value })} />
+                  <input
+                    type="email"
+                    value={credentials.email}
+                    onChange={(event) => onCredentials({ ...credentials, email: event.target.value })}
+                    autoComplete="email"
+                    required
+                  />
                 </label>
               </>
             ) : null}
@@ -934,7 +1019,7 @@ function Sidebar({
               className="ghost-button"
               onClick={() => {
                 if (authMode === "login") {
-                  onCreateAccount();
+                  onAuthMode("register");
                 } else {
                   onAuthMode("login");
                 }
@@ -944,6 +1029,17 @@ function Sidebar({
               {authMode === "login" ? "Create account" : "Use existing account"}
             </button>
           </form>
+          {authMode === "login" ? (
+            <RecoveryTools
+              draft={recoveryDraft}
+              message={recoveryMessage}
+              busy={busy}
+              onDraft={onRecoveryDraft}
+              onFindUsername={onFindUsername}
+              onRequestPasswordReset={onRequestPasswordReset}
+              onResetPassword={onResetPassword}
+            />
+          ) : null}
           <button className="ghost-button" onClick={onGoMyPage}>Open My Page</button>
         </section>
       )}
@@ -990,6 +1086,69 @@ function Sidebar({
         </button>
       </section>
     </aside>
+  );
+}
+
+function RecoveryTools({
+  draft,
+  message,
+  busy,
+  onDraft,
+  onFindUsername,
+  onRequestPasswordReset,
+  onResetPassword
+}: {
+  draft: RecoveryDraft;
+  message: string;
+  busy: boolean;
+  onDraft: (value: RecoveryDraft) => void;
+  onFindUsername: () => void;
+  onRequestPasswordReset: () => void;
+  onResetPassword: () => void;
+}) {
+  return (
+    <div className="account-recovery-tools">
+      <label>
+        Recovery email
+        <input
+          type="email"
+          value={draft.email}
+          onChange={(event) => onDraft({ ...draft, email: event.target.value })}
+          autoComplete="email"
+          placeholder="email@example.com"
+        />
+      </label>
+      <div className="trade-buttons recovery-action-row">
+        <button type="button" className="mini-ghost" disabled={busy || !draft.email.trim()} onClick={onFindUsername}>
+          Find ID
+        </button>
+        <button type="button" className="mini-ghost" disabled={busy || !draft.email.trim()} onClick={onRequestPasswordReset}>
+          Reset PW
+        </button>
+      </div>
+      <label>
+        Reset code
+        <input value={draft.token} onChange={(event) => onDraft({ ...draft, token: event.target.value })} autoComplete="one-time-code" />
+      </label>
+      <label>
+        New password
+        <input
+          type="password"
+          value={draft.newPassword}
+          onChange={(event) => onDraft({ ...draft, newPassword: event.target.value })}
+          autoComplete="new-password"
+        />
+      </label>
+      <button
+        type="button"
+        className="ghost-button"
+        disabled={busy || !draft.email.trim() || !draft.token.trim() || !draft.newPassword.trim()}
+        onClick={onResetPassword}
+      >
+        Apply new password
+      </button>
+      {message ? <p className="muted recovery-message">{message}</p> : null}
+    </div>
   );
 }
 
@@ -1070,16 +1229,30 @@ function AdminPage({
                 </label>
                 <label>
                   Display name
-                  <input name="displayName" defaultValue={selected.user.displayName} />
+                  <input name="displayName" defaultValue={selected.user.displayName} required />
                 </label>
                 <label>
                   Email
-                  <input name="email" type="email" defaultValue={selected.user.email} />
+                  <input name="email" type="email" defaultValue={selected.user.email} required />
                 </label>
                 <button className="primary-button" disabled={busy}>
                   Save Account
                 </button>
               </form>
+              <div className="admin-account-actions">
+                <button
+                  type="button"
+                  className="sell-button"
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm(`Delete account "${selected.user.username}" and all saved portfolio data?`)) {
+                      void onPatch({ action: "delete_user" });
+                    }
+                  }}
+                >
+                  Delete Account
+                </button>
+              </div>
             </article>
 
             <article className="panel">
@@ -3087,16 +3260,28 @@ function AccountPanel({
 function AuthPanel({
   mode,
   credentials,
+  recoveryDraft,
+  recoveryMessage,
   busy,
   onMode,
   onCredentials,
+  onRecoveryDraft,
+  onFindUsername,
+  onRequestPasswordReset,
+  onResetPassword,
   onSubmit
 }: {
-  mode: "login" | "register";
-  credentials: { username: string; password: string; displayName: string; email: string };
+  mode: AuthMode;
+  credentials: AuthCredentials;
+  recoveryDraft: RecoveryDraft;
+  recoveryMessage: string;
   busy: boolean;
-  onMode: (mode: "login" | "register") => void;
-  onCredentials: (value: { username: string; password: string; displayName: string; email: string }) => void;
+  onMode: (mode: AuthMode) => void;
+  onCredentials: (value: AuthCredentials) => void;
+  onRecoveryDraft: (value: RecoveryDraft) => void;
+  onFindUsername: () => void;
+  onRequestPasswordReset: () => void;
+  onResetPassword: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   return (
@@ -3130,11 +3315,22 @@ function AuthPanel({
           <>
             <label>
               Display name
-              <input value={credentials.displayName} onChange={(event) => onCredentials({ ...credentials, displayName: event.target.value })} />
+              <input
+                value={credentials.displayName}
+                onChange={(event) => onCredentials({ ...credentials, displayName: event.target.value })}
+                autoComplete="nickname"
+                required
+              />
             </label>
             <label>
               Email
-              <input type="email" value={credentials.email} onChange={(event) => onCredentials({ ...credentials, email: event.target.value })} />
+              <input
+                type="email"
+                value={credentials.email}
+                onChange={(event) => onCredentials({ ...credentials, email: event.target.value })}
+                autoComplete="email"
+                required
+              />
             </label>
           </>
         ) : null}
@@ -3144,6 +3340,17 @@ function AuthPanel({
         <button type="button" className="ghost-button" onClick={() => onMode(mode === "login" ? "register" : "login")}>
           {mode === "login" ? "Create a new account" : "Use existing account"}
         </button>
+        {mode === "login" ? (
+          <RecoveryTools
+            draft={recoveryDraft}
+            message={recoveryMessage}
+            busy={busy}
+            onDraft={onRecoveryDraft}
+            onFindUsername={onFindUsername}
+            onRequestPasswordReset={onRequestPasswordReset}
+            onResetPassword={onResetPassword}
+          />
+        ) : null}
       </form>
     </section>
   );

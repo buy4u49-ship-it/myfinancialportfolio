@@ -7,7 +7,7 @@ import type { FinancialFundamentalSnapshot, StrategyMarket } from "./types";
 
 const FINANCIAL_FUNDAMENTALS_CACHE_TABLE = "financial_fundamentals_cache";
 export const FINANCIAL_FUNDAMENTALS_CACHE_MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000;
-const STRATEGY_QUOTE_MAX_AGE_MS = 3 * 60 * 1000;
+const STRATEGY_QUOTE_MAX_AGE_MS = 15 * 60 * 1000;
 
 type RefreshOptions = {
   markets?: StrategyMarket[];
