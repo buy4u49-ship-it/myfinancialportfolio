@@ -5,6 +5,19 @@ import { filterUpbitKrwSymbols, isUpbitKrwSymbol } from "./upbitMarkets";
 
 const MARKET_QUOTE_TABLE = "market_quote_cache";
 const MARKET_QUOTE_CACHE_MAX_AGE_MS = 90_000;
+const MARKET_QUOTE_QUERY_BATCH_SIZE = 400;
+
+type MarketQuoteCacheRow = {
+  symbol?: unknown;
+  price?: unknown;
+  previous_close?: unknown;
+  change_pct?: unknown;
+  currency?: unknown;
+  exchange?: unknown;
+  source?: unknown;
+  payload?: unknown;
+  updated_at?: unknown;
+};
 
 function numberOrNull(value: unknown) {
   const num = Number(value);
@@ -52,34 +65,34 @@ function payloadNumber(payload: unknown, ...keys: string[]) {
   return null;
 }
 
+function chunked<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
 export async function getCachedMarketQuotes(symbols: string[], options: { maxAgeMs?: number } = {}) {
   const normalizedSymbols = Array.from(new Set(symbols.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)));
   if (!normalizedSymbols.length) {
     return new Map<string, Quote>();
   }
 
-  let data:
-    | Array<{
-        symbol?: unknown;
-        price?: unknown;
-        previous_close?: unknown;
-        change_pct?: unknown;
-        currency?: unknown;
-        exchange?: unknown;
-        source?: unknown;
-        payload?: unknown;
-        updated_at?: unknown;
-      }>
-    | null = null;
+  const data: MarketQuoteCacheRow[] = [];
   try {
-    const response = await supabaseAdmin()
-      .from(MARKET_QUOTE_TABLE)
-      .select("symbol,provider_symbol,price,previous_close,change_pct,currency,exchange,source,payload,updated_at")
-      .in("symbol", normalizedSymbols);
-    if (response.error) {
-      return new Map<string, Quote>();
+    for (const batch of chunked(normalizedSymbols, MARKET_QUOTE_QUERY_BATCH_SIZE)) {
+      const response = await supabaseAdmin()
+        .from(MARKET_QUOTE_TABLE)
+        .select("symbol,provider_symbol,price,previous_close,change_pct,currency,exchange,source,payload,updated_at")
+        .in("symbol", batch);
+      if (response.error) {
+        continue;
+      }
+      if (response.data) {
+        data.push(...response.data);
+      }
     }
-    data = response.data;
   } catch {
     return new Map<string, Quote>();
   }
