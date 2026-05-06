@@ -117,11 +117,48 @@ function conditionReason(condition: StrategyCondition, metrics: Partial<Record<S
   return `${leftLabel} ${condition.operator} ${rightLabel} (${left ?? "N/A"} vs ${right ?? "N/A"})`;
 }
 
-function evaluateSnapshot(snapshot: StrategyMetricSnapshot, strategy: StrategyDefinition) {
+function median(values: Array<number | null | undefined>) {
+  const valid = values.filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value)).sort((a, b) => a - b);
+  if (!valid.length) {
+    return null;
+  }
+  const middle = Math.floor(valid.length / 2);
+  return valid.length % 2 ? valid[middle] : (valid[middle - 1] + valid[middle]) / 2;
+}
+
+function positiveMedian(values: Array<number | null | undefined>) {
+  return median(values.filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value) && value > 0));
+}
+
+function industryGroupKey(snapshot: StrategyMetricSnapshot) {
+  return `${snapshot.market}:${snapshot.industry || snapshot.sector || "Unclassified"}`;
+}
+
+function universeIndustryMetrics(snapshots: StrategyMetricSnapshot[]) {
+  const groups = new Map<string, StrategyMetricSnapshot[]>();
+  snapshots.forEach((snapshot) => {
+    const key = industryGroupKey(snapshot);
+    groups.set(key, [...(groups.get(key) || []), snapshot]);
+  });
+  const metrics = new Map<string, { per: number | null; roe: number | null; count: number }>();
+  groups.forEach((items, key) => {
+    metrics.set(key, {
+      per: positiveMedian(items.map((item) => item.metrics.companyPer)),
+      roe: median(items.map((item) => item.metrics.companyRoe)),
+      count: items.length
+    });
+  });
+  return metrics;
+}
+
+function evaluateSnapshot(snapshot: StrategyMetricSnapshot, strategy: StrategyDefinition, industryMetrics: Map<string, { per: number | null; roe: number | null; count: number }>) {
+  const industry = industryMetrics.get(industryGroupKey(snapshot));
   const metrics = {
     ...snapshot.metrics,
     price: snapshot.metrics.price ?? snapshot.price,
-    changePct: snapshot.metrics.changePct ?? snapshot.changePct
+    changePct: snapshot.metrics.changePct ?? snapshot.changePct,
+    industryPer: industry?.per ?? snapshot.metrics.industryPer ?? null,
+    industryRoe: industry?.roe ?? snapshot.metrics.industryRoe ?? null
   };
   const passed = strategy.conditions.every((condition) =>
     compare(metrics[condition.leftMetric], condition.operator, rightValue(condition.right, metrics))
@@ -147,6 +184,8 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
   const cache = await readStrategyMetricCache(symbols, strategy.markets);
   const matches: StrategyEvaluation["matches"] = [];
   const errors: StrategyEvaluation["errors"] = [];
+  const cachedSnapshots = Array.from(cache.values()).filter((snapshot) => strategy.markets.includes(snapshot.market));
+  const industryMetrics = universeIndustryMetrics(cachedSnapshots);
 
   universeByMarket.forEach(({ market, symbols: marketSymbols }) => {
     let missingCount = 0;
@@ -156,7 +195,7 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
         missingCount += 1;
         return;
       }
-      const match = evaluateSnapshot(snapshot, strategy);
+      const match = evaluateSnapshot(snapshot, strategy, industryMetrics);
       if (match) {
         matches.push(match);
       }
@@ -167,8 +206,7 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
   });
 
   const evaluatedAt = utcNowIso();
-  const snapshots = Array.from(cache.values()).filter((snapshot) => strategy.markets.includes(snapshot.market));
-  const refreshedTimes = snapshots.map((snapshot) => Date.parse(snapshot.refreshedAt)).filter((value) => Number.isFinite(value));
+  const refreshedTimes = cachedSnapshots.map((snapshot) => Date.parse(snapshot.refreshedAt)).filter((value) => Number.isFinite(value));
   return {
     strategy: {
       ...strategy,
@@ -179,8 +217,8 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
     evaluatedAt,
     errors,
     universeCount: universeByMarket.reduce((sum, item) => sum + item.symbols.length, 0),
-    cachedCount: snapshots.length,
-    staleCount: snapshots.filter((snapshot) => !strategyMetricSnapshotFresh(snapshot)).length,
+    cachedCount: cachedSnapshots.length,
+    staleCount: cachedSnapshots.filter((snapshot) => !strategyMetricSnapshotFresh(snapshot)).length,
     cacheRefreshedAt: refreshedTimes.length ? new Date(Math.max(...refreshedTimes)).toISOString() : undefined
   };
 }
