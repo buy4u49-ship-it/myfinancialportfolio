@@ -53,6 +53,11 @@ function isMissingFundamentalsTable(error: unknown) {
   return code === "42P01" || code === "PGRST205" || message.includes("does not exist") || message.includes("could not find the table") || message.includes("schema cache");
 }
 
+function isMissingMarketCapColumn(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("market_cap") && (message.includes("column") || message.includes("schema cache"));
+}
+
 function isStockMarket(market: StrategyMarket): market is Exclude<StrategyMarket, "crypto"> {
   return market === "us" || market === "korea";
 }
@@ -84,6 +89,7 @@ function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapsh
     roePct: numberOrNull(row.roe_pct),
     netIncome: numberOrNull(row.net_income),
     averageEquity: numberOrNull(row.average_equity),
+    marketCap: numberOrNull(row.market_cap),
     priceAtRefresh: numberOrNull(row.price_at_refresh),
     source: String(row.source || "financial_fundamentals_cache"),
     refreshedAt: String(row.refreshed_at || "")
@@ -103,6 +109,7 @@ function snapshotToRow(snapshot: FinancialFundamentalSnapshot) {
     roe_pct: snapshot.roePct,
     net_income: snapshot.netIncome,
     average_equity: snapshot.averageEquity,
+    market_cap: snapshot.marketCap,
     price_at_refresh: snapshot.priceAtRefresh,
     source: snapshot.source,
     refreshed_at: snapshot.refreshedAt,
@@ -122,13 +129,29 @@ export async function readFinancialFundamentalsCache(symbols: string[], markets?
     let query = supabaseAdmin()
       .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
       .select(
-        "symbol,market,name,sector,industry,currency,fiscal_year,eps,roe_pct,net_income,average_equity,price_at_refresh,source,refreshed_at"
+        "symbol,market,name,sector,industry,currency,fiscal_year,eps,roe_pct,net_income,average_equity,market_cap,price_at_refresh,source,refreshed_at"
       )
       .in("symbol", symbolChunk);
     if (stockMarkets?.length) {
       query = query.in("market", stockMarkets);
     }
-    const { data, error } = await query;
+    const response = await query;
+    let data = response.data as Record<string, unknown>[] | null;
+    let error = response.error;
+    if (error && isMissingMarketCapColumn(error)) {
+      let fallbackQuery = supabaseAdmin()
+        .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
+        .select(
+          "symbol,market,name,sector,industry,currency,fiscal_year,eps,roe_pct,net_income,average_equity,price_at_refresh,source,refreshed_at"
+        )
+        .in("symbol", symbolChunk);
+      if (stockMarkets?.length) {
+        fallbackQuery = fallbackQuery.in("market", stockMarkets);
+      }
+      const fallback = await fallbackQuery;
+      data = fallback.data as Record<string, unknown>[] | null;
+      error = fallback.error;
+    }
     if (error) {
       if (isMissingFundamentalsTable(error)) {
         return new Map<string, FinancialFundamentalSnapshot>();
@@ -156,6 +179,16 @@ export async function writeFinancialFundamentalsCache(snapshots: FinancialFundam
     const { error } = await supabaseAdmin()
       .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
       .upsert(rowChunk, { onConflict: "symbol,market" });
+    if (error && isMissingMarketCapColumn(error)) {
+      const fallbackRows = rowChunk.map(({ market_cap: _marketCap, ...row }) => row);
+      const fallback = await supabaseAdmin()
+        .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
+        .upsert(fallbackRows, { onConflict: "symbol,market" });
+      if (!fallback.error) {
+        continue;
+      }
+      throw new Error(errorMessage(fallback.error) || "Financial fundamentals cache write failed.");
+    }
     if (error) {
       throw new Error(errorMessage(error) || "Financial fundamentals cache write failed.");
     }

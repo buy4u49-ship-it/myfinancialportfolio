@@ -11,6 +11,11 @@ function numberOrNull(value: unknown) {
   return Number.isFinite(num) ? num : null;
 }
 
+function positiveNumberOrNull(value: unknown) {
+  const num = numberOrNull(value);
+  return num !== null && num > 0 ? num : null;
+}
+
 function pctChange(current: number | null, previous: number | null) {
   if (current === null || previous === null || previous === 0) {
     return null;
@@ -86,8 +91,11 @@ export async function getCachedMarketQuotes(symbols: string[], options: { maxAge
     if (!symbol || quoteAgeMs(updatedAt) > (options.maxAgeMs ?? MARKET_QUOTE_CACHE_MAX_AGE_MS)) {
       continue;
     }
-    const price = numberOrNull(row.price);
-    const previousClose = numberOrNull(row.previous_close);
+    const price = positiveNumberOrNull(row.price);
+    if (price === null) {
+      continue;
+    }
+    const previousClose = positiveNumberOrNull(row.previous_close);
     const volume = payloadNumber(row.payload, "acc_trade_volume_24h", "acc_trade_volume");
     const tradingValue =
       payloadNumber(row.payload, "acc_trade_price_24h", "acc_trade_price") ?? (volume !== null && price !== null ? volume * price : null);

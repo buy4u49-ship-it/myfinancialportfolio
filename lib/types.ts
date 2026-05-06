@@ -363,6 +363,7 @@ export type FinancialFundamentalSnapshot = {
   roePct: number | null;
   netIncome: number | null;
   averageEquity: number | null;
+  marketCap?: number | null;
   priceAtRefresh: number | null;
   source: string;
   refreshedAt: string;
