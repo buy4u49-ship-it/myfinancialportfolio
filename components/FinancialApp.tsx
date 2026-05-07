@@ -2559,6 +2559,7 @@ function MyPage({
           onCashBalance={(value) => setCashDraft((prev) => ({ ...prev, cashBalance: value }))}
           onSaveCash={() => void saveCashDraft()}
           onCancelCash={cancelCashEdit}
+          onEditCash={() => setCashRowOpen(true)}
           onQuantity={updateTradeQuantity}
           onPrice={updateTradePrice}
           onAmount={updateTradeAmount}
@@ -3529,6 +3530,7 @@ function PortfolioTable({
   onCashBalance,
   onSaveCash,
   onCancelCash,
+  onEditCash,
   onQuantity,
   onPrice,
   onAmount,
@@ -3549,6 +3551,7 @@ function PortfolioTable({
   onCashBalance: (value: string) => void;
   onSaveCash: () => void;
   onCancelCash: () => void;
+  onEditCash: () => void;
   onQuantity: (value: string) => void;
   onPrice: (value: string) => void;
   onAmount: (value: string) => void;
@@ -3558,14 +3561,16 @@ function PortfolioTable({
   const activeRow = activeTrade ? rows.find((row) => row.symbol === activeTrade.symbol) : undefined;
   const fallbackCurrency = portfolio?.summary.currency || newCurrency;
   const cashSettings = portfolio?.cashSettings || { includeCash: false, cashBalance: 0, cashCurrency: fallbackCurrency };
-  const cashCurrency = cashDraft.cashCurrency || cashSettings.cashCurrency || fallbackCurrency;
-  const cashBalance = cashDraft.cashBalance.trim() ? Number(cashDraft.cashBalance) : 0;
-  const safeCashBalance = Number.isFinite(cashBalance) ? cashBalance : 0;
-  const showCashRow = cashRowOpen || cashSettings.cashBalance > 0;
-  const cashAllocationPct =
-    portfolio?.summary.cashIncluded && portfolio.summary.currentValue > 0 && safeCashBalance > 0
-      ? (safeCashBalance / portfolio.summary.currentValue) * 100
-      : null;
+  const savedCashBalance = Number.isFinite(cashSettings.cashBalance) ? cashSettings.cashBalance : 0;
+  const savedCashCurrency = cashSettings.cashCurrency || fallbackCurrency;
+  const hasSavedCash = savedCashBalance > 0;
+  const draftCashCurrency = cashDraft.cashCurrency || savedCashCurrency;
+  const draftCashBalance = cashDraft.cashBalance.trim() ? Number(cashDraft.cashBalance) : 0;
+  const safeDraftCashBalance = Number.isFinite(draftCashBalance) ? draftCashBalance : 0;
+  const currentValue = portfolio?.summary.currentValue || 0;
+  const savedCashAllocationPct = portfolio?.summary.cashIncluded && currentValue > 0 ? (savedCashBalance / currentValue) * 100 : null;
+  const draftCashAllocationPct = portfolio?.summary.cashIncluded && currentValue > 0 && safeDraftCashBalance > 0 ? (safeDraftCashBalance / currentValue) * 100 : null;
+
   return (
     <div className="table-wrap">
       <table className="portfolio-table">
@@ -3583,18 +3588,6 @@ function PortfolioTable({
           </tr>
         </thead>
         <tbody>
-          {showCashRow ? (
-            <CashPortfolioRow
-              cashBalanceText={cashDraft.cashBalance}
-              cashBalance={safeCashBalance}
-              cashCurrency={cashCurrency}
-              allocationPct={cashAllocationPct}
-              busy={busy}
-              onCashBalance={onCashBalance}
-              onSaveCash={onSaveCash}
-              onCancelCash={onCancelCash}
-            />
-          ) : null}
           {activeTrade && !activeRow ? (
             <TradeOnlyRow
               symbol={activeTrade.symbol}
@@ -3657,7 +3650,40 @@ function PortfolioTable({
               ) : null}
             </Fragment>
           ))}
-          {!rows.length && !activeTrade && !showCashRow ? (
+          {hasSavedCash ? (
+            <Fragment key="cash-row">
+              <CashPortfolioDisplayRow
+                cashBalance={savedCashBalance}
+                cashCurrency={savedCashCurrency}
+                allocationPct={savedCashAllocationPct}
+                onEditCash={onEditCash}
+              />
+              {cashRowOpen ? (
+                <CashPortfolioEditRow
+                  cashBalanceText={cashDraft.cashBalance}
+                  cashBalance={safeDraftCashBalance}
+                  cashCurrency={draftCashCurrency}
+                  allocationPct={draftCashAllocationPct}
+                  busy={busy}
+                  onCashBalance={onCashBalance}
+                  onSaveCash={onSaveCash}
+                  onCancelCash={onCancelCash}
+                />
+              ) : null}
+            </Fragment>
+          ) : cashRowOpen ? (
+            <CashPortfolioEditRow
+              cashBalanceText={cashDraft.cashBalance}
+              cashBalance={safeDraftCashBalance}
+              cashCurrency={draftCashCurrency}
+              allocationPct={draftCashAllocationPct}
+              busy={busy}
+              onCashBalance={onCashBalance}
+              onSaveCash={onSaveCash}
+              onCancelCash={onCancelCash}
+            />
+          ) : null}
+          {!rows.length && !activeTrade && !hasSavedCash && !cashRowOpen ? (
             <tr>
               <td colSpan={9} className="empty-cell">
                 Add a symbol above to start recording trades.
@@ -3670,7 +3696,39 @@ function PortfolioTable({
   );
 }
 
-function CashPortfolioRow({
+function CashPortfolioDisplayRow({
+  cashBalance,
+  cashCurrency,
+  allocationPct,
+  onEditCash
+}: {
+  cashBalance: number;
+  cashCurrency: string;
+  allocationPct: number | null;
+  onEditCash: () => void;
+}) {
+  return (
+    <tr className="cash-display-row">
+      <td className="text-cell strong">Cash</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell">{formatMoney(cashBalance, cashCurrency)}</td>
+      <td className="number-cell">{formatMoney(cashBalance, cashCurrency)}</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell">{formatPct(allocationPct)}</td>
+      <td className="action-cell">
+        <div className="trade-buttons">
+          <button className="ghost-button edit-cash-button" onClick={onEditCash}>
+            Edit Cash
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function CashPortfolioEditRow({
   cashBalanceText,
   cashBalance,
   cashCurrency,

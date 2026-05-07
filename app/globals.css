@@ -1414,6 +1414,11 @@ th {
   min-width: 66px;
 }
 
+.trade-buttons .edit-cash-button {
+  width: 140px;
+  min-width: 140px;
+}
+
 .inline-trade {
   grid-template-columns: auto 92px 118px auto auto;
   align-items: center;
