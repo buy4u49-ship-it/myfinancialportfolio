@@ -8,6 +8,7 @@ import {
   deleteStrategy,
   saveStrategy,
   togglePriceAlert,
+  updateCashSettings,
   updateProfile
 } from "@/lib/portfolio";
 import { deletePushToken, registerPushToken } from "@/lib/push";
@@ -66,6 +67,12 @@ export async function PATCH(request: NextRequest) {
       saveStrategy(record, body.strategy);
     } else if (action === "delete_strategy") {
       deleteStrategy(record, String(body.strategyId || ""));
+    } else if (action === "update_cash_settings") {
+      updateCashSettings(record, {
+        includeCash: body.includeCash,
+        cashBalance: body.cashBalance,
+        cashCurrency: body.cashCurrency
+      });
     } else if (action === "update_profile") {
       const profile = validateAccountProfile({
         displayName: String(body.displayName || ""),

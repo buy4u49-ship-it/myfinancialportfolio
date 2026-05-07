@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { CSSProperties, FormEvent, Fragment, ReactNode, useEffect, useRef, useState } from "react";
 import type {
   AdminResponse,
   ChartPoint,
@@ -102,6 +102,13 @@ function formatNumber(value: number | null | undefined, digits = 2) {
     return "N/A";
   }
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(value);
+}
+
+function formatTradeInputNumber(value: number | null | undefined, digits = 8) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "";
+  }
+  return Number(value.toFixed(digits)).toString();
 }
 
 function formatCompact(value: number | null | undefined) {
@@ -254,6 +261,7 @@ export default function FinancialApp() {
   const [activeTrade, setActiveTrade] = useState<{ symbol: string; mode: TradeMode } | null>(null);
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
+  const [tradeAmount, setTradeAmount] = useState("");
   const [newSymbol, setNewSymbol] = useState("");
   const [newCurrency, setNewCurrency] = useState("KRW");
   const [symbolTab, setSymbolTab] = useState<"overview" | "financials" | "price" | "provider">("overview");
@@ -516,6 +524,11 @@ export default function FinancialApp() {
   }
 
   async function submitTrade(targetSymbol: string, mode: TradeMode, currency: string) {
+    const amountValue = Number(tradeAmount);
+    const quantityValue = Number(quantity);
+    const priceValue = Number(price);
+    const resolvedQuantity = quantityValue > 0 ? quantityValue : amountValue > 0 && priceValue > 0 ? amountValue / priceValue : quantityValue;
+    const resolvedPrice = priceValue > 0 ? priceValue : amountValue > 0 && quantityValue > 0 ? amountValue / quantityValue : priceValue;
     setBusy(true);
     setError("");
     try {
@@ -526,8 +539,8 @@ export default function FinancialApp() {
           body: JSON.stringify({
             type: mode,
             symbol: targetSymbol,
-            quantity: Number(quantity),
-            price: Number(price),
+            quantity: resolvedQuantity,
+            price: resolvedPrice,
             currency
           })
         })
@@ -536,6 +549,7 @@ export default function FinancialApp() {
       setActiveTrade(null);
       setQuantity("");
       setPrice("");
+      setTradeAmount("");
       if (newSymbol.toUpperCase() === targetSymbol.toUpperCase()) {
         setNewSymbol("");
       }
@@ -850,6 +864,7 @@ export default function FinancialApp() {
               activeTrade={activeTrade}
               quantity={quantity}
               price={price}
+              tradeAmount={tradeAmount}
               activeTab={myTab}
               alertSymbol={alertSymbol}
               alertDirection={alertDirection}
@@ -860,6 +875,7 @@ export default function FinancialApp() {
               setActiveTrade={setActiveTrade}
               setQuantity={setQuantity}
               setPrice={setPrice}
+              setTradeAmount={setTradeAmount}
               setActiveTab={setMyTab}
               setAlertSymbol={setAlertSymbol}
               setAlertDirection={setAlertDirection}
@@ -2311,6 +2327,7 @@ function MyPage({
   activeTrade,
   quantity,
   price,
+  tradeAmount,
   activeTab,
   alertSymbol,
   alertDirection,
@@ -2321,6 +2338,7 @@ function MyPage({
   setActiveTrade,
   setQuantity,
   setPrice,
+  setTradeAmount,
   setActiveTab,
   setAlertSymbol,
   setAlertDirection,
@@ -2338,6 +2356,7 @@ function MyPage({
   activeTrade: { symbol: string; mode: TradeMode } | null;
   quantity: string;
   price: string;
+  tradeAmount: string;
   activeTab: MyTab;
   alertSymbol: string;
   alertDirection: "above" | "below";
@@ -2348,6 +2367,7 @@ function MyPage({
   setActiveTrade: (value: { symbol: string; mode: TradeMode } | null) => void;
   setQuantity: (value: string) => void;
   setPrice: (value: string) => void;
+  setTradeAmount: (value: string) => void;
   setActiveTab: (value: MyTab) => void;
   setAlertSymbol: (value: string) => void;
   setAlertDirection: (value: "above" | "below") => void;
@@ -2361,11 +2381,71 @@ function MyPage({
   const transactions = portfolio?.transactions || [];
   const summaryCurrency = portfolio?.summary.currency || "KRW";
   const newSymbolNormalized = newSymbol.trim().toUpperCase();
+  const cashSettings = portfolio?.cashSettings || { includeCash: false, cashBalance: 0, cashCurrency: summaryCurrency };
+  const [cashDraft, setCashDraft] = useState({
+    includeCash: cashSettings.includeCash,
+    cashBalance: String(cashSettings.cashBalance || ""),
+    cashCurrency: cashSettings.cashCurrency || summaryCurrency
+  });
+
+  useEffect(() => {
+    setCashDraft({
+      includeCash: cashSettings.includeCash,
+      cashBalance: cashSettings.cashBalance ? String(cashSettings.cashBalance) : "",
+      cashCurrency: cashSettings.cashCurrency || summaryCurrency
+    });
+  }, [cashSettings.includeCash, cashSettings.cashBalance, cashSettings.cashCurrency, summaryCurrency]);
+
+  function updateTradeQuantity(value: string) {
+    setQuantity(value);
+    const quantityValue = Number(value);
+    const priceValue = Number(price);
+    const amountValue = Number(tradeAmount);
+    if (quantityValue > 0 && priceValue > 0) {
+      setTradeAmount(formatTradeInputNumber(quantityValue * priceValue, 2));
+    } else if (quantityValue > 0 && amountValue > 0) {
+      setPrice(formatTradeInputNumber(amountValue / quantityValue, 8));
+    }
+  }
+
+  function updateTradePrice(value: string) {
+    setPrice(value);
+    const quantityValue = Number(quantity);
+    const priceValue = Number(value);
+    const amountValue = Number(tradeAmount);
+    if (quantityValue > 0 && priceValue > 0) {
+      setTradeAmount(formatTradeInputNumber(quantityValue * priceValue, 2));
+    } else if (priceValue > 0 && amountValue > 0) {
+      setQuantity(formatTradeInputNumber(amountValue / priceValue, 8));
+    }
+  }
+
+  function updateTradeAmount(value: string) {
+    setTradeAmount(value);
+    const amountValue = Number(value);
+    const quantityValue = Number(quantity);
+    const priceValue = Number(price);
+    if (amountValue > 0 && quantityValue > 0) {
+      setPrice(formatTradeInputNumber(amountValue / quantityValue, 8));
+    } else if (amountValue > 0 && priceValue > 0) {
+      setQuantity(formatTradeInputNumber(amountValue / priceValue, 8));
+    }
+  }
 
   function startTrade(row: PortfolioRow, mode: TradeMode) {
     setActiveTrade({ symbol: row.symbol, mode });
     setQuantity("");
     setPrice(row.price ? String(row.price) : "");
+    setTradeAmount("");
+  }
+
+  async function saveCashDraft() {
+    await patchPortfolio({
+      action: "update_cash_settings",
+      includeCash: cashDraft.includeCash,
+      cashBalance: Number(cashDraft.cashBalance),
+      cashCurrency: cashDraft.cashCurrency
+    });
   }
 
   return (
@@ -2389,8 +2469,8 @@ function MyPage({
         <>
           <PortfolioAnalytics rows={rows} portfolio={portfolio} currency={summaryCurrency} />
           <section className="summary-grid">
-            <SummaryCard label="Current Value" value={formatMoney(portfolio?.summary.currentValue, summaryCurrency)} />
-            <SummaryCard label="Cost Basis" value={formatMoney(portfolio?.summary.costBasis, summaryCurrency)} />
+            <SummaryCard label="Current Wealth" value={formatMoney(portfolio?.summary.currentValue, summaryCurrency)} />
+            <SummaryCard label="Total Investment" value={formatMoney(portfolio?.summary.costBasis, summaryCurrency)} />
             <SummaryCard
               label="Cumulative Gain/Loss"
               value={formatMoney(portfolio?.summary.cumulativeGainLoss, summaryCurrency)}
@@ -2401,6 +2481,41 @@ function MyPage({
               value={formatPct(portfolio?.summary.cumulativeReturnPct)}
               tone={signedClass(portfolio?.summary.cumulativeReturnPct)}
             />
+          </section>
+
+          <section className="panel cash-settings-panel">
+            <div className="panel-heading compact-heading">
+              <div>
+                <h2>Cash Balance</h2>
+                <p className="muted">Cash is included in Current Wealth only when enabled. Cash beta is 0.</p>
+              </div>
+              <button className="ghost-button" disabled={busy} onClick={() => void saveCashDraft()}>
+                Save cash
+              </button>
+            </div>
+            <div className="cash-settings-row">
+              <label className="cash-toggle">
+                <input
+                  type="checkbox"
+                  checked={cashDraft.includeCash}
+                  onChange={(event) => setCashDraft((prev) => ({ ...prev, includeCash: event.target.checked }))}
+                />
+                Include cash in wealth and beta
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                placeholder="Cash balance"
+                value={cashDraft.cashBalance}
+                onChange={(event) => setCashDraft((prev) => ({ ...prev, cashBalance: event.target.value }))}
+              />
+              <select value={cashDraft.cashCurrency} onChange={(event) => setCashDraft((prev) => ({ ...prev, cashCurrency: event.target.value }))}>
+                <option value="KRW">KRW</option>
+                <option value="USD">USD</option>
+              </select>
+              <span className="muted">Current cash: {formatMoney(portfolio?.summary.cashBalance, portfolio?.summary.cashCurrency || summaryCurrency)}</span>
+            </div>
           </section>
 
           <section className="panel">
@@ -2421,6 +2536,7 @@ function MyPage({
                 setActiveTrade({ symbol: newSymbolNormalized, mode: "BUY" });
                 setQuantity("");
                 setPrice("");
+                setTradeAmount("");
               }}
             >
               Buy
@@ -2432,11 +2548,13 @@ function MyPage({
           activeTrade={activeTrade}
           quantity={quantity}
           price={price}
+          tradeAmount={tradeAmount}
           newCurrency={newCurrency}
           busy={busy}
           onStartTrade={startTrade}
-          onQuantity={setQuantity}
-          onPrice={setPrice}
+          onQuantity={updateTradeQuantity}
+          onPrice={updateTradePrice}
+          onAmount={updateTradeAmount}
           onCancel={() => setActiveTrade(null)}
           onSubmit={submitTrade}
         />
@@ -2520,7 +2638,7 @@ function PortfolioAnalytics({
       <article className="portfolio-card-stack">
         <h2>Portfolio Summary</h2>
         <MiniMetric label="Current Wealth" value={formatMoney(portfolio?.summary.currentValue, currency)} />
-        <MiniMetric label="Total Investment Value" value={formatMoney(portfolio?.summary.costBasis, currency)} />
+        <MiniMetric label="Total Investment" value={formatMoney(portfolio?.summary.costBasis, currency)} />
         <MiniMetric
           label="Total Gain/Loss"
           value={formatMoney(portfolio?.summary.unrealizedGainLoss, currency)}
@@ -3361,11 +3479,13 @@ function PortfolioTable({
   activeTrade,
   quantity,
   price,
+  tradeAmount,
   newCurrency,
   busy,
   onStartTrade,
   onQuantity,
   onPrice,
+  onAmount,
   onCancel,
   onSubmit
 }: {
@@ -3373,14 +3493,17 @@ function PortfolioTable({
   activeTrade: { symbol: string; mode: TradeMode } | null;
   quantity: string;
   price: string;
+  tradeAmount: string;
   newCurrency: string;
   busy: boolean;
   onStartTrade: (row: PortfolioRow, mode: TradeMode) => void;
   onQuantity: (value: string) => void;
   onPrice: (value: string) => void;
+  onAmount: (value: string) => void;
   onCancel: () => void;
   onSubmit: (symbol: string, mode: TradeMode, currency: string) => void;
 }) {
+  const activeRow = activeTrade ? rows.find((row) => row.symbol === activeTrade.symbol) : undefined;
   return (
     <div className="table-wrap">
       <table className="portfolio-table">
@@ -3398,48 +3521,37 @@ function PortfolioTable({
           </tr>
         </thead>
         <tbody>
-          {activeTrade && !rows.some((row) => row.symbol === activeTrade.symbol) ? (
+          {activeTrade && !activeRow ? (
             <TradeOnlyRow
               symbol={activeTrade.symbol}
               currency={newCurrency}
               mode={activeTrade.mode}
               quantity={quantity}
               price={price}
+              tradeAmount={tradeAmount}
               busy={busy}
               onQuantity={onQuantity}
               onPrice={onPrice}
+              onAmount={onAmount}
               onCancel={onCancel}
               onSubmit={() => onSubmit(activeTrade.symbol, activeTrade.mode, newCurrency)}
             />
           ) : null}
           {rows.map((row) => (
-            <tr key={row.symbol}>
-              <td className="text-cell strong">{row.symbol}</td>
-              <td className="number-cell">{numberFormatter.format(row.quantity)}</td>
-              <td className="number-cell">{formatMoney(row.avgCost, row.currency)}</td>
-              <td className="number-cell">
-                <div>{formatMoney(row.price, row.currency)}</div>
-                <span className={signedClass(row.changePct)}>{formatPct(row.changePct)}</span>
-              </td>
-              <td className="number-cell">{formatMoney(row.marketValue, row.currency)}</td>
-              <td className={`number-cell ${signedClass(row.gainLoss)}`}>{formatMoney(row.gainLoss, row.currency)}</td>
-              <td className={`number-cell ${signedClass(row.gainLossPct)}`}>{formatPct(row.gainLossPct)}</td>
-              <td className="number-cell">{formatPct(row.allocationPct)}</td>
-              <td className="action-cell">
-                {activeTrade?.symbol === row.symbol ? (
-                  <InlineTradeForm
-                    mode={activeTrade.mode}
-                    symbol={row.symbol}
-                    currency={row.currency}
-                    quantity={quantity}
-                    price={price}
-                    busy={busy}
-                    onQuantity={onQuantity}
-                    onPrice={onPrice}
-                    onCancel={onCancel}
-                    onSubmit={() => onSubmit(row.symbol, activeTrade.mode, row.currency)}
-                  />
-                ) : (
+            <Fragment key={row.symbol}>
+              <tr>
+                <td className="text-cell strong">{row.symbol}</td>
+                <td className="number-cell">{numberFormatter.format(row.quantity)}</td>
+                <td className="number-cell">{formatMoney(row.avgCost, row.currency)}</td>
+                <td className="number-cell">
+                  <div>{formatMoney(row.price, row.currency)}</div>
+                  <span className={signedClass(row.changePct)}>{formatPct(row.changePct)}</span>
+                </td>
+                <td className="number-cell">{formatMoney(row.marketValue, row.currency)}</td>
+                <td className={`number-cell ${signedClass(row.gainLoss)}`}>{formatMoney(row.gainLoss, row.currency)}</td>
+                <td className={`number-cell ${signedClass(row.gainLossPct)}`}>{formatPct(row.gainLossPct)}</td>
+                <td className="number-cell">{formatPct(row.allocationPct)}</td>
+                <td className="action-cell">
                   <div className="trade-buttons">
                     <button className="buy-button" onClick={() => onStartTrade(row, "BUY")}>
                       Buy
@@ -3448,9 +3560,28 @@ function PortfolioTable({
                       Sell
                     </button>
                   </div>
-                )}
-              </td>
-            </tr>
+                </td>
+              </tr>
+              {activeTrade?.symbol === row.symbol ? (
+                <TradeEntryRow
+                  mode={activeTrade.mode}
+                  symbol={row.symbol}
+                  currency={row.currency}
+                  quantity={quantity}
+                  price={price}
+                  tradeAmount={tradeAmount}
+                  heldQuantity={row.quantity}
+                  averageCost={row.avgCost}
+                  marketValue={row.marketValue}
+                  busy={busy}
+                  onQuantity={onQuantity}
+                  onPrice={onPrice}
+                  onAmount={onAmount}
+                  onCancel={onCancel}
+                  onSubmit={() => onSubmit(row.symbol, activeTrade.mode, row.currency)}
+                />
+              ) : null}
+            </Fragment>
           ))}
           {!rows.length && !activeTrade ? (
             <tr>
@@ -3465,6 +3596,122 @@ function PortfolioTable({
   );
 }
 
+function TradeEntryRow({
+  mode,
+  symbol,
+  currency,
+  quantity,
+  price,
+  tradeAmount,
+  heldQuantity,
+  averageCost,
+  marketValue,
+  busy,
+  onQuantity,
+  onPrice,
+  onAmount,
+  onCancel,
+  onSubmit
+}: {
+  mode: TradeMode;
+  symbol: string;
+  currency: string;
+  quantity: string;
+  price: string;
+  tradeAmount: string;
+  heldQuantity?: number;
+  averageCost?: number;
+  marketValue?: number | null;
+  busy: boolean;
+  onQuantity: (value: string) => void;
+  onPrice: (value: string) => void;
+  onAmount: (value: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  function applySellPct(percent: number) {
+    if (!heldQuantity || heldQuantity <= 0) {
+      return;
+    }
+    const nextQuantity = heldQuantity * (percent / 100);
+    onQuantity(formatTradeInputNumber(nextQuantity, 8));
+    const priceValue = Number(price);
+    if (priceValue > 0) {
+      onAmount(formatTradeInputNumber(nextQuantity * priceValue, 2));
+    }
+  }
+
+  return (
+    <tr className="trade-entry-row">
+      <td className="text-cell strong">
+        <span className={mode === "BUY" ? "trade-label buy" : "trade-label sell"}>{mode}</span>
+        <span>{symbol}</span>
+      </td>
+      <td className="number-cell">
+        <input
+          aria-label={`${symbol} ${mode} quantity`}
+          type="number"
+          min="0"
+          step="any"
+          placeholder="Quantity"
+          value={quantity}
+          onChange={(event) => onQuantity(event.target.value)}
+        />
+      </td>
+      <td className="number-cell">
+        {averageCost !== undefined ? formatMoney(averageCost, currency) : "N/A"}
+      </td>
+      <td className="number-cell">
+        <input
+          aria-label={`${symbol} ${mode} price`}
+          type="number"
+          min="0"
+          step="any"
+          placeholder={`Trade price (${currency})`}
+          value={price}
+          onChange={(event) => onPrice(event.target.value)}
+        />
+      </td>
+      <td className="number-cell trade-amount-cell">
+        <input
+          aria-label={`${symbol} ${mode} total amount`}
+          type="number"
+          min="0"
+          step="any"
+          placeholder={`Total (${currency})`}
+          value={tradeAmount}
+          onChange={(event) => onAmount(event.target.value)}
+        />
+        {mode === "SELL" ? (
+          <div className="sell-percent-row" aria-label="Sell percentage">
+            {[10, 25, 50, 75, 100].map((percent) => (
+              <button key={percent} type="button" className="mini-ghost" onClick={() => applySellPct(percent)}>
+                {percent}%
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </td>
+      <td className="number-cell">{mode === "SELL" ? formatMoney(marketValue, currency) : "N/A"}</td>
+      <td className="number-cell">N/A</td>
+      <td className="number-cell">N/A</td>
+      <td className="action-cell">
+        <div className="trade-buttons trade-entry-actions">
+          <button className={mode === "BUY" ? "buy-button" : "sell-button"} onClick={onSubmit} disabled={busy}>
+            Save
+          </button>
+          <button className="mini-ghost" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function TradeOnlyRow(props: Omit<Parameters<typeof TradeEntryRow>[0], "heldQuantity" | "averageCost" | "marketValue">) {
+  return <TradeEntryRow {...props} />;
+}
 function SummaryCard({ label, value, tone = "neutral" }: { label: string; value: string; tone?: string }) {
   return (
     <article className="summary-card">
@@ -4140,78 +4387,6 @@ function FinancialRatioPanel({
         </table>
       </div>
     </section>
-  );
-}
-
-function InlineTradeForm({
-  mode,
-  symbol,
-  currency,
-  quantity,
-  price,
-  busy,
-  onQuantity,
-  onPrice,
-  onCancel,
-  onSubmit
-}: {
-  mode: TradeMode;
-  symbol: string;
-  currency: string;
-  quantity: string;
-  price: string;
-  busy: boolean;
-  onQuantity: (value: string) => void;
-  onPrice: (value: string) => void;
-  onCancel: () => void;
-  onSubmit: () => void;
-}) {
-  return (
-    <div className="inline-trade">
-      <span className={mode === "BUY" ? "trade-label buy" : "trade-label sell"}>{mode}</span>
-      <input
-        aria-label={`${symbol} ${mode} quantity`}
-        type="number"
-        min="0"
-        step="any"
-        placeholder="Quantity"
-        value={quantity}
-        onChange={(event) => onQuantity(event.target.value)}
-      />
-      <input
-        aria-label={`${symbol} ${mode} price`}
-        type="number"
-        min="0"
-        step="any"
-        placeholder={`Price (${currency})`}
-        value={price}
-        onChange={(event) => onPrice(event.target.value)}
-      />
-      <button className={mode === "BUY" ? "buy-button" : "sell-button"} onClick={onSubmit} disabled={busy}>
-        Save
-      </button>
-      <button className="mini-ghost" onClick={onCancel}>
-        Cancel
-      </button>
-    </div>
-  );
-}
-
-function TradeOnlyRow(props: Parameters<typeof InlineTradeForm>[0]) {
-  return (
-    <tr>
-      <td className="text-cell strong">{props.symbol}</td>
-      <td className="number-cell">0</td>
-      <td className="number-cell">N/A</td>
-      <td className="number-cell">N/A</td>
-      <td className="number-cell">N/A</td>
-      <td className="number-cell">N/A</td>
-      <td className="number-cell">N/A</td>
-      <td className="number-cell">N/A</td>
-      <td className="action-cell">
-        <InlineTradeForm {...props} />
-      </td>
-    </tr>
   );
 }
 

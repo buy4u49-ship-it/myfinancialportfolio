@@ -5,6 +5,7 @@ import { normalizePushTokens, sendPushToUser } from "./push";
 import { inferCurrency, normalizeSymbol } from "./symbols";
 import { normalizeStrategy, normalizeStrategies } from "./strategies";
 import type {
+  PortfolioCashSettings,
   PortfolioProjection,
   PortfolioResponse,
   PortfolioRow,
@@ -21,6 +22,34 @@ import type {
 function numberOrZero(value: unknown) {
   const num = Number(value);
   return Number.isFinite(num) ? num : 0;
+}
+
+function normalizeCashSettings(record: UserRecord): PortfolioCashSettings {
+  const raw = record.portfolio_calculation && typeof record.portfolio_calculation === "object" ? record.portfolio_calculation : {};
+  const settings = raw as Partial<PortfolioCashSettings>;
+  return {
+    includeCash: settings.includeCash === true,
+    cashBalance: numberOrZero(settings.cashBalance),
+    cashCurrency: String(settings.cashCurrency || "KRW").toUpperCase()
+  };
+}
+
+function saveCashSettings(record: UserRecord, settings: PortfolioCashSettings) {
+  record.portfolio_calculation = {
+    includeCash: settings.includeCash,
+    cashBalance: Number(settings.cashBalance.toFixed(8)),
+    cashCurrency: settings.cashCurrency || "KRW"
+  };
+}
+
+export function updateCashSettings(record: UserRecord, input: { includeCash?: unknown; cashBalance?: unknown; cashCurrency?: unknown }) {
+  const current = normalizeCashSettings(record);
+  saveCashSettings(record, {
+    includeCash: input.includeCash === undefined ? current.includeCash : input.includeCash === true,
+    cashBalance: input.cashBalance === undefined ? current.cashBalance : numberOrZero(input.cashBalance),
+    cashCurrency: String(input.cashCurrency || current.cashCurrency || "KRW").toUpperCase()
+  });
+  return record;
 }
 
 function pctChange(current: number | null, previous: number | null) {
@@ -82,10 +111,11 @@ function betaEstimate(symbol: string) {
   return estimates[base] ?? (symbol.endsWith(".KS") || symbol.endsWith(".KQ") ? 1.05 : 1);
 }
 
-function buildProjection(rows: PortfolioRow[]): PortfolioProjection {
-  const currentValue = rows.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
-  const coveredValue = rows.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
-  if (currentValue <= 0 || coveredValue <= 0) {
+function buildProjection(rows: PortfolioRow[], cashSettings: PortfolioCashSettings): PortfolioProjection {
+  const securitiesValue = rows.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
+  const includedCash = cashSettings.includeCash ? cashSettings.cashBalance : 0;
+  const currentValue = securitiesValue + includedCash;
+  if (currentValue <= 0) {
     return {
       portfolioBeta: null,
       betaCoveragePct: null,
@@ -95,12 +125,12 @@ function buildProjection(rows: PortfolioRow[]): PortfolioProjection {
       calculatedAt: new Date().toISOString()
     };
   }
-  const portfolioBeta = rows.reduce((sum, row) => sum + ((row.marketValue ?? 0) / coveredValue) * betaEstimate(row.symbol), 0);
+  const portfolioBeta = rows.reduce((sum, row) => sum + ((row.marketValue ?? 0) / currentValue) * betaEstimate(row.symbol), 0);
   const expectedMonthlyLogReturnPct = 0.35 + portfolioBeta * 0.55;
   const expectedPortfolioValue = currentValue * Math.exp(expectedMonthlyLogReturnPct / 100);
   return {
     portfolioBeta,
-    betaCoveragePct: (coveredValue / currentValue) * 100,
+    betaCoveragePct: 100,
     expectedMonthlyLogReturnPct,
     expectedPortfolioValue,
     expectedGainLoss: expectedPortfolioValue - currentValue,
@@ -190,7 +220,8 @@ export async function buildPortfolioResponse(record: UserRecord): Promise<Portfo
   rows.sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0));
 
   const transactions = Array.isArray(record.transactions) ? record.transactions : [];
-  const summary = buildPortfolioSummary(rows, transactions);
+  const cashSettings = normalizeCashSettings(record);
+  const summary = buildPortfolioSummary(rows, transactions, cashSettings);
   const triggeredAlerts = await evaluatePriceAlerts(record);
   const pushTokens = normalizePushTokens(record);
   return {
@@ -202,14 +233,17 @@ export async function buildPortfolioResponse(record: UserRecord): Promise<Portfo
     pushEnabled: pushTokens.some((token) => token.enabled),
     pushTokenCount: pushTokens.filter((token) => token.enabled).length,
     strategies: normalizeStrategies(record),
+    cashSettings,
     summary,
-    projection: buildProjection(rows),
+    projection: buildProjection(rows, cashSettings),
     refreshedAt: new Date().toISOString()
   };
 }
 
-function buildPortfolioSummary(rows: PortfolioRow[], transactions: PortfolioTransaction[]): PortfolioSummary {
-  const currentValue = rows.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
+function buildPortfolioSummary(rows: PortfolioRow[], transactions: PortfolioTransaction[], cashSettings: PortfolioCashSettings): PortfolioSummary {
+  const securitiesCurrentValue = rows.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
+  const includedCash = cashSettings.includeCash ? cashSettings.cashBalance : 0;
+  const currentValue = securitiesCurrentValue + includedCash;
   const costBasis = rows.reduce((sum, row) => sum + row.costBasis, 0);
   const unrealizedGainLoss = rows.reduce((sum, row) => sum + (row.gainLoss ?? 0), 0);
   const realizedGainLoss = transactions.reduce((sum, tx) => sum + numberOrZero(tx.realized_gain_loss), 0);
@@ -223,6 +257,10 @@ function buildPortfolioSummary(rows: PortfolioRow[], transactions: PortfolioTran
   const cumulativeInvestmentValue = Math.max(costBasis + realizedCostBasis, totalBuyAmount, costBasis);
   return {
     currentValue,
+    securitiesCurrentValue,
+    cashBalance: cashSettings.cashBalance,
+    cashIncluded: cashSettings.includeCash,
+    cashCurrency: cashSettings.cashCurrency,
     costBasis,
     unrealizedGainLoss,
     totalReturnPct: costBasis > 0 ? (unrealizedGainLoss / costBasis) * 100 : null,
@@ -252,6 +290,7 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
     throw new Error("Quantity and price must be greater than 0.");
   }
 
+  const tradeValue = quantity * price;
   const portfolio = activePositions(record);
   const existing = portfolio.find((position) => position.symbol === symbol);
   let realizedGainLoss: number | null = null;
@@ -260,7 +299,7 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
   if (type === "BUY") {
     if (existing) {
       const previousCost = existing.quantity * existing.avg_cost;
-      const additionalCost = quantity * price;
+      const additionalCost = tradeValue;
       existing.quantity += quantity;
       existing.avg_cost = (previousCost + additionalCost) / existing.quantity;
       existing.updated_at = new Date().toISOString();
@@ -283,6 +322,14 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
     existing.updated_at = new Date().toISOString();
   }
 
+  const cashSettings = normalizeCashSettings(record);
+  const cashCurrency = cashSettings.cashCurrency || currency;
+  saveCashSettings(record, {
+    ...cashSettings,
+    cashCurrency,
+    cashBalance: cashSettings.cashBalance + (type === "BUY" ? -tradeValue : tradeValue)
+  });
+
   record.portfolio = portfolio
     .filter((position) => position.quantity > 0.000000001)
     .map((position) => ({
@@ -298,7 +345,7 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
     quantity,
     price,
     currency,
-    value: quantity * price,
+    value: tradeValue,
     cost_basis: costBasis,
     realized_gain_loss: realizedGainLoss,
     created_at: new Date().toISOString()

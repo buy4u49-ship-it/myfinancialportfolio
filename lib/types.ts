@@ -1,5 +1,11 @@
 export type JsonRecord = Record<string, unknown>;
 
+export type PortfolioCashSettings = {
+  includeCash: boolean;
+  cashBalance: number;
+  cashCurrency: string;
+};
+
 export type UserRecord = {
   username: string;
   created_at?: string;
@@ -21,7 +27,7 @@ export type UserRecord = {
   strategies?: StrategyDefinition[];
   strategy_snapshots?: StrategySnapshot[];
   remember_tokens?: unknown[];
-  portfolio_calculation?: unknown;
+  portfolio_calculation?: PortfolioCashSettings | JsonRecord | null;
 };
 
 export type Position = {
@@ -83,6 +89,10 @@ export type PortfolioTransaction = {
 
 export type PortfolioSummary = {
   currentValue: number;
+  securitiesCurrentValue: number;
+  cashBalance: number;
+  cashIncluded: boolean;
+  cashCurrency: string;
   costBasis: number;
   unrealizedGainLoss: number;
   totalReturnPct: number | null;
@@ -426,6 +436,7 @@ export type PortfolioResponse = {
   pushEnabled: boolean;
   pushTokenCount: number;
   strategies: StrategyDefinition[];
+  cashSettings: PortfolioCashSettings;
   summary: PortfolioSummary;
   projection: PortfolioProjection;
   refreshedAt: string;
