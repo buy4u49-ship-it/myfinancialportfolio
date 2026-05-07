@@ -9,10 +9,14 @@ const FINANCIAL_FUNDAMENTALS_CACHE_TABLE = "financial_fundamentals_cache";
 export const FINANCIAL_FUNDAMENTALS_CACHE_MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000;
 const STRATEGY_QUOTE_MAX_AGE_MS = 15 * 60 * 1000;
 
+const REFRESH_ITEM_TIMEOUT_MS = 7_000;
+const REFRESH_REQUEST_TIME_BUDGET_MS = 45_000;
+
 type RefreshOptions = {
   markets?: StrategyMarket[];
   limit?: number;
   force?: boolean;
+  deadlineMs?: number;
 };
 
 type RefreshResult = {
@@ -23,7 +27,20 @@ type RefreshResult = {
   refreshedCount: number;
   errors: Array<{ symbol: string; market: StrategyMarket; message: string }>;
   refreshedAt: string;
+  timeBudgetReached?: boolean;
 };
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_resolve, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
 
 function chunk<T>(items: T[], size: number) {
   const chunks: T[][] = [];
@@ -203,6 +220,8 @@ export async function writeFinancialFundamentalsCache(snapshots: FinancialFundam
 }
 
 export async function refreshFinancialFundamentalsCache(options: RefreshOptions = {}): Promise<RefreshResult> {
+  const startedAt = Date.now();
+  const timeBudgetMs = Math.max(5_000, Math.min(55_000, Math.round(options.deadlineMs || REFRESH_REQUEST_TIME_BUDGET_MS)));
   const markets = (options.markets?.length ? options.markets : (["us", "korea"] as StrategyMarket[])).filter(isStockMarket);
   const limit = Math.max(1, Math.min(300, Math.round(options.limit || 50)));
   const universeByMarket = await Promise.all(markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
@@ -248,12 +267,25 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
 
   const snapshots: FinancialFundamentalSnapshot[] = [];
   const errors: RefreshResult["errors"] = [];
-  for (const candidateChunk of chunk(candidates, 5)) {
+  let processedCount = 0;
+  let timeBudgetReached = false;
+  for (const candidateChunk of chunk(candidates, 2)) {
+    const remainingMs = timeBudgetMs - (Date.now() - startedAt);
+    if (remainingMs < 1_500) {
+      timeBudgetReached = true;
+      break;
+    }
+    const itemTimeoutMs = Math.max(1_000, Math.min(REFRESH_ITEM_TIMEOUT_MS, remainingMs - 500));
     const settled = await Promise.allSettled(
       candidateChunk.map((candidate) =>
-        buildFinancialFundamentalFromSources(candidate.symbol, candidate.market, quoteCache.get(candidate.symbol) || null)
+        withTimeout(
+          buildFinancialFundamentalFromSources(candidate.symbol, candidate.market, quoteCache.get(candidate.symbol) || null),
+          itemTimeoutMs,
+          `Financial fundamentals refresh timed out for ${candidate.symbol}.`
+        )
       )
     );
+    processedCount += candidateChunk.length;
     settled.forEach((result, index) => {
       const candidate = candidateChunk[index];
       if (result.status === "fulfilled") {
@@ -268,6 +300,9 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
         });
       }
     });
+  }
+  if (processedCount < candidates.length && Date.now() - startedAt >= timeBudgetMs - 1_500) {
+    timeBudgetReached = true;
   }
   await writeFinancialFundamentalsCache(snapshots);
 
@@ -294,7 +329,8 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
     staleCount,
     refreshedCount: snapshots.length,
     errors,
-    refreshedAt: new Date().toISOString()
+    refreshedAt: new Date().toISOString(),
+    timeBudgetReached
   };
 }
 

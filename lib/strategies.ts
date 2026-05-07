@@ -182,6 +182,11 @@ type EvaluationSnapshot = {
 
 const INDUSTRY_MEDIAN_MIN_COMPANIES = 5;
 
+type EvaluationOptions = {
+  offset?: number;
+  limit?: number;
+};
+
 function finiteNumber(value: number | null | undefined) {
   return value !== null && value !== undefined && Number.isFinite(value) ? value : null;
 }
@@ -564,13 +569,19 @@ function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefini
   };
 }
 
-export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluation> {
+export async function evaluateStrategy(input: unknown, options: EvaluationOptions = {}): Promise<StrategyEvaluation> {
   const strategy = normalizeStrategy(input);
   const universeByMarket = await Promise.all(strategy.markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
-  const symbols = universeByMarket.flatMap((item) => item.symbols);
+  const universeEntries = universeByMarket.flatMap(({ market, symbols }) => symbols.map((symbol) => ({ market, symbol })));
+  const universeCount = universeEntries.length;
+  const batchOffset = Math.max(0, Math.round(options.offset || 0));
+  const batchLimit = Math.max(1, Math.min(800, Math.round(options.limit || universeCount || 1)));
+  const selectedEntries = options.limit ? universeEntries.slice(batchOffset, batchOffset + batchLimit) : universeEntries;
+  const selectedMarkets = Array.from(new Set(selectedEntries.map((entry) => entry.market)));
+  const symbols = Array.from(new Set(selectedEntries.map((entry) => entry.symbol)));
   const [fundamentalCache, supplementalCache, quoteCache] = await Promise.all([
-    readFinancialFundamentalsCache(symbols, strategy.markets),
-    readStrategyMetricCache(symbols, strategy.markets),
+    readFinancialFundamentalsCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
+    readStrategyMetricCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
     getCachedMarketQuotes(symbols, { maxAgeMs: STRATEGY_QUOTE_CACHE_MAX_AGE_MS })
   ]);
   const matches: StrategyEvaluation["matches"] = [];
@@ -592,12 +603,17 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
     }
   }
 
-  const cachedSnapshots = Array.from(evaluationSnapshots.values()).filter((snapshot) => strategy.markets.includes(snapshot.market));
+  const cachedSnapshots = Array.from(evaluationSnapshots.values()).filter((snapshot) => selectedMarkets.includes(snapshot.market));
   const industryMetrics = universeIndustryMetrics(cachedSnapshots);
   const priceCachedCount = cachedSnapshots.filter((snapshot) => snapshot.price !== null).length;
   const priceMissingCount = Math.max(0, cachedSnapshots.length - priceCachedCount);
 
-  universeByMarket.forEach(({ market, symbols: marketSymbols }) => {
+  const selectedByMarket = new Map<StrategyMarket, string[]>();
+  selectedEntries.forEach(({ market, symbol }) => {
+    selectedByMarket.set(market, [...(selectedByMarket.get(market) || []), symbol]);
+  });
+
+  selectedByMarket.forEach((marketSymbols, market) => {
     let missingCount = 0;
     let missingPriceCount = 0;
     marketSymbols.forEach((symbol) => {
@@ -615,15 +631,16 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
       }
     });
     if (missingCount) {
-      errors.push({ symbol: `${market}:cache`, message: `${missingCount} symbols do not have cached fundamentals or strategy metrics yet.` });
+      errors.push({ symbol: `${market}:cache`, message: `${missingCount} symbols in this batch do not have cached fundamentals or strategy metrics yet.` });
     }
     if (missingPriceCount) {
-      errors.push({ symbol: `${market}:price-cache`, message: `${missingPriceCount} cached symbols do not have a fresh positive quote cache row yet.` });
+      errors.push({ symbol: `${market}:price-cache`, message: `${missingPriceCount} cached symbols in this batch do not have a fresh positive quote cache row yet.` });
     }
   });
 
   const evaluatedAt = utcNowIso();
   const refreshedTimes = cachedSnapshots.map((snapshot) => Date.parse(snapshot.refreshedAt)).filter((value) => Number.isFinite(value));
+  const nextOffset = options.limit && batchOffset + selectedEntries.length < universeCount ? batchOffset + selectedEntries.length : null;
   return {
     strategy: {
       ...strategy,
@@ -633,11 +650,16 @@ export async function evaluateStrategy(input: unknown): Promise<StrategyEvaluati
     matches: matches.sort((a, b) => a.market.localeCompare(b.market) || a.symbol.localeCompare(b.symbol)),
     evaluatedAt,
     errors,
-    universeCount: universeByMarket.reduce((sum, item) => sum + item.symbols.length, 0),
+    universeCount,
     cachedCount: cachedSnapshots.length,
     staleCount: cachedSnapshots.filter((snapshot) => !snapshot.fresh).length,
     priceCachedCount,
     priceMissingCount,
-    cacheRefreshedAt: refreshedTimes.length ? new Date(Math.max(...refreshedTimes)).toISOString() : undefined
+    cacheRefreshedAt: refreshedTimes.length ? new Date(Math.max(...refreshedTimes)).toISOString() : undefined,
+    batchOffset,
+    batchLimit,
+    batchEvaluatedCount: selectedEntries.length,
+    batchNextOffset: nextOffset,
+    isPartial: nextOffset !== null || batchOffset > 0
   };
 }

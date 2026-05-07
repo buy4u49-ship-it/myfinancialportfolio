@@ -3057,27 +3057,80 @@ function StrategiesPanel({
   }
 
   async function evaluateDraft(target = draft) {
+    const batchSize = 250;
     setStrategyBusy(true);
     setStrategyStatus("");
     try {
-      const data = await parseJsonResponse<StrategyEvaluation>(
-        await fetch("/api/strategies", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ strategy: target })
-        })
-      );
-      setEvaluation(data);
+      let offset = 0;
+      let batchNumber = 0;
+      let latest: StrategyEvaluation | null = null;
+      const matches: StrategyEvaluation["matches"] = [];
+      const errors: StrategyEvaluation["errors"] = [];
+      let cachedCount = 0;
+      let staleCount = 0;
+      let priceCachedCount = 0;
+      let priceMissingCount = 0;
+
+      while (true) {
+        batchNumber += 1;
+        setStrategyStatus(`Screening batch ${batchNumber}...`);
+        const data = await parseJsonResponse<StrategyEvaluation>(
+          await fetch("/api/strategies", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ strategy: target, offset, limit: batchSize })
+          })
+        );
+        latest = data;
+        matches.push(...data.matches);
+        errors.push(...data.errors);
+        cachedCount += Number(data.cachedCount || 0);
+        staleCount += Number(data.staleCount || 0);
+        priceCachedCount += Number(data.priceCachedCount || 0);
+        priceMissingCount += Number(data.priceMissingCount || 0);
+
+        const nextOffset = data.batchNextOffset;
+        if (nextOffset === null || nextOffset === undefined || nextOffset <= offset) {
+          break;
+        }
+        offset = nextOffset;
+      }
+
+      if (!latest) {
+        return null;
+      }
+      const uniqueMatches = Array.from(
+        new Map(matches.map((match) => [`${match.market}:${match.symbol}`, match])).values()
+      ).sort((a, b) => a.market.localeCompare(b.market) || a.symbol.localeCompare(b.symbol));
+      const finalEvaluation: StrategyEvaluation = {
+        ...latest,
+        strategy: {
+          ...latest.strategy,
+          last_match_count: uniqueMatches.length
+        },
+        matches: uniqueMatches,
+        errors,
+        cachedCount,
+        staleCount,
+        priceCachedCount,
+        priceMissingCount,
+        batchOffset: 0,
+        batchEvaluatedCount: latest.universeCount,
+        batchNextOffset: null,
+        isPartial: false
+      };
+      setEvaluation(finalEvaluation);
       const coverage =
-        data.universeCount && data.cachedCount !== undefined
-          ? ` Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()} fundamentals/metrics${
-              data.staleCount ? `, ${data.staleCount.toLocaleString()} stale` : ""
-            }. Price cache ${Number(data.priceCachedCount || 0).toLocaleString()}/${data.cachedCount.toLocaleString()}.`
+        finalEvaluation.universeCount && finalEvaluation.cachedCount !== undefined
+          ? ` Cached ${finalEvaluation.cachedCount.toLocaleString()}/${finalEvaluation.universeCount.toLocaleString()} fundamentals/metrics${
+              finalEvaluation.staleCount ? `, ${finalEvaluation.staleCount.toLocaleString()} stale` : ""
+            }. Price cache ${Number(finalEvaluation.priceCachedCount || 0).toLocaleString()}/${finalEvaluation.cachedCount.toLocaleString()}.`
           : "";
-      setStrategyStatus(`Matched ${data.matches.length} symbol${data.matches.length === 1 ? "" : "s"}.${coverage}`);
-      return data;
+      setStrategyStatus(`Matched ${finalEvaluation.matches.length} symbol${finalEvaluation.matches.length === 1 ? "" : "s"}.${coverage}`);
+      return finalEvaluation;
     } catch (err) {
-      setStrategyStatus(err instanceof Error ? err.message : "Strategy evaluation failed.");
+      const message = err instanceof Error ? err.message : "Strategy evaluation failed.";
+      setStrategyStatus(`Refresh matches failed: ${message}`);
       return null;
     } finally {
       setStrategyBusy(false);
@@ -3119,38 +3172,48 @@ function StrategiesPanel({
       metricRefreshedCount?: number;
       metricCachedCount?: number;
       metricStaleCount?: number;
+      timeBudgetReached?: boolean;
       errors: Array<{ symbol: string; message: string }>;
     };
+    type RefreshScope = "fundamentals" | "metrics";
 
-    const batchSize = 40;
-    const batchCount = 6;
+    const scopePlans: Array<{ scope: RefreshScope; batchSize: number; batchCount: number }> = [
+      { scope: "fundamentals", batchSize: 6, batchCount: 12 },
+      { scope: "metrics", batchSize: 40, batchCount: 12 }
+    ];
     setCacheBusy(true);
     setStrategyStatus("");
+    let activeStep = "Warm caches";
     try {
       let latest: RefreshCacheResponse | null = null;
       let totalFundamentals = 0;
       let totalMetrics = 0;
       let totalErrors = 0;
+      let timeBudgetReached = false;
 
-      for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
-        setStrategyStatus(`Warming cache batch ${batchIndex + 1}/${batchCount}...`);
-        const data = await parseJsonResponse<RefreshCacheResponse>(
-          await fetch("/api/strategy-metrics/refresh", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ markets: draft.markets, limit: batchSize, force: false })
-          })
-        );
-        latest = data;
-        totalFundamentals += data.refreshedCount;
-        totalMetrics += Number(data.metricRefreshedCount || 0);
-        totalErrors += data.errors.length;
+      for (const { scope, batchSize, batchCount } of scopePlans) {
+        for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
+          activeStep = `Warm caches ${scope} batch ${batchIndex + 1}/${batchCount}`;
+          setStrategyStatus(`Warming ${scope} batch ${batchIndex + 1}/${batchCount}...`);
+          const data = await parseJsonResponse<RefreshCacheResponse>(
+            await fetch("/api/strategy-metrics/refresh", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ markets: draft.markets, scope, limit: batchSize, force: false })
+            })
+          );
+          latest = data;
+          totalFundamentals += data.refreshedCount;
+          totalMetrics += Number(data.metricRefreshedCount || 0);
+          totalErrors += data.errors.length;
+          timeBudgetReached = timeBudgetReached || Boolean(data.timeBudgetReached);
 
-        const metricCachedCount = Number(data.metricCachedCount || 0);
-        const fullyCached = data.cachedCount >= data.universeCount && metricCachedCount >= data.universeCount;
-        const noProgress = data.refreshedCount === 0 && Number(data.metricRefreshedCount || 0) === 0;
-        if (fullyCached || noProgress) {
-          break;
+          const progress = scope === "fundamentals" ? data.refreshedCount : Number(data.metricRefreshedCount || 0);
+          const cachedCount = scope === "fundamentals" ? data.cachedCount : Number(data.metricCachedCount || 0);
+          const fullyCached = data.universeCount > 0 && cachedCount >= data.universeCount;
+          if (fullyCached || progress === 0) {
+            break;
+          }
         }
       }
 
@@ -3160,12 +3223,12 @@ function StrategiesPanel({
             latest.staleCount ? `, ${latest.staleCount.toLocaleString()} stale` : ""
           }${
             latest.metricCachedCount !== undefined ? `. Metric cache ${latest.metricCachedCount.toLocaleString()}/${latest.universeCount.toLocaleString()}` : ""
-          }${latest.metricStaleCount ? `, ${latest.metricStaleCount.toLocaleString()} metric stale` : ""}${totalErrors ? `. ${totalErrors} refresh errors` : ""}.`
+          }${latest.metricStaleCount ? `, ${latest.metricStaleCount.toLocaleString()} metric stale` : ""}${totalErrors ? `. ${totalErrors} refresh errors` : ""}${timeBudgetReached ? " Time budget reached; run Warm caches again to continue." : ""}.`
         );
       }
-      await evaluateDraft();
     } catch (err) {
-      setStrategyStatus(err instanceof Error ? err.message : "Strategy metric cache refresh failed.");
+      const message = err instanceof Error ? err.message : "Strategy metric cache refresh failed.";
+      setStrategyStatus(`${activeStep} failed: ${message}`);
     } finally {
       setCacheBusy(false);
     }

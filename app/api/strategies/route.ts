@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
       throw new Error("User record not found.");
     }
     const body = (await request.json()) as Record<string, unknown>;
-    const evaluation = await evaluateStrategy(body.strategy);
+    const evaluation = await evaluateStrategy(body.strategy, {
+      offset: Number(body.offset ?? 0),
+      limit: Number(body.limit ?? 400)
+    });
     return NextResponse.json(evaluation);
   } catch (error) {
     return NextResponse.json({ error: errorMessage(error) || "Strategy evaluation failed." }, { status: 400 });

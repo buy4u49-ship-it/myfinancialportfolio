@@ -376,6 +376,11 @@ export type StrategyEvaluation = {
   priceCachedCount?: number;
   priceMissingCount?: number;
   cacheRefreshedAt?: string;
+  batchOffset?: number;
+  batchLimit?: number;
+  batchEvaluatedCount?: number;
+  batchNextOffset?: number | null;
+  isPartial?: boolean;
 };
 
 export type StrategyMetricSnapshot = {

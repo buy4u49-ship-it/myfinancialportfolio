@@ -57,33 +57,65 @@ function parseMarkets(input: unknown): StrategyMarket[] | undefined {
   return markets.length ? markets : undefined;
 }
 
+function parseScope(input: unknown) {
+  const scope = String(input || "all").trim().toLowerCase();
+  return scope === "fundamentals" || scope === "metrics" ? scope : "all";
+}
+
+function emptyResult(markets: StrategyMarket[] | undefined) {
+  return {
+    markets: markets || [],
+    universeCount: 0,
+    cachedCount: 0,
+    staleCount: 0,
+    refreshedCount: 0,
+    errors: [],
+    refreshedAt: new Date().toISOString(),
+    timeBudgetReached: false
+  };
+}
+
 async function refresh(request: NextRequest, body: Record<string, unknown> = {}) {
   try {
     await requireRefreshAccess(request);
     const params = request.nextUrl.searchParams;
     const markets = parseMarkets(body.markets ?? body.market ?? params.get("market"));
-    const limit = Math.max(1, Math.min(80, Math.round(Number(body.limit ?? params.get("limit") ?? 40))));
+    const scope = parseScope(body.scope ?? params.get("scope"));
+    const routeStartedAt = Date.now();
+    const routeBudgetMs = 45_000;
+    const remainingBudgetMs = () => Math.max(5_000, routeBudgetMs - (Date.now() - routeStartedAt));
+    const requestedLimit = Math.max(1, Math.min(50, Math.round(Number(body.limit ?? params.get("limit") ?? 20))));
     const force = body.force === true || params.get("force") === "true";
-    const [fundamentalResult, metricResult] = await Promise.all([
-      refreshFinancialFundamentalsCache({
-        markets,
-        limit,
-        force
-      }),
-      refreshStrategyMetricCache({
-        markets,
-        limit,
-        force
-      })
-    ]);
+    const fundamentalLimit = Math.min(requestedLimit, 6);
+    const metricLimit = requestedLimit;
+    const fundamentalResult =
+      scope === "metrics"
+        ? emptyResult(markets)
+        : await refreshFinancialFundamentalsCache({
+            markets,
+            limit: fundamentalLimit,
+            force,
+            deadlineMs: scope === "all" ? 20_000 : remainingBudgetMs()
+          });
+    const metricResult =
+      scope === "fundamentals"
+        ? emptyResult(markets)
+        : await refreshStrategyMetricCache({
+            markets,
+            limit: metricLimit,
+            force,
+            deadlineMs: remainingBudgetMs()
+          });
     return NextResponse.json({
       ok: true,
+      scope,
       ...fundamentalResult,
       universeCount: Math.max(fundamentalResult.universeCount, metricResult.universeCount),
       metricRefreshedCount: metricResult.refreshedCount,
       metricCachedCount: metricResult.cachedCount,
       metricStaleCount: metricResult.staleCount,
       metricErrors: metricResult.errors,
+      timeBudgetReached: Boolean(fundamentalResult.timeBudgetReached || metricResult.timeBudgetReached),
       errors: [...fundamentalResult.errors, ...metricResult.errors]
     });
   } catch (error) {
