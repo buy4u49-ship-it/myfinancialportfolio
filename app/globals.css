@@ -444,8 +444,12 @@ select {
 }
 
 .add-position {
-  grid-template-columns: 220px 92px 74px;
+  grid-template-columns: 110px minmax(220px, 1fr) 92px 74px;
   align-items: center;
+}
+
+.add-cash-button {
+  white-space: nowrap;
 }
 
 .quote-grid {
@@ -855,8 +859,37 @@ select {
 
 .allocation-panel h2,
 .portfolio-card-stack h2 {
-  margin: 0 0 14px;
+  margin: 0;
   font-size: 18px;
+}
+
+.portfolio-card-stack h2 {
+  margin-bottom: 14px;
+}
+
+.allocation-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.allocation-cash-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.allocation-cash-toggle input {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
 }
 
 .allocation-layout {
@@ -1391,29 +1424,20 @@ th {
   text-align: right;
 }
 
-.cash-settings-panel {
-  margin-bottom: 18px;
+.cash-entry-row td {
+  background: #f8fbff;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 
-.cash-settings-row {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(180px, 220px) 92px minmax(220px, 0.8fr);
-  gap: 12px;
-  align-items: center;
-  padding: 16px 22px 20px;
+.cash-entry-row input {
+  width: 100%;
+  min-width: 0;
+  text-align: right;
 }
 
-.cash-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  font-weight: 800;
-  color: var(--ink);
-}
-
-.cash-toggle input {
-  width: 18px;
-  height: 18px;
+.cash-balance-input-cell {
+  min-width: 178px;
 }
 
 .trade-entry-row td {
@@ -1697,11 +1721,7 @@ th {
 
   .add-position {
     width: 100%;
-    grid-template-columns: 1fr 92px 74px;
-  }
-
-  .cash-settings-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(96px, 0.4fr) minmax(160px, 1fr) 92px 74px;
   }
 
   .sell-percent-row {

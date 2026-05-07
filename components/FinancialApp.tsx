@@ -51,6 +51,7 @@ type MyTab = "portfolio" | "alerts" | "strategies" | "account";
 type AuthMode = "login" | "register";
 type AuthCredentials = { username: string; password: string; displayName: string; email: string };
 type RecoveryDraft = { email: string; token: string; newPassword: string };
+type CashDraft = { includeCash: boolean; cashBalance: string; cashCurrency: string };
 type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
 type MappingOption = { statement: string; lineKey: string; label: string };
 
@@ -2382,11 +2383,13 @@ function MyPage({
   const summaryCurrency = portfolio?.summary.currency || "KRW";
   const newSymbolNormalized = newSymbol.trim().toUpperCase();
   const cashSettings = portfolio?.cashSettings || { includeCash: false, cashBalance: 0, cashCurrency: summaryCurrency };
-  const [cashDraft, setCashDraft] = useState({
+  const [cashDraft, setCashDraft] = useState<CashDraft>({
     includeCash: cashSettings.includeCash,
     cashBalance: String(cashSettings.cashBalance || ""),
     cashCurrency: cashSettings.cashCurrency || summaryCurrency
   });
+  const [cashRowOpen, setCashRowOpen] = useState(false);
+  const [tradeAmountOverridesQuantity, setTradeAmountOverridesQuantity] = useState(false);
 
   useEffect(() => {
     setCashDraft({
@@ -2396,15 +2399,17 @@ function MyPage({
     });
   }, [cashSettings.includeCash, cashSettings.cashBalance, cashSettings.cashCurrency, summaryCurrency]);
 
+  useEffect(() => {
+    setTradeAmountOverridesQuantity(false);
+  }, [activeTrade?.symbol, activeTrade?.mode]);
+
   function updateTradeQuantity(value: string) {
+    setTradeAmountOverridesQuantity(false);
     setQuantity(value);
     const quantityValue = Number(value);
     const priceValue = Number(price);
-    const amountValue = Number(tradeAmount);
     if (quantityValue > 0 && priceValue > 0) {
       setTradeAmount(formatTradeInputNumber(quantityValue * priceValue, 2));
-    } else if (quantityValue > 0 && amountValue > 0) {
-      setPrice(formatTradeInputNumber(amountValue / quantityValue, 8));
     }
   }
 
@@ -2413,21 +2418,23 @@ function MyPage({
     const quantityValue = Number(quantity);
     const priceValue = Number(value);
     const amountValue = Number(tradeAmount);
-    if (quantityValue > 0 && priceValue > 0) {
-      setTradeAmount(formatTradeInputNumber(quantityValue * priceValue, 2));
-    } else if (priceValue > 0 && amountValue > 0) {
+    if (tradeAmountOverridesQuantity && amountValue > 0 && priceValue > 0) {
       setQuantity(formatTradeInputNumber(amountValue / priceValue, 8));
+    } else if (quantityValue > 0 && priceValue > 0) {
+      setTradeAmount(formatTradeInputNumber(quantityValue * priceValue, 2));
     }
   }
 
   function updateTradeAmount(value: string) {
     setTradeAmount(value);
+    if (!value) {
+      setTradeAmountOverridesQuantity(false);
+      return;
+    }
+    setTradeAmountOverridesQuantity(true);
     const amountValue = Number(value);
-    const quantityValue = Number(quantity);
     const priceValue = Number(price);
-    if (amountValue > 0 && quantityValue > 0) {
-      setPrice(formatTradeInputNumber(amountValue / quantityValue, 8));
-    } else if (amountValue > 0 && priceValue > 0) {
+    if (amountValue > 0 && priceValue > 0) {
       setQuantity(formatTradeInputNumber(amountValue / priceValue, 8));
     }
   }
@@ -2437,15 +2444,34 @@ function MyPage({
     setQuantity("");
     setPrice(row.price ? String(row.price) : "");
     setTradeAmount("");
+    setTradeAmountOverridesQuantity(false);
   }
 
-  async function saveCashDraft() {
-    await patchPortfolio({
+  async function saveCashDraft(nextCashDraft = cashDraft, closeCashRow = true) {
+    const data = await patchPortfolio({
       action: "update_cash_settings",
-      includeCash: cashDraft.includeCash,
-      cashBalance: Number(cashDraft.cashBalance),
-      cashCurrency: cashDraft.cashCurrency
+      includeCash: nextCashDraft.includeCash,
+      cashBalance: Number(nextCashDraft.cashBalance) || 0,
+      cashCurrency: nextCashDraft.cashCurrency || summaryCurrency
     });
+    if (data && closeCashRow) {
+      setCashRowOpen(false);
+    }
+  }
+
+  async function updateCashInclusion(includeCash: boolean) {
+    const nextCashDraft = { ...cashDraft, includeCash };
+    setCashDraft(nextCashDraft);
+    await saveCashDraft(nextCashDraft, false);
+  }
+
+  function cancelCashEdit() {
+    setCashDraft({
+      includeCash: cashSettings.includeCash,
+      cashBalance: cashSettings.cashBalance ? String(cashSettings.cashBalance) : "",
+      cashCurrency: cashSettings.cashCurrency || summaryCurrency
+    });
+    setCashRowOpen(false);
   }
 
   return (
@@ -2467,7 +2493,13 @@ function MyPage({
 
       {activeTab === "portfolio" ? (
         <>
-          <PortfolioAnalytics rows={rows} portfolio={portfolio} currency={summaryCurrency} />
+          <PortfolioAnalytics
+            rows={rows}
+            portfolio={portfolio}
+            currency={summaryCurrency}
+            cashDraft={cashDraft}
+            onCashInclusion={updateCashInclusion}
+          />
           <section className="summary-grid">
             <SummaryCard label="Current Wealth" value={formatMoney(portfolio?.summary.currentValue, summaryCurrency)} />
             <SummaryCard label="Total Investment" value={formatMoney(portfolio?.summary.costBasis, summaryCurrency)} />
@@ -2483,47 +2515,15 @@ function MyPage({
             />
           </section>
 
-          <section className="panel cash-settings-panel">
-            <div className="panel-heading compact-heading">
-              <div>
-                <h2>Cash Balance</h2>
-                <p className="muted">Cash is included in Current Wealth only when enabled. Cash beta is 0.</p>
-              </div>
-              <button className="ghost-button" disabled={busy} onClick={() => void saveCashDraft()}>
-                Save cash
-              </button>
-            </div>
-            <div className="cash-settings-row">
-              <label className="cash-toggle">
-                <input
-                  type="checkbox"
-                  checked={cashDraft.includeCash}
-                  onChange={(event) => setCashDraft((prev) => ({ ...prev, includeCash: event.target.checked }))}
-                />
-                Include cash in wealth and beta
-              </label>
-              <input
-                type="number"
-                min="0"
-                step="any"
-                placeholder="Cash balance"
-                value={cashDraft.cashBalance}
-                onChange={(event) => setCashDraft((prev) => ({ ...prev, cashBalance: event.target.value }))}
-              />
-              <select value={cashDraft.cashCurrency} onChange={(event) => setCashDraft((prev) => ({ ...prev, cashCurrency: event.target.value }))}>
-                <option value="KRW">KRW</option>
-                <option value="USD">USD</option>
-              </select>
-              <span className="muted">Current cash: {formatMoney(portfolio?.summary.cashBalance, portfolio?.summary.cashCurrency || summaryCurrency)}</span>
-            </div>
-          </section>
-
           <section className="panel">
         <div className="panel-heading">
           <div>
             <h2>Current Portfolio</h2>
           </div>
           <div className="add-position">
+            <button type="button" className="ghost-button add-cash-button" onClick={() => setCashRowOpen(true)}>
+              Add Cash
+            </button>
             <input placeholder="Symbol, e.g. BTC-KRW" value={newSymbol} onChange={(event) => setNewSymbol(event.target.value)} />
             <select value={newCurrency} onChange={(event) => setNewCurrency(event.target.value)}>
               <option value="KRW">KRW</option>
@@ -2537,6 +2537,7 @@ function MyPage({
                 setQuantity("");
                 setPrice("");
                 setTradeAmount("");
+                setTradeAmountOverridesQuantity(false);
               }}
             >
               Buy
@@ -2550,8 +2551,14 @@ function MyPage({
           price={price}
           tradeAmount={tradeAmount}
           newCurrency={newCurrency}
+          portfolio={portfolio}
+          cashDraft={cashDraft}
+          cashRowOpen={cashRowOpen}
           busy={busy}
           onStartTrade={startTrade}
+          onCashBalance={(value) => setCashDraft((prev) => ({ ...prev, cashBalance: value }))}
+          onSaveCash={() => void saveCashDraft()}
+          onCancelCash={cancelCashEdit}
           onQuantity={updateTradeQuantity}
           onPrice={updateTradePrice}
           onAmount={updateTradeAmount}
@@ -2622,18 +2629,33 @@ function AlertBanner({ alerts }: { alerts: PortfolioResponse["triggeredAlerts"] 
 function PortfolioAnalytics({
   rows,
   portfolio,
-  currency
+  currency,
+  cashDraft,
+  onCashInclusion
 }: {
   rows: PortfolioRow[];
   portfolio: PortfolioResponse | null;
   currency: string;
+  cashDraft: CashDraft;
+  onCashInclusion: (includeCash: boolean) => void | Promise<void>;
 }) {
   const projection = portfolio?.projection;
   return (
     <section className="portfolio-analytics">
       <article className="allocation-panel">
-        <h2>Portfolio Allocation</h2>
-        <AllocationDonut rows={rows} currency={currency} />
+        <div className="allocation-panel-header">
+          <h2>Portfolio Allocation</h2>
+          <label className="allocation-cash-toggle">
+            <span>include cash</span>
+            <input
+              type="checkbox"
+              checked={cashDraft.includeCash}
+              disabled={!portfolio}
+              onChange={(event) => void onCashInclusion(event.target.checked)}
+            />
+          </label>
+        </div>
+        <AllocationDonut rows={rows} portfolio={portfolio} currency={currency} />
       </article>
       <article className="portfolio-card-stack">
         <h2>Portfolio Summary</h2>
@@ -2678,9 +2700,28 @@ function MiniMetric({ label, value, tone = "neutral" }: { label: string; value: 
   );
 }
 
-function AllocationDonut({ rows, currency }: { rows: PortfolioRow[]; currency: string }) {
-  const chartRows = rows.filter((row) => (row.marketValue ?? 0) > 0);
-  const total = chartRows.reduce((sum, row) => sum + (row.marketValue ?? 0), 0);
+function AllocationDonut({ rows, portfolio, currency }: { rows: PortfolioRow[]; portfolio: PortfolioResponse | null; currency: string }) {
+  const securityRows = rows
+    .filter((row) => (row.marketValue ?? 0) > 0)
+    .map((row) => ({
+      key: `position-${row.symbol}`,
+      label: row.symbol,
+      value: row.marketValue ?? 0,
+      currency: row.currency || currency
+    }));
+  const cashValue = portfolio?.summary.cashIncluded && Number.isFinite(portfolio.summary.cashBalance) ? portfolio.summary.cashBalance : 0;
+  const chartRows = cashValue > 0
+    ? [
+        ...securityRows,
+        {
+          key: "cash",
+          label: "Cash",
+          value: cashValue,
+          currency: portfolio?.summary.cashCurrency || currency
+        }
+      ]
+    : securityRows;
+  const total = chartRows.reduce((sum, row) => sum + row.value, 0);
   const colors = ["#0068c9", "#83c9ff", "#ff2b2b", "#ffabab", "#29b09d", "#ff8700", "#6d3fc0", "#00c7b7", "#7f7f7f", "#bcbd22"];
   let offset = 0;
   const circumference = 2 * Math.PI * 54;
@@ -2694,11 +2735,10 @@ function AllocationDonut({ rows, currency }: { rows: PortfolioRow[]; currency: s
       <svg className="donut-chart" viewBox="0 0 160 160" role="img">
         <circle cx="80" cy="80" r="54" fill="none" stroke="var(--line)" strokeWidth="28" />
         {chartRows.map((row, index) => {
-          const value = row.marketValue ?? 0;
-          const dash = (value / total) * circumference;
+          const dash = (row.value / total) * circumference;
           const segment = (
             <circle
-              key={row.symbol}
+              key={row.key}
               cx="80"
               cy="80"
               r="54"
@@ -2717,10 +2757,10 @@ function AllocationDonut({ rows, currency }: { rows: PortfolioRow[]; currency: s
       </svg>
       <div className="allocation-legend">
         {chartRows.map((row, index) => (
-          <div key={row.symbol} className="allocation-legend-item">
+          <div key={row.key} className="allocation-legend-item">
             <span className="allocation-legend-swatch" style={{ background: colors[index % colors.length] }}></span>
-            <span className="allocation-legend-label">{row.symbol}</span>
-            <span className="allocation-legend-value">{formatMoney(row.marketValue, currency)}</span>
+            <span className="allocation-legend-label">{row.label}</span>
+            <span className="allocation-legend-value">{formatMoney(row.value, row.currency)}</span>
           </div>
         ))}
       </div>
@@ -3481,8 +3521,14 @@ function PortfolioTable({
   price,
   tradeAmount,
   newCurrency,
+  portfolio,
+  cashDraft,
+  cashRowOpen,
   busy,
   onStartTrade,
+  onCashBalance,
+  onSaveCash,
+  onCancelCash,
   onQuantity,
   onPrice,
   onAmount,
@@ -3495,8 +3541,14 @@ function PortfolioTable({
   price: string;
   tradeAmount: string;
   newCurrency: string;
+  portfolio: PortfolioResponse | null;
+  cashDraft: CashDraft;
+  cashRowOpen: boolean;
   busy: boolean;
   onStartTrade: (row: PortfolioRow, mode: TradeMode) => void;
+  onCashBalance: (value: string) => void;
+  onSaveCash: () => void;
+  onCancelCash: () => void;
   onQuantity: (value: string) => void;
   onPrice: (value: string) => void;
   onAmount: (value: string) => void;
@@ -3504,6 +3556,16 @@ function PortfolioTable({
   onSubmit: (symbol: string, mode: TradeMode, currency: string) => void;
 }) {
   const activeRow = activeTrade ? rows.find((row) => row.symbol === activeTrade.symbol) : undefined;
+  const fallbackCurrency = portfolio?.summary.currency || newCurrency;
+  const cashSettings = portfolio?.cashSettings || { includeCash: false, cashBalance: 0, cashCurrency: fallbackCurrency };
+  const cashCurrency = cashDraft.cashCurrency || cashSettings.cashCurrency || fallbackCurrency;
+  const cashBalance = cashDraft.cashBalance.trim() ? Number(cashDraft.cashBalance) : 0;
+  const safeCashBalance = Number.isFinite(cashBalance) ? cashBalance : 0;
+  const showCashRow = cashRowOpen || cashSettings.cashBalance > 0;
+  const cashAllocationPct =
+    portfolio?.summary.cashIncluded && portfolio.summary.currentValue > 0 && safeCashBalance > 0
+      ? (safeCashBalance / portfolio.summary.currentValue) * 100
+      : null;
   return (
     <div className="table-wrap">
       <table className="portfolio-table">
@@ -3521,6 +3583,18 @@ function PortfolioTable({
           </tr>
         </thead>
         <tbody>
+          {showCashRow ? (
+            <CashPortfolioRow
+              cashBalanceText={cashDraft.cashBalance}
+              cashBalance={safeCashBalance}
+              cashCurrency={cashCurrency}
+              allocationPct={cashAllocationPct}
+              busy={busy}
+              onCashBalance={onCashBalance}
+              onSaveCash={onSaveCash}
+              onCancelCash={onCancelCash}
+            />
+          ) : null}
           {activeTrade && !activeRow ? (
             <TradeOnlyRow
               symbol={activeTrade.symbol}
@@ -3583,7 +3657,7 @@ function PortfolioTable({
               ) : null}
             </Fragment>
           ))}
-          {!rows.length && !activeTrade ? (
+          {!rows.length && !activeTrade && !showCashRow ? (
             <tr>
               <td colSpan={9} className="empty-cell">
                 Add a symbol above to start recording trades.
@@ -3593,6 +3667,59 @@ function PortfolioTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function CashPortfolioRow({
+  cashBalanceText,
+  cashBalance,
+  cashCurrency,
+  allocationPct,
+  busy,
+  onCashBalance,
+  onSaveCash,
+  onCancelCash
+}: {
+  cashBalanceText: string;
+  cashBalance: number;
+  cashCurrency: string;
+  allocationPct: number | null;
+  busy: boolean;
+  onCashBalance: (value: string) => void;
+  onSaveCash: () => void;
+  onCancelCash: () => void;
+}) {
+  return (
+    <tr className="cash-entry-row">
+      <td className="text-cell strong">Cash</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell cash-balance-input-cell">
+        <input
+          aria-label="Cash balance"
+          type="number"
+          min="0"
+          step="any"
+          placeholder={`Cash balance (${cashCurrency})`}
+          value={cashBalanceText}
+          onChange={(event) => onCashBalance(event.target.value)}
+        />
+      </td>
+      <td className="number-cell">{formatMoney(cashBalance, cashCurrency)}</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell muted">N/A</td>
+      <td className="number-cell">{formatPct(allocationPct)}</td>
+      <td className="action-cell">
+        <div className="trade-buttons trade-entry-actions">
+          <button className="buy-button" onClick={onSaveCash} disabled={busy}>
+            Save
+          </button>
+          <button className="mini-ghost" onClick={onCancelCash}>
+            Cancel
+          </button>
+        </div>
+      </td>
+    </tr>
   );
 }
 
