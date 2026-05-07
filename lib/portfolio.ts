@@ -275,7 +275,7 @@ function buildPortfolioSummary(rows: PortfolioRow[], transactions: PortfolioTran
 
 export function applyTrade(record: UserRecord, input: TradeInput) {
   const type = input.type;
-  const quantity = numberOrZero(input.quantity);
+  const requestedQuantity = numberOrZero(input.quantity);
   const price = numberOrZero(input.price);
   const currency = String(input.currency || inferCurrency(input.symbol)).toUpperCase();
   const symbol = normalizeSymbol(input.symbol, currency);
@@ -286,42 +286,53 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
   if (!["BUY", "SELL"].includes(type)) {
     throw new Error("Trade type must be BUY or SELL.");
   }
-  if (quantity <= 0 || price <= 0) {
+  if (requestedQuantity <= 0 || price <= 0) {
     throw new Error("Quantity and price must be greater than 0.");
   }
 
-  const tradeValue = quantity * price;
   const portfolio = activePositions(record);
   const existing = portfolio.find((position) => position.symbol === symbol);
+  let executedQuantity = requestedQuantity;
   let realizedGainLoss: number | null = null;
   let costBasis: number | undefined;
 
   if (type === "BUY") {
+    const tradeValue = executedQuantity * price;
     if (existing) {
       const previousCost = existing.quantity * existing.avg_cost;
       const additionalCost = tradeValue;
-      existing.quantity += quantity;
+      existing.quantity += executedQuantity;
       existing.avg_cost = (previousCost + additionalCost) / existing.quantity;
       existing.updated_at = new Date().toISOString();
     } else {
       portfolio.push({
         symbol,
-        quantity,
+        quantity: executedQuantity,
         avg_cost: price,
         cost_currency: currency,
         created_at: new Date().toISOString()
       });
     }
   } else {
-    if (!existing || existing.quantity < quantity) {
+    if (!existing) {
       throw new Error("Sell quantity cannot exceed current holdings.");
     }
-    costBasis = existing.avg_cost * quantity;
-    realizedGainLoss = quantity * price - costBasis;
-    existing.quantity -= quantity;
+    const sellTolerance = Math.max(0.000000001, existing.quantity * 0.000000001);
+    const overSoldBy = requestedQuantity - existing.quantity;
+    if (overSoldBy > sellTolerance) {
+      throw new Error("Sell quantity cannot exceed current holdings.");
+    }
+    const remainingAfterRequestedSell = existing.quantity - requestedQuantity;
+    if (overSoldBy >= 0 || remainingAfterRequestedSell <= sellTolerance) {
+      executedQuantity = existing.quantity;
+    }
+    costBasis = existing.avg_cost * executedQuantity;
+    realizedGainLoss = executedQuantity * price - costBasis;
+    existing.quantity = Math.max(0, existing.quantity - executedQuantity);
     existing.updated_at = new Date().toISOString();
   }
 
+  const tradeValue = executedQuantity * price;
   const cashSettings = normalizeCashSettings(record);
   const cashCurrency = cashSettings.cashCurrency || currency;
   saveCashSettings(record, {
@@ -342,7 +353,7 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
     id: crypto.randomUUID(),
     type,
     symbol,
-    quantity,
+    quantity: executedQuantity,
     price,
     currency,
     value: tradeValue,
@@ -353,7 +364,6 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
   record.transactions = [...(Array.isArray(record.transactions) ? record.transactions : []), transaction];
   return record;
 }
-
 export function addPriceAlert(record: UserRecord, input: { symbol: string; direction: string; targetPrice: number }) {
   const alerts = normalizeAlerts(record);
   const symbol = normalizeSymbol(input.symbol);

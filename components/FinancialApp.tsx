@@ -3663,7 +3663,7 @@ function PortfolioTable({
   const cashSettings = portfolio?.cashSettings || { includeCash: false, cashBalance: 0, cashCurrency: fallbackCurrency };
   const savedCashBalance = Number.isFinite(cashSettings.cashBalance) ? cashSettings.cashBalance : 0;
   const savedCashCurrency = cashSettings.cashCurrency || fallbackCurrency;
-  const hasSavedCash = savedCashBalance > 0;
+  const hasSavedCash = Math.abs(savedCashBalance) > 0.00000001;
   const draftCashCurrency = cashDraft.cashCurrency || savedCashCurrency;
   const draftCashBalance = cashDraft.cashBalance.trim() ? Number(cashDraft.cashBalance) : 0;
   const safeDraftCashBalance = Number.isFinite(draftCashBalance) ? draftCashBalance : 0;
@@ -3918,8 +3918,8 @@ function TradeEntryRow({
     if (!heldQuantity || heldQuantity <= 0) {
       return;
     }
-    const nextQuantity = heldQuantity * (percent / 100);
-    onQuantity(formatTradeInputNumber(nextQuantity, 8));
+    const nextQuantity = percent === 100 ? heldQuantity : heldQuantity * (percent / 100);
+    onQuantity(percent === 100 ? String(heldQuantity) : formatTradeInputNumber(nextQuantity, 8));
     const priceValue = Number(price);
     if (priceValue > 0) {
       onAmount(formatTradeInputNumber(nextQuantity * priceValue, 2));
