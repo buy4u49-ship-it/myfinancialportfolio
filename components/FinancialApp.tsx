@@ -2957,7 +2957,7 @@ function StrategiesPanel({
         await fetch("/api/strategy-metrics/refresh", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ markets: draft.markets, limit: 50, force: true })
+          body: JSON.stringify({ markets: draft.markets, limit: 300, force: true })
         })
       );
       setStrategyStatus(

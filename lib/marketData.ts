@@ -322,6 +322,11 @@ function positiveNumberOrNull(value: unknown) {
   return num !== null && num > 0 ? num : null;
 }
 
+function epsNumberOrNull(value: unknown) {
+  const eps = numberOrNull(value);
+  return eps === 0 ? null : eps;
+}
+
 function quoteToMover(quote: Quote): MarketMoverRow {
   return {
     symbol: quote.symbol,
@@ -1036,6 +1041,34 @@ const SEC_FACT_FIELDS: Record<string, string[]> = {
   dividends: ["PaymentsOfDividends"]
 };
 
+const SEC_EPS_UNITS = ["USD/shares", "USD/share", "USD / shares", "USD / share", "USD-per-shares", "USD-per-share"];
+const SEC_SHARE_UNITS = ["shares"];
+const SEC_EPS_FACT_FIELDS = [
+  "EarningsPerShareDiluted",
+  "EarningsPerShareBasic",
+  "EarningsPerShareBasicAndDiluted",
+  "IncomeLossFromContinuingOperationsPerDilutedShare",
+  "IncomeLossFromContinuingOperationsPerBasicShare",
+  "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare"
+];
+const SEC_COMMON_INCOME_FIELDS = [
+  "NetIncomeLossAvailableToCommonStockholdersBasic",
+  "NetIncomeLossAvailableToCommonStockholdersDiluted",
+  "NetIncomeLossAvailableToCommonStockholdersBasicAndDiluted",
+  "NetIncomeLossAttributableToParent"
+];
+const SEC_DILUTED_SHARE_FIELDS = [
+  "WeightedAverageNumberOfDilutedSharesOutstanding",
+  "WeightedAverageNumberOfSharesOutstandingDiluted",
+  "WeightedAverageNumberOfShareOutstandingDiluted"
+];
+const SEC_BASIC_SHARE_FIELDS = [
+  "WeightedAverageNumberOfSharesOutstandingBasic",
+  "WeightedAverageNumberOfShareOutstandingBasic",
+  "WeightedAverageNumberOfSharesOutstandingBasicAndDiluted",
+  "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"
+];
+
 type SecCompanyFacts = {
   facts?: {
     "us-gaap"?: Record<
@@ -1073,11 +1106,20 @@ function secFactRows(facts: SecCompanyFacts | null, concept: string) {
   return secFactRowsByUnits(facts, concept, ["USD"]);
 }
 
+function normalizedSecUnit(unit: string) {
+  return unit.toLowerCase().replace(/\s+/g, "").replace(/-per-/g, "/").replace(/\/+/, "/");
+}
+
+function isAnnualSecForm(form: string | undefined) {
+  return Boolean(form && (form.startsWith("10-K") || form.startsWith("20-F") || form.startsWith("40-F")));
+}
+
 function secFactRowsByUnits(facts: SecCompanyFacts | null, concept: string, units: string[]) {
   const unitMap = facts?.facts?.["us-gaap"]?.[concept]?.units || {};
-  const rows = units.flatMap((unit) => unitMap[unit] || []);
+  const acceptedUnits = new Set(units.map(normalizedSecUnit));
+  const rows = Object.entries(unitMap).flatMap(([unit, unitRows]) => (acceptedUnits.has(normalizedSecUnit(unit)) ? unitRows : []));
   return rows
-    .filter((row) => row.form?.startsWith("10-K") && row.fp === "FY" && Number.isFinite(row.val) && row.fy)
+    .filter((row) => isAnnualSecForm(row.form) && row.fp === "FY" && Number.isFinite(row.val) && row.fy)
     .sort((a, b) => String(b.filed || b.end || "").localeCompare(String(a.filed || a.end || "")));
 }
 
@@ -1108,6 +1150,21 @@ function secValueByUnits(facts: SecCompanyFacts | null, concepts: string[], fisc
     }
   }
   return null;
+}
+
+function secEpsValue(facts: SecCompanyFacts | null, fiscalYear: number, netIncome: number | null) {
+  const reportedEps = epsNumberOrNull(secValueByUnits(facts, SEC_EPS_FACT_FIELDS, fiscalYear, SEC_EPS_UNITS));
+  if (reportedEps !== null) {
+    return reportedEps;
+  }
+  const commonIncome = secValue(facts, SEC_COMMON_INCOME_FIELDS, fiscalYear) ?? netIncome;
+  const shares =
+    positiveNumberOrNull(secValueByUnits(facts, SEC_DILUTED_SHARE_FIELDS, fiscalYear, SEC_SHARE_UNITS)) ??
+    positiveNumberOrNull(secValueByUnits(facts, SEC_BASIC_SHARE_FIELDS, fiscalYear, SEC_SHARE_UNITS));
+  if (commonIncome === null || shares === null) {
+    return null;
+  }
+  return commonIncome / shares;
 }
 
 function derivedSecValue(key: string, values: Record<string, number | null>) {
@@ -1813,7 +1870,7 @@ function openDartRatioValuesForYear(
       accountNames: ["기본주당이익", "희석주당이익", "기본및희석주당이익"]
     })
   );
-  const eps = dartNumber(epsRow?.thstrm_amount);
+  const eps = epsNumberOrNull(dartNumber(epsRow?.thstrm_amount));
   const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
   return {
     eps,
@@ -1889,7 +1946,7 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
   const price = (summary.price || {}) as Record<string, unknown>;
   const financialData = (summary.financialData || {}) as Record<string, unknown>;
   const stats = (summary.defaultKeyStatistics || {}) as Record<string, unknown>;
-  const eps = numberOrNull(rawValue(stats.trailingEps));
+  const eps = epsNumberOrNull(rawValue(stats.trailingEps));
   const marketPrice = positiveNumberOrNull(rawValue(price.regularMarketPrice));
   const per = numberOrNull(rawValue(stats.trailingPE)) ?? (eps !== null && eps !== 0 && marketPrice ? marketPrice / eps : null);
   return {
@@ -1910,9 +1967,7 @@ function secRatioValuesForYear(facts: SecCompanyFacts | null, fiscalYear: number
   const netIncome = secValue(facts, SEC_FACT_FIELDS.net_income, fiscalYear);
   const equity = secValue(facts, SEC_FACT_FIELDS.total_equity, fiscalYear);
   const previousEquity = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.total_equity, previousFiscalYear) : null;
-  const eps =
-    secValueByUnits(facts, ["EarningsPerShareDiluted", "EarningsPerShareBasic"], fiscalYear, ["USD/shares", "USD / shares"]) ??
-    null;
+  const eps = secEpsValue(facts, fiscalYear, netIncome);
   const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
   return {
     eps,
@@ -2137,7 +2192,7 @@ export async function buildFinancialFundamentalFromSources(
       source = "opendart_monthly_cache";
       const latest = koreaFinancial.ratioHistory?.[0];
       fiscalYear = latest?.fiscalYear ?? null;
-      company = mergeRatioValues(company, koreaFinancial.ratioValues ?? periodToRatioValues(latest));
+      company = mergeRatioValues(koreaFinancial.ratioValues ?? periodToRatioValues(latest), company);
     }
   } else {
     const facts = await fetchSecCompanyFacts(normalized);
@@ -2148,7 +2203,7 @@ export async function buildFinancialFundamentalFromSources(
       fiscalYear = latest.fy;
       const previousFiscalYear = periods[1]?.fy ?? null;
       const secCompany = secRatioValuesForYear(facts, latest.fy, previousFiscalYear, marketPrice);
-      company = mergeRatioValues(company, secCompany);
+      company = mergeRatioValues(secCompany, company);
       netIncome = secValue(facts, SEC_FACT_FIELDS.net_income, latest.fy);
       const equity = secValue(facts, SEC_FACT_FIELDS.total_equity, latest.fy);
       const previousEquity = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.total_equity, previousFiscalYear) : null;

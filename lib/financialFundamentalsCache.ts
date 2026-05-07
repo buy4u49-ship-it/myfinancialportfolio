@@ -80,6 +80,10 @@ function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapsh
     const num = Number(value);
     return Number.isFinite(num) ? num : null;
   };
+  const epsOrNull = (value: unknown) => {
+    const eps = numberOrNull(value);
+    return eps === 0 ? null : eps;
+  };
   return {
     symbol,
     market,
@@ -88,7 +92,7 @@ function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapsh
     industry: String(row.industry || ""),
     currency: String(row.currency || ""),
     fiscalYear: numberOrNull(row.fiscal_year),
-    eps: numberOrNull(row.eps),
+    eps: epsOrNull(row.eps),
     roePct: numberOrNull(row.roe_pct),
     netIncome: numberOrNull(row.net_income),
     averageEquity: numberOrNull(row.average_equity),
@@ -209,16 +213,37 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
     .flatMap(({ market, symbols }) =>
       symbols.map((symbol) => {
         const snapshot = cache.get(`${market}:${symbol}`);
+        const officialSource = snapshot?.source === "sec_company_facts" || snapshot?.source === "opendart_monthly_cache";
+        const missingEps = snapshot?.eps === null || snapshot?.eps === 0;
         return {
           market,
           symbol,
           snapshot,
+          officialSource,
+          missingEps,
           refreshedAtMs: snapshot?.refreshedAt ? Date.parse(snapshot.refreshedAt) : 0
         };
       })
     )
-    .filter((item) => options.force || !item.snapshot || !isFresh(item.snapshot.refreshedAt))
-    .sort((a, b) => a.refreshedAtMs - b.refreshedAtMs)
+    .filter((item) => options.force || !item.snapshot || !isFresh(item.snapshot.refreshedAt) || (item.missingEps && !item.officialSource))
+    .sort((a, b) => {
+      const priority = (item: { snapshot?: FinancialFundamentalSnapshot; officialSource: boolean; missingEps: boolean }) => {
+        if (!item.snapshot) {
+          return 0;
+        }
+        if (item.missingEps && !item.officialSource) {
+          return 1;
+        }
+        if (item.missingEps) {
+          return 2;
+        }
+        if (!item.officialSource) {
+          return 3;
+        }
+        return 4;
+      };
+      return priority(a) - priority(b) || a.refreshedAtMs - b.refreshedAtMs;
+    })
     .slice(0, limit);
 
   const snapshots: FinancialFundamentalSnapshot[] = [];
