@@ -20,6 +20,9 @@ type MarketQuoteCacheRow = {
 };
 
 function numberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
 }

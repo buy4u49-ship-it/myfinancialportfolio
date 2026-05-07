@@ -208,8 +208,8 @@ function strategyUsesIndustryMedians(strategy: StrategyDefinition) {
   );
 }
 
-function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, quote: Quote | undefined) {
-  const price = positiveNumber(quote?.price);
+function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, priceValue: number | null | undefined) {
+  const price = positiveNumber(priceValue);
   const eps = nonZeroNumber(fundamental.eps);
   if (price === null || eps === null) {
     return null;
@@ -222,15 +222,21 @@ function evaluationFromFundamental(
   quote: Quote | undefined,
   supplemental?: StrategyMetricSnapshot
 ): EvaluationSnapshot {
-  const price = positiveNumber(quote?.price);
-  const changePct = finiteNumber(quote?.changePct);
+  const supplementalMetrics = supplemental?.metrics || {};
+  const price =
+    positiveNumber(quote?.price) ??
+    positiveNumber(supplementalMetrics.price) ??
+    positiveNumber(supplemental?.price) ??
+    positiveNumber(fundamental.priceAtRefresh);
+  const changePct = finiteNumber(quote?.changePct) ?? finiteNumber(supplementalMetrics.changePct) ?? finiteNumber(supplemental?.changePct);
+  const companyPer = companyPerFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyPer);
   const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
-    ...supplemental?.metrics,
+    ...supplementalMetrics,
     price,
     changePct,
     companyEps: fundamental.eps,
-    companyPer: companyPerFromFundamental(fundamental, quote),
-    companyRoe: fundamental.roePct
+    companyPer,
+    companyRoe: fundamental.roePct ?? finiteNumber(supplementalMetrics.companyRoe)
   };
   return {
     symbol: fundamental.symbol,

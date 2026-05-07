@@ -259,28 +259,34 @@ function cachedSnapshot(row: Record<string, unknown>): StrategyMetricSnapshot | 
   if (!market || !symbol) {
     return null;
   }
+  const numberOrNull = (value: unknown) => {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
   const rawMetrics = row.metrics && typeof row.metrics === "object" ? (row.metrics as Partial<Record<StrategyMetricKey, unknown>>) : {};
   const metrics = Object.entries(rawMetrics).reduce<Partial<Record<StrategyMetricKey, number | null>>>((next, [key, value]) => {
-    const num = Number(value);
-    next[key as StrategyMetricKey] = value === null || value === undefined || !Number.isFinite(num) ? null : num;
+    next[key as StrategyMetricKey] = numberOrNull(value);
     return next;
   }, {});
-  const price = Number(row.price);
-  const changePct = Number(row.change_pct ?? row.changePct);
+  const price = numberOrNull(row.price);
+  const changePct = numberOrNull(row.change_pct ?? row.changePct);
   const rawTechnical = row.technical_payload && typeof row.technical_payload === "object" ? (row.technical_payload as Record<string, unknown>) : {};
   const rawDaily = Array.isArray(rawTechnical.daily) ? rawTechnical.daily : [];
   const daily = rawDaily
     .map((point): StrategyTechnicalDailyPoint | null => {
       const record = point && typeof point === "object" ? (point as Record<string, unknown>) : {};
-      const close = Number(record.close);
-      const volume = Number(record.volume);
-      if (!String(record.time || "") || !Number.isFinite(close)) {
+      const close = numberOrNull(record.close);
+      const volume = numberOrNull(record.volume);
+      if (!String(record.time || "") || close === null) {
         return null;
       }
       return {
         time: String(record.time),
         close,
-        volume: Number.isFinite(volume) ? volume : null
+        volume
       };
     })
     .filter((point): point is StrategyTechnicalDailyPoint => point !== null);
@@ -290,8 +296,8 @@ function cachedSnapshot(row: Record<string, unknown>): StrategyMetricSnapshot | 
     name: String(row.name || symbol),
     sector: String(row.sector || ""),
     industry: String(row.industry || ""),
-    price: Number.isFinite(price) ? price : null,
-    changePct: Number.isFinite(changePct) ? changePct : null,
+    price,
+    changePct,
     metrics,
     technical: daily.length ? { daily } : undefined,
     source: String(row.source || "strategy_metric_cache"),
