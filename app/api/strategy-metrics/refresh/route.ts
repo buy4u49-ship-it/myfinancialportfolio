@@ -5,6 +5,7 @@ import { refreshStrategyMetricCache } from "@/lib/strategyMetricCache";
 import type { StrategyMarket } from "@/lib/types";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 function errorMessage(error: unknown) {
   if (error instanceof Error) {
@@ -61,7 +62,7 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
     await requireRefreshAccess(request);
     const params = request.nextUrl.searchParams;
     const markets = parseMarkets(body.markets ?? body.market ?? params.get("market"));
-    const limit = Number(body.limit ?? params.get("limit") ?? 50);
+    const limit = Math.max(1, Math.min(80, Math.round(Number(body.limit ?? params.get("limit") ?? 40))));
     const force = body.force === true || params.get("force") === "true";
     const [fundamentalResult, metricResult] = await Promise.all([
       refreshFinancialFundamentalsCache({

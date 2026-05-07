@@ -157,9 +157,20 @@ function displayMarketSymbol(symbol: string) {
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
-  const payload = (await response.json()) as T & { error?: string };
+  const rawText = await response.text();
+  let payload: (T & { error?: string }) | null = null;
+  try {
+    payload = rawText ? (JSON.parse(rawText) as T & { error?: string }) : null;
+  } catch {
+    const preview = rawText.trim().replace(/\s+/g, " ").slice(0, 240);
+    const fallback = preview || response.statusText || "Empty response";
+    throw new Error(`Server returned a non-JSON response (${response.status}): ${fallback}`);
+  }
   if (!response.ok) {
-    throw new Error(payload.error || "Request failed.");
+    throw new Error(payload?.error || `Request failed with status ${response.status}.`);
+  }
+  if (!payload) {
+    throw new Error("Server returned an empty response.");
   }
   return payload;
 }
@@ -3100,32 +3111,58 @@ function StrategiesPanel({
   }
 
   async function refreshMetricCache() {
+    type RefreshCacheResponse = {
+      refreshedCount: number;
+      universeCount: number;
+      cachedCount: number;
+      staleCount: number;
+      metricRefreshedCount?: number;
+      metricCachedCount?: number;
+      metricStaleCount?: number;
+      errors: Array<{ symbol: string; message: string }>;
+    };
+
+    const batchSize = 40;
+    const batchCount = 6;
     setCacheBusy(true);
     setStrategyStatus("");
     try {
-      const data = await parseJsonResponse<{
-        refreshedCount: number;
-        universeCount: number;
-        cachedCount: number;
-        staleCount: number;
-        metricRefreshedCount?: number;
-        metricCachedCount?: number;
-        metricStaleCount?: number;
-        errors: Array<{ symbol: string; message: string }>;
-      }>(
-        await fetch("/api/strategy-metrics/refresh", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ markets: draft.markets, limit: 300, force: true })
-        })
-      );
-      setStrategyStatus(
-        `Refreshed ${data.refreshedCount.toLocaleString()} fundamentals and ${Number(data.metricRefreshedCount || 0).toLocaleString()} metrics. Cached ${data.cachedCount.toLocaleString()}/${data.universeCount.toLocaleString()} fundamentals${
-          data.staleCount ? `, ${data.staleCount.toLocaleString()} stale` : ""
-        }${
-          data.metricCachedCount !== undefined ? `. Metric cache ${data.metricCachedCount.toLocaleString()}/${data.universeCount.toLocaleString()}` : ""
-        }${data.metricStaleCount ? `, ${data.metricStaleCount.toLocaleString()} metric stale` : ""}${data.errors.length ? `. ${data.errors.length} refresh errors` : ""}.`
-      );
+      let latest: RefreshCacheResponse | null = null;
+      let totalFundamentals = 0;
+      let totalMetrics = 0;
+      let totalErrors = 0;
+
+      for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
+        setStrategyStatus(`Warming cache batch ${batchIndex + 1}/${batchCount}...`);
+        const data = await parseJsonResponse<RefreshCacheResponse>(
+          await fetch("/api/strategy-metrics/refresh", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ markets: draft.markets, limit: batchSize, force: false })
+          })
+        );
+        latest = data;
+        totalFundamentals += data.refreshedCount;
+        totalMetrics += Number(data.metricRefreshedCount || 0);
+        totalErrors += data.errors.length;
+
+        const metricCachedCount = Number(data.metricCachedCount || 0);
+        const fullyCached = data.cachedCount >= data.universeCount && metricCachedCount >= data.universeCount;
+        const noProgress = data.refreshedCount === 0 && Number(data.metricRefreshedCount || 0) === 0;
+        if (fullyCached || noProgress) {
+          break;
+        }
+      }
+
+      if (latest) {
+        setStrategyStatus(
+          `Refreshed ${totalFundamentals.toLocaleString()} fundamentals and ${totalMetrics.toLocaleString()} metrics across cache batches. Cached ${latest.cachedCount.toLocaleString()}/${latest.universeCount.toLocaleString()} fundamentals${
+            latest.staleCount ? `, ${latest.staleCount.toLocaleString()} stale` : ""
+          }${
+            latest.metricCachedCount !== undefined ? `. Metric cache ${latest.metricCachedCount.toLocaleString()}/${latest.universeCount.toLocaleString()}` : ""
+          }${latest.metricStaleCount ? `, ${latest.metricStaleCount.toLocaleString()} metric stale` : ""}${totalErrors ? `. ${totalErrors} refresh errors` : ""}.`
+        );
+      }
       await evaluateDraft();
     } catch (err) {
       setStrategyStatus(err instanceof Error ? err.message : "Strategy metric cache refresh failed.");

@@ -4,6 +4,7 @@ import { evaluateStrategy } from "@/lib/strategies";
 import { getUserRecord } from "@/lib/userStore";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 function errorMessage(error: unknown) {
   if (error instanceof Error) {
