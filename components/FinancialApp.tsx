@@ -541,6 +541,15 @@ export default function FinancialApp() {
     const priceValue = Number(price);
     const resolvedQuantity = quantityValue > 0 ? quantityValue : amountValue > 0 && priceValue > 0 ? amountValue / priceValue : quantityValue;
     const resolvedPrice = priceValue > 0 ? priceValue : amountValue > 0 && quantityValue > 0 ? amountValue / quantityValue : priceValue;
+    const currentRow = portfolio?.rows.find((row) => row.symbol === targetSymbol);
+    const sellAllTolerance = currentRow ? Math.max(0.000000001, currentRow.quantity * 0.000001) : 0;
+    const shouldSellAll =
+      mode === "SELL" &&
+      Boolean(currentRow) &&
+      (Math.abs(resolvedQuantity - (currentRow?.quantity || 0)) <= sellAllTolerance ||
+        (amountValue > 0 && currentRow?.marketValue !== null && currentRow?.marketValue !== undefined
+          ? Math.abs(amountValue - currentRow.marketValue) <= Math.max(1, currentRow.marketValue * 0.000001)
+          : false));
     setBusy(true);
     setError("");
     try {
@@ -551,8 +560,9 @@ export default function FinancialApp() {
           body: JSON.stringify({
             type: mode,
             symbol: targetSymbol,
-            quantity: resolvedQuantity,
+            quantity: shouldSellAll && currentRow ? currentRow.quantity : resolvedQuantity,
             price: resolvedPrice,
+            sellAll: shouldSellAll,
             currency
           })
         })
@@ -566,7 +576,8 @@ export default function FinancialApp() {
         setNewSymbol("");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Trade failed.");
+      const message = err instanceof Error ? err.message : "Trade failed.";
+      setError(`${mode} ${targetSymbol} failed: ${message}`);
     } finally {
       setBusy(false);
     }

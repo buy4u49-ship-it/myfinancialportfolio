@@ -103,7 +103,8 @@ export async function POST(request: NextRequest) {
       symbol: String(body.symbol || ""),
       quantity: Number(body.quantity),
       price: Number(body.price),
-      currency: body.currency ? String(body.currency) : undefined
+      currency: body.currency ? String(body.currency) : undefined,
+      sellAll: body.sellAll === true
     });
     await saveUserRecord(updatedRecord.username, updatedRecord);
     return NextResponse.json(await buildPortfolioResponse(updatedRecord));

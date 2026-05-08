@@ -277,6 +277,7 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
   const type = input.type;
   const requestedQuantity = numberOrZero(input.quantity);
   const price = numberOrZero(input.price);
+  const sellAll = type === "SELL" && input.sellAll === true;
   const currency = String(input.currency || inferCurrency(input.symbol)).toUpperCase();
   const symbol = normalizeSymbol(input.symbol, currency);
 
@@ -286,7 +287,7 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
   if (!["BUY", "SELL"].includes(type)) {
     throw new Error("Trade type must be BUY or SELL.");
   }
-  if (requestedQuantity <= 0 || price <= 0) {
+  if ((!sellAll && requestedQuantity <= 0) || price <= 0) {
     throw new Error("Quantity and price must be greater than 0.");
   }
 
@@ -317,14 +318,18 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
     if (!existing) {
       throw new Error("Sell quantity cannot exceed current holdings.");
     }
-    const sellTolerance = Math.max(0.000000001, existing.quantity * 0.000000001);
-    const overSoldBy = requestedQuantity - existing.quantity;
-    if (overSoldBy > sellTolerance) {
-      throw new Error("Sell quantity cannot exceed current holdings.");
-    }
-    const remainingAfterRequestedSell = existing.quantity - requestedQuantity;
-    if (overSoldBy >= 0 || remainingAfterRequestedSell <= sellTolerance) {
+    const sellTolerance = Math.max(0.000000001, existing.quantity * 0.000001);
+    if (sellAll) {
       executedQuantity = existing.quantity;
+    } else {
+      const overSoldBy = requestedQuantity - existing.quantity;
+      if (overSoldBy > sellTolerance) {
+        throw new Error("Sell quantity cannot exceed current holdings.");
+      }
+      const remainingAfterRequestedSell = existing.quantity - requestedQuantity;
+      if (overSoldBy >= 0 || remainingAfterRequestedSell <= sellTolerance) {
+        executedQuantity = existing.quantity;
+      }
     }
     costBasis = existing.avg_cost * executedQuantity;
     realizedGainLoss = executedQuantity * price - costBasis;

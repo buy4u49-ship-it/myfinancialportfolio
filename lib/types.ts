@@ -480,4 +480,5 @@ export type TradeInput = {
   quantity: number;
   price: number;
   currency?: string;
+  sellAll?: boolean;
 };
