@@ -2957,8 +2957,22 @@ function formatStrategyMetricValue(metric: StrategyMetricKey, value: number | nu
   return formatNumber(value, kind === "price" ? 2 : 4);
 }
 
-function strategyMetricsForCategory(category: StrategyConditionCategory) {
-  return STRATEGY_METRICS.filter((metric) => metric.category === category);
+function strategyMarketsCryptoOnly(markets: StrategyMarket[]) {
+  return markets.length > 0 && markets.every((market) => market === "crypto");
+}
+
+function strategyCategoriesForMarkets(markets: StrategyMarket[]) {
+  const cryptoOnly = strategyMarketsCryptoOnly(markets);
+  return STRATEGY_CONDITION_CATEGORIES.filter((category) => !(cryptoOnly && category.key === "fundamental"));
+}
+
+function strategyMetricOptionsForMarkets(markets: StrategyMarket[]) {
+  const cryptoOnly = strategyMarketsCryptoOnly(markets);
+  return STRATEGY_METRICS.filter((metric) => !(cryptoOnly && metric.category === "fundamental"));
+}
+
+function strategyMetricsForCategory(category: StrategyConditionCategory, markets: StrategyMarket[] = []) {
+  return strategyMetricOptionsForMarkets(markets).filter((metric) => metric.category === category);
 }
 
 function defaultRightOperandForMetric(metric: StrategyMetricKey): StrategyRightOperand {
@@ -2972,6 +2986,68 @@ function defaultRightOperandForMetric(metric: StrategyMetricKey): StrategyRightO
     return { type: "number", value: 1 };
   }
   return { type: "number", value: 0 };
+}
+
+function defaultOperatorForMetric(metric: StrategyMetricKey): StrategyOperator {
+  const option = strategyMetricOption(metric);
+  if (option?.kind === "signal") {
+    return "=";
+  }
+  return metric === "price" ? ">=" : "<";
+}
+
+function conditionPatchForMetric(metric: StrategyMetricKey): Pick<StrategyDefinition["conditions"][number], "category" | "leftMetric" | "operator" | "right" | "params"> {
+  const option = strategyMetricOption(metric);
+  return {
+    category: option?.category || "price",
+    leftMetric: metric,
+    operator: defaultOperatorForMetric(metric),
+    right: defaultRightOperandForMetric(metric),
+    params: strategyMetricDefaultParams(metric)
+  };
+}
+
+function firstStrategyMetricForCategory(category: StrategyConditionCategory, markets: StrategyMarket[]) {
+  const categories = strategyCategoriesForMarkets(markets);
+  const selectedCategory = categories.some((item) => item.key === category) ? category : categories[0]?.key || "price";
+  return strategyMetricsForCategory(selectedCategory, markets)[0]?.key || "price";
+}
+
+function defaultStrategyConditionForMarkets(index: number, markets: StrategyMarket[]) {
+  const fallback = defaultStrategyCondition(index);
+  if (!strategyMarketsCryptoOnly(markets)) {
+    return fallback;
+  }
+  return { ...fallback, ...conditionPatchForMetric(firstStrategyMetricForCategory("price", markets)) };
+}
+
+function normalizeConditionForMarkets(condition: StrategyDefinition["conditions"][number], index: number, markets: StrategyMarket[]) {
+  if (!strategyMarketsCryptoOnly(markets)) {
+    return condition;
+  }
+  const leftCategory = strategyMetricOption(condition.leftMetric)?.category || condition.category;
+  const rightCategory = condition.right.type === "metric" ? strategyMetricOption(condition.right.metric)?.category : undefined;
+  if (leftCategory !== "fundamental" && rightCategory !== "fundamental" && condition.category !== "fundamental") {
+    return condition;
+  }
+  return {
+    ...condition,
+    ...conditionPatchForMetric(firstStrategyMetricForCategory("price", markets)),
+    id: condition.id || "condition-" + (index + 1)
+  };
+}
+
+function normalizeStrategyForMarkets(strategy: StrategyDefinition) {
+  const markets = strategy.markets.length ? strategy.markets : (["us", "korea"] as StrategyMarket[]);
+  const conditions = strategy.conditions.length
+    ? strategy.conditions.map((condition, index) => normalizeConditionForMarkets(condition, index, markets))
+    : [defaultStrategyConditionForMarkets(1, markets)];
+  return {
+    ...strategy,
+    markets,
+    sectors: strategyMarketsCryptoOnly(markets) ? [] : strategy.sectors || [],
+    conditions
+  };
 }
 
 function StrategiesPanel({
@@ -3003,7 +3079,7 @@ function StrategiesPanel({
     setDraft((prev) => {
       const markets = prev.markets.includes(market) ? prev.markets.filter((item) => item !== market) : [...prev.markets, market];
       const nextMarkets = markets.length ? markets : prev.markets;
-      return { ...prev, markets: nextMarkets, sectors: nextMarkets.some((item) => item !== "crypto") ? prev.sectors || [] : [] };
+      return normalizeStrategyForMarkets({ ...prev, markets: nextMarkets, sectors: nextMarkets.some((item) => item !== "crypto") ? prev.sectors || [] : [] });
     });
   }
 
@@ -3021,27 +3097,15 @@ function StrategiesPanel({
   }
 
   function updateConditionCategory(id: string, category: StrategyConditionCategory) {
-    const firstMetric = strategyMetricsForCategory(category)[0]?.key || "companyPer";
-    updateCondition(id, {
-      category,
-      leftMetric: firstMetric,
-      operator: strategyMetricOption(firstMetric)?.kind === "signal" ? "=" : "<",
-      right: defaultRightOperandForMetric(firstMetric),
-      params: strategyMetricDefaultParams(firstMetric)
-    });
+    const firstMetric = firstStrategyMetricForCategory(category, draft.markets);
+    updateCondition(id, conditionPatchForMetric(firstMetric));
   }
 
   function updateConditionMetric(id: string, metric: StrategyMetricKey) {
-    updateCondition(id, {
-      leftMetric: metric,
-      category: strategyMetricOption(metric)?.category || "fundamental",
-      operator: strategyMetricOption(metric)?.kind === "signal" ? "=" : "<",
-      right: defaultRightOperandForMetric(metric),
-      params: strategyMetricDefaultParams(metric)
-    });
+    updateCondition(id, conditionPatchForMetric(metric));
   }
 
-  function updateConditionParam(id: string, key: string, value: number) {
+  function updateConditionParam(id: string, key: string, value: number | "") {
     updateCondition(id, {
       params: {
         ...(draft.conditions.find((condition) => condition.id === id)?.params || {}),
@@ -3058,7 +3122,7 @@ function StrategiesPanel({
     shouldAutoEvaluateRef.current = true;
     setDraft((prev) => ({
       ...prev,
-      conditions: [...prev.conditions, { ...defaultStrategyCondition(prev.conditions.length + 1), id: nextClientId("condition") }]
+      conditions: [...prev.conditions, { ...defaultStrategyConditionForMarkets(prev.conditions.length + 1, prev.markets), id: nextClientId("condition") }]
     }));
   }
 
@@ -3068,6 +3132,7 @@ function StrategiesPanel({
   }
 
   async function evaluateDraft(target = draft) {
+    const targetStrategy = normalizeStrategyForMarkets(target);
     const batchSize = 250;
     setStrategyBusy(true);
     setStrategyStatus("");
@@ -3089,7 +3154,7 @@ function StrategiesPanel({
           await fetch("/api/strategies", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ strategy: target, offset, limit: batchSize })
+            body: JSON.stringify({ strategy: targetStrategy, offset, limit: batchSize })
           })
         );
         latest = data;
@@ -3161,12 +3226,12 @@ function StrategiesPanel({
   }, [strategyRuleKey]);
 
   async function saveDraft() {
-    const strategyToSave = {
+    const strategyToSave = normalizeStrategyForMarkets({
       ...draft,
       id: draft.id || nextClientId("strategy"),
       created_at: draft.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
-    };
+    });
     const saved = await onSave(strategyToSave);
     if (saved) {
       setDraft(cloneStrategy(strategyToSave));
@@ -3266,7 +3331,7 @@ function StrategiesPanel({
             disabled={busy || strategyBusy}
             onClick={() => {
               shouldAutoEvaluateRef.current = false;
-              setDraft(cloneStrategy());
+              setDraft(normalizeStrategyForMarkets(cloneStrategy()));
               setEvaluation(null);
               setStrategyStatus("");
             }}
@@ -3318,76 +3383,87 @@ function StrategiesPanel({
           </label>
         ) : null}
         <div className="strategy-conditions">
-          {draft.conditions.map((condition, index) => (
-            <div className="strategy-condition-row" key={condition.id}>
-              <span className="condition-index">{index === 0 ? "Where" : "And"}</span>
-              <select
-                value={condition.category || strategyMetricOption(condition.leftMetric)?.category || "fundamental"}
-                onChange={(event) => updateConditionCategory(condition.id, event.target.value as StrategyConditionCategory)}
-              >
-                {STRATEGY_CONDITION_CATEGORIES.map((category) => (
-                  <option key={category.key} value={category.key}>
-                    {category.label}
-                  </option>
+          {draft.conditions.map((condition, index) => {
+            const availableCategories = strategyCategoriesForMarkets(draft.markets);
+            const inferredCategory = strategyMetricOption(condition.leftMetric)?.category || condition.category || "fundamental";
+            const selectedCategory = availableCategories.some((category) => category.key === inferredCategory)
+              ? inferredCategory
+              : availableCategories[0]?.key || "price";
+            const metricOptions = strategyMetricsForCategory(selectedCategory, draft.markets);
+            const selectedMetric = metricOptions.some((metric) => metric.key === condition.leftMetric) ? condition.leftMetric : metricOptions[0]?.key || "price";
+            const selectedMetricOption = strategyMetricOption(selectedMetric);
+            const isSignalCondition = selectedMetricOption?.kind === "signal";
+            return (
+              <div className={["strategy-condition-row", isSignalCondition ? "signal-condition-row" : ""].filter(Boolean).join(" ")} key={condition.id}>
+                <span className="condition-index">{index === 0 ? "Where" : "And"}</span>
+                <select value={selectedCategory} onChange={(event) => updateConditionCategory(condition.id, event.target.value as StrategyConditionCategory)}>
+                  {availableCategories.map((category) => (
+                    <option key={category.key} value={category.key}>
+                      {category.label}
+                    </option>
+                  ))}
+                </select>
+                <select value={selectedMetric} onChange={(event) => updateConditionMetric(condition.id, event.target.value as StrategyMetricKey)}>
+                  {metricOptions.map((metric) => (
+                    <option key={metric.key} value={metric.key}>
+                      {metric.label}
+                    </option>
+                  ))}
+                </select>
+                {isSignalCondition ? null : (
+                  <>
+                    <select value={condition.operator} onChange={(event) => updateCondition(condition.id, { operator: event.target.value as StrategyOperator })}>
+                      {STRATEGY_OPERATORS.map((operator) => (
+                        <option key={operator} value={operator}>
+                          {operator}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={condition.right.type === "number" ? "__number__" : condition.right.metric}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        updateRightOperand(condition.id, value === "__number__" ? { type: "number", value: 0 } : { type: "metric", metric: value as StrategyMetricKey });
+                      }}
+                    >
+                      {strategyMetricOptionsForMarkets(draft.markets).map((metric) => (
+                        <option key={metric.key} value={metric.key}>
+                          {metric.label}
+                        </option>
+                      ))}
+                      <option value="__number__">Number input</option>
+                    </select>
+                    {condition.right.type === "number" ? (
+                      <input
+                        type="number"
+                        step="any"
+                        value={condition.right.value}
+                        onChange={(event) => updateRightOperand(condition.id, { type: "number", value: Number(event.target.value) })}
+                      />
+                    ) : null}
+                  </>
+                )}
+                {(selectedMetricOption?.params || []).map((param) => (
+                  <label className="condition-param" key={param.key}>
+                    <input
+                      aria-label={param.label}
+                      className="condition-param-input"
+                      type="number"
+                      min={param.min}
+                      max={param.max}
+                      step={param.step || 1}
+                      placeholder={param.label}
+                      value={condition.params?.[param.key] === "" ? "" : String(condition.params?.[param.key] ?? param.defaultValue)}
+                      onChange={(event) => updateConditionParam(condition.id, param.key, event.target.value === "" ? "" : Number(event.target.value))}
+                    />
+                  </label>
                 ))}
-              </select>
-              <select
-                value={condition.leftMetric}
-                onChange={(event) => updateConditionMetric(condition.id, event.target.value as StrategyMetricKey)}
-              >
-                {strategyMetricsForCategory(condition.category || strategyMetricOption(condition.leftMetric)?.category || "fundamental").map((metric) => (
-                  <option key={metric.key} value={metric.key}>
-                    {metric.label}
-                  </option>
-                ))}
-              </select>
-              <select value={condition.operator} onChange={(event) => updateCondition(condition.id, { operator: event.target.value as StrategyOperator })}>
-                {STRATEGY_OPERATORS.map((operator) => (
-                  <option key={operator} value={operator}>
-                    {operator}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={condition.right.type === "number" ? "__number__" : condition.right.metric}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  updateRightOperand(condition.id, value === "__number__" ? { type: "number", value: 0 } : { type: "metric", metric: value as StrategyMetricKey });
-                }}
-              >
-                {STRATEGY_METRICS.map((metric) => (
-                  <option key={metric.key} value={metric.key}>
-                    {metric.label}
-                  </option>
-                ))}
-                <option value="__number__">Number input</option>
-              </select>
-              {condition.right.type === "number" ? (
-                <input
-                  type="number"
-                  step="any"
-                  value={condition.right.value}
-                  onChange={(event) => updateRightOperand(condition.id, { type: "number", value: Number(event.target.value) })}
-                />
-              ) : null}
-              {(strategyMetricOption(condition.leftMetric)?.params || []).map((param) => (
-                <label className="condition-param" key={param.key}>
-                  {param.label}
-                  <input
-                    type="number"
-                    min={param.min}
-                    max={param.max}
-                    step={param.step || 1}
-                    value={Number(condition.params?.[param.key] ?? param.defaultValue)}
-                    onChange={(event) => updateConditionParam(condition.id, param.key, Number(event.target.value))}
-                  />
-                </label>
-              ))}
-              <button className="mini-ghost" onClick={() => removeCondition(condition.id)}>
-                Remove
-              </button>
-            </div>
-          ))}
+                <button className="mini-ghost" onClick={() => removeCondition(condition.id)}>
+                  Remove
+                </button>
+              </div>
+            );
+          })}
         </div>
         <button className="ghost-button add-condition-button" onClick={addCondition}>
           Add condition
@@ -3464,7 +3540,7 @@ function StrategiesPanel({
                     className="mini-ghost"
                     onClick={() => {
                       shouldAutoEvaluateRef.current = false;
-                      setDraft(cloneStrategy(strategy));
+                      setDraft(normalizeStrategyForMarkets(cloneStrategy(strategy)));
                       setStrategyStatus(`Loaded ${strategy.name}.`);
                     }}
                   >

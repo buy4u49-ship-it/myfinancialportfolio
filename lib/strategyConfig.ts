@@ -71,7 +71,7 @@ export const STRATEGY_METRICS: StrategyMetricOption[] = [
     kind: "signal",
     params: [
       { key: "shortPeriod", label: "Short MA", type: "number", defaultValue: 20, min: 2, max: 250, step: 1 },
-      { key: "longPeriod", label: "Long MA", type: "number", defaultValue: 50, min: 3, max: 400, step: 1 }
+      { key: "longPeriod", label: "Long MA", type: "number", defaultValue: 60, min: 3, max: 400, step: 1 }
     ]
   },
   {
@@ -81,7 +81,7 @@ export const STRATEGY_METRICS: StrategyMetricOption[] = [
     kind: "signal",
     params: [
       { key: "shortPeriod", label: "Short MA", type: "number", defaultValue: 20, min: 2, max: 250, step: 1 },
-      { key: "longPeriod", label: "Long MA", type: "number", defaultValue: 50, min: 3, max: 400, step: 1 }
+      { key: "longPeriod", label: "Long MA", type: "number", defaultValue: 60, min: 3, max: 400, step: 1 }
     ]
   },
   {

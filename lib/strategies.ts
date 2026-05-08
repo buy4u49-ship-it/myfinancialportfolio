@@ -310,12 +310,20 @@ function stddev(values: number[]) {
 }
 
 function conditionParam(params: StrategyCondition["params"], key: string, fallback: number) {
-  const value = Number(params?.[key]);
+  const raw = params?.[key];
+  if (raw === "" || raw === null || raw === undefined) {
+    return fallback;
+  }
+  const value = Number(raw);
   return Number.isFinite(value) ? Math.max(1, Math.round(value)) : fallback;
 }
 
 function decimalConditionParam(params: StrategyCondition["params"], key: string, fallback: number) {
-  const value = Number(params?.[key]);
+  const raw = params?.[key];
+  if (raw === "" || raw === null || raw === undefined) {
+    return fallback;
+  }
+  const value = Number(raw);
   return Number.isFinite(value) ? value : fallback;
 }
 
@@ -383,7 +391,7 @@ function technicalMetricValue(metric: StrategyMetricKey, snapshot: EvaluationSna
   }
   if (metric === "goldenCross" || metric === "deadCross") {
     const shortPeriod = conditionParam(params, "shortPeriod", 20);
-    const longPeriod = conditionParam(params, "longPeriod", 50);
+    const longPeriod = conditionParam(params, "longPeriod", 60);
     const currentShort = movingAverage(closes, currentIndex, shortPeriod);
     const currentLong = movingAverage(closes, currentIndex, longPeriod);
     const previousShort = movingAverage(closes, previousIndex, shortPeriod);
@@ -436,26 +444,49 @@ function technicalMetricValue(metric: StrategyMetricKey, snapshot: EvaluationSna
   }
   if (metric === "volumeSpike" || metric === "volumeProfile") {
     const period = conditionParam(params, "lookbackDays", metric === "volumeSpike" ? 20 : 60);
-    const volumes = points.map((point) => (point.volume !== null && Number.isFinite(point.volume) ? point.volume : null));
-    const currentVolume = volumes.at(-1);
-    if (currentVolume === null || currentVolume === undefined || currentVolume <= 0 || points.length <= period) {
+    if (points.length <= period) {
       return null;
     }
     const previousPoints = points.slice(-period - 1, -1);
     const previousVolumes = previousPoints.map((point) => (point.volume !== null && Number.isFinite(point.volume) ? point.volume : 0));
     const averageVolume = average(previousVolumes.filter((value) => value > 0));
-    if (averageVolume === null || averageVolume <= 0) {
-      return null;
-    }
     if (metric === "volumeSpike") {
+      const currentVolume = points.at(-1)?.volume;
+      if (currentVolume === null || currentVolume === undefined || !Number.isFinite(currentVolume) || currentVolume <= 0 || averageVolume === null || averageVolume <= 0) {
+        return null;
+      }
       return currentVolume / averageVolume;
     }
-    const volumeSum = previousPoints.reduce((sum, point) => sum + (point.volume || 0), 0);
-    if (volumeSum <= 0) {
+
+    // Daily candles do not include intraday volume-at-price, so approximate the point of control by binning close prices.
+    const profilePoints = previousPoints.filter((point) => point.close > 0 && point.volume !== null && Number.isFinite(point.volume) && point.volume > 0);
+    if (!profilePoints.length) {
       return null;
     }
-    const vwap = previousPoints.reduce((sum, point) => sum + point.close * (point.volume || 0), 0) / volumeSum;
-    return vwap > 0 ? (points.at(-1)!.close / vwap - 1) * 100 : null;
+    const minClose = Math.min(...profilePoints.map((point) => point.close));
+    const maxClose = Math.max(...profilePoints.map((point) => point.close));
+    const currentClose = points.at(-1)!.close;
+    if (minClose <= 0 || maxClose <= 0 || currentClose <= 0) {
+      return null;
+    }
+    if (minClose === maxClose) {
+      return (currentClose / minClose - 1) * 100;
+    }
+    const binCount = Math.max(8, Math.min(40, Math.round(Math.sqrt(profilePoints.length) * 2)));
+    const binSize = (maxClose - minClose) / binCount;
+    const bins = Array.from({ length: binCount }, () => ({ volume: 0, weightedClose: 0 }));
+    profilePoints.forEach((point) => {
+      const volume = point.volume || 0;
+      const binIndex = Math.min(binCount - 1, Math.max(0, Math.floor((point.close - minClose) / binSize)));
+      bins[binIndex].volume += volume;
+      bins[binIndex].weightedClose += point.close * volume;
+    });
+    const pointOfControl = bins.reduce((best, bin) => (bin.volume > best.volume ? bin : best), bins[0]);
+    if (pointOfControl.volume <= 0) {
+      return null;
+    }
+    const pointOfControlPrice = pointOfControl.weightedClose / pointOfControl.volume;
+    return pointOfControlPrice > 0 ? (currentClose / pointOfControlPrice - 1) * 100 : null;
   }
   return null;
 }
