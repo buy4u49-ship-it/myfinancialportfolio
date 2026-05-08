@@ -319,7 +319,13 @@ export type StrategyMetricKey =
   | "rsi"
   | "bollingerBandPosition"
   | "volumeSpike"
-  | "volumeProfile";
+  | "volumeProfile"
+  | "vwap"
+  | "pointOfControl"
+  | "valueAreaHigh"
+  | "valueAreaLow"
+  | "vwapAboveBelowVolumeRatio"
+  | "volumeProfileSkew";
 
 export type StrategyOperator = "<" | "<=" | "=" | ">=" | ">";
 

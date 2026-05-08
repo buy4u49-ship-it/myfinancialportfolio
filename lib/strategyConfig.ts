@@ -127,7 +127,49 @@ export const STRATEGY_METRICS: StrategyMetricOption[] = [
   },
   {
     key: "volumeProfile",
-    label: "Volume Profile",
+    label: "VWAP Divergence",
+    category: "volume",
+    kind: "percent",
+    params: [{ key: "lookbackDays", label: "Lookback", type: "number", defaultValue: 60, min: 5, max: 500, step: 1 }]
+  },
+  {
+    key: "vwap",
+    label: "VWAP",
+    category: "volume",
+    kind: "price",
+    params: [{ key: "lookbackDays", label: "Lookback", type: "number", defaultValue: 60, min: 5, max: 500, step: 1 }]
+  },
+  {
+    key: "pointOfControl",
+    label: "POC",
+    category: "volume",
+    kind: "price",
+    params: [{ key: "lookbackDays", label: "Lookback", type: "number", defaultValue: 60, min: 5, max: 500, step: 1 }]
+  },
+  {
+    key: "valueAreaHigh",
+    label: "VAH",
+    category: "volume",
+    kind: "price",
+    params: [{ key: "lookbackDays", label: "Lookback", type: "number", defaultValue: 60, min: 5, max: 500, step: 1 }]
+  },
+  {
+    key: "valueAreaLow",
+    label: "VAL",
+    category: "volume",
+    kind: "price",
+    params: [{ key: "lookbackDays", label: "Lookback", type: "number", defaultValue: 60, min: 5, max: 500, step: 1 }]
+  },
+  {
+    key: "vwapAboveBelowVolumeRatio",
+    label: "VWAP Above/Below Volume Ratio",
+    category: "volume",
+    kind: "ratio",
+    params: [{ key: "lookbackDays", label: "Lookback", type: "number", defaultValue: 60, min: 5, max: 500, step: 1 }]
+  },
+  {
+    key: "volumeProfileSkew",
+    label: "Volume Profile Skew",
     category: "volume",
     kind: "percent",
     params: [{ key: "lookbackDays", label: "Lookback", type: "number", defaultValue: 60, min: 5, max: 500, step: 1 }]

@@ -180,6 +180,8 @@ type EvaluationSnapshot = {
   refreshedAt: string;
 };
 
+type StrategyTechnicalPoint = NonNullable<StrategyMetricSnapshot["technical"]>["daily"][number];
+
 const INDUSTRY_MEDIAN_MIN_COMPANIES = 5;
 
 type EvaluationOptions = {
@@ -369,6 +371,112 @@ function rsi(values: number[], period: number) {
   return 100 - 100 / (1 + rs);
 }
 
+type VolumeProfileBin = {
+  low: number;
+  high: number;
+  volume: number;
+  weightedClose: number;
+};
+
+type VolumeProfileSummary = {
+  vwap: number;
+  pointOfControl: number;
+  valueAreaHigh: number;
+  valueAreaLow: number;
+  aboveBelowVolumeRatio: number | null;
+  skewPct: number;
+};
+
+function buildVolumeProfileSummary(points: StrategyTechnicalPoint[], period: number): VolumeProfileSummary | null {
+  if (points.length <= period) {
+    return null;
+  }
+  const profilePoints = points
+    .slice(-period - 1, -1)
+    .filter((point) => point.close > 0 && point.volume !== null && Number.isFinite(point.volume) && point.volume > 0);
+  if (!profilePoints.length) {
+    return null;
+  }
+  const totalVolume = profilePoints.reduce((sum, point) => sum + (point.volume || 0), 0);
+  if (totalVolume <= 0) {
+    return null;
+  }
+  const vwap = profilePoints.reduce((sum, point) => sum + point.close * (point.volume || 0), 0) / totalVolume;
+  if (vwap <= 0) {
+    return null;
+  }
+
+  const aboveVolume = profilePoints.reduce((sum, point) => (point.close > vwap ? sum + (point.volume || 0) : sum), 0);
+  const belowVolume = profilePoints.reduce((sum, point) => (point.close < vwap ? sum + (point.volume || 0) : sum), 0);
+  const directionalVolume = aboveVolume + belowVolume;
+  const aboveBelowVolumeRatio = belowVolume > 0 ? aboveVolume / belowVolume : aboveVolume > 0 ? null : 1;
+  const skewPct = directionalVolume > 0 ? ((aboveVolume - belowVolume) / directionalVolume) * 100 : 0;
+
+  const minClose = Math.min(...profilePoints.map((point) => point.close));
+  const maxClose = Math.max(...profilePoints.map((point) => point.close));
+  if (minClose <= 0 || maxClose <= 0) {
+    return null;
+  }
+  if (minClose === maxClose) {
+    return {
+      vwap,
+      pointOfControl: minClose,
+      valueAreaHigh: minClose,
+      valueAreaLow: minClose,
+      aboveBelowVolumeRatio,
+      skewPct
+    };
+  }
+
+  const binCount = Math.max(8, Math.min(40, Math.round(Math.sqrt(profilePoints.length) * 2)));
+  const binSize = (maxClose - minClose) / binCount;
+  const bins: VolumeProfileBin[] = Array.from({ length: binCount }, (_, index) => ({
+    low: minClose + index * binSize,
+    high: index === binCount - 1 ? maxClose : minClose + (index + 1) * binSize,
+    volume: 0,
+    weightedClose: 0
+  }));
+
+  profilePoints.forEach((point) => {
+    const volume = point.volume || 0;
+    const binIndex = Math.min(binCount - 1, Math.max(0, Math.floor((point.close - minClose) / binSize)));
+    bins[binIndex].volume += volume;
+    bins[binIndex].weightedClose += point.close * volume;
+  });
+
+  const pointOfControlIndex = bins.reduce((bestIndex, bin, index) => (bin.volume > bins[bestIndex].volume ? index : bestIndex), 0);
+  const pointOfControlBin = bins[pointOfControlIndex];
+  if (pointOfControlBin.volume <= 0) {
+    return null;
+  }
+  const pointOfControl = pointOfControlBin.weightedClose / pointOfControlBin.volume;
+  const targetValueAreaVolume = totalVolume * 0.7;
+  let valueAreaVolume = pointOfControlBin.volume;
+  let lowIndex = pointOfControlIndex;
+  let highIndex = pointOfControlIndex;
+
+  while (valueAreaVolume < targetValueAreaVolume && (lowIndex > 0 || highIndex < bins.length - 1)) {
+    const leftVolume = lowIndex > 0 ? bins[lowIndex - 1].volume : -1;
+    const rightVolume = highIndex < bins.length - 1 ? bins[highIndex + 1].volume : -1;
+    if (rightVolume >= leftVolume) {
+      highIndex += 1;
+      valueAreaVolume += bins[highIndex].volume;
+    } else {
+      lowIndex -= 1;
+      valueAreaVolume += bins[lowIndex].volume;
+    }
+  }
+
+  return {
+    vwap,
+    pointOfControl,
+    valueAreaHigh: bins[highIndex].high,
+    valueAreaLow: bins[lowIndex].low,
+    aboveBelowVolumeRatio,
+    skewPct
+  };
+}
+
 function technicalMetricValue(metric: StrategyMetricKey, snapshot: EvaluationSnapshot, params?: StrategyCondition["params"]) {
   const daily = snapshot.technical?.daily || [];
   const points = daily.filter((point) => Number.isFinite(point.close));
@@ -442,15 +550,24 @@ function technicalMetricValue(metric: StrategyMetricKey, snapshot: EvaluationSna
     }
     return ((closes.at(-1)! - lower) / (upper - lower)) * 100;
   }
-  if (metric === "volumeSpike" || metric === "volumeProfile") {
+  if (
+    metric === "volumeSpike" ||
+    metric === "volumeProfile" ||
+    metric === "vwap" ||
+    metric === "pointOfControl" ||
+    metric === "valueAreaHigh" ||
+    metric === "valueAreaLow" ||
+    metric === "vwapAboveBelowVolumeRatio" ||
+    metric === "volumeProfileSkew"
+  ) {
     const period = conditionParam(params, "lookbackDays", metric === "volumeSpike" ? 20 : 60);
     if (points.length <= period) {
       return null;
     }
     const previousPoints = points.slice(-period - 1, -1);
-    const previousVolumes = previousPoints.map((point) => (point.volume !== null && Number.isFinite(point.volume) ? point.volume : 0));
-    const averageVolume = average(previousVolumes.filter((value) => value > 0));
     if (metric === "volumeSpike") {
+      const previousVolumes = previousPoints.map((point) => (point.volume !== null && Number.isFinite(point.volume) ? point.volume : 0));
+      const averageVolume = average(previousVolumes.filter((value) => value > 0));
       const currentVolume = points.at(-1)?.volume;
       if (currentVolume === null || currentVolume === undefined || !Number.isFinite(currentVolume) || currentVolume <= 0 || averageVolume === null || averageVolume <= 0) {
         return null;
@@ -458,35 +575,29 @@ function technicalMetricValue(metric: StrategyMetricKey, snapshot: EvaluationSna
       return currentVolume / averageVolume;
     }
 
-    // Daily candles do not include intraday volume-at-price, so approximate the point of control by binning close prices.
-    const profilePoints = previousPoints.filter((point) => point.close > 0 && point.volume !== null && Number.isFinite(point.volume) && point.volume > 0);
-    if (!profilePoints.length) {
+    const profile = buildVolumeProfileSummary(points, period);
+    if (!profile) {
       return null;
     }
-    const minClose = Math.min(...profilePoints.map((point) => point.close));
-    const maxClose = Math.max(...profilePoints.map((point) => point.close));
-    const currentClose = points.at(-1)!.close;
-    if (minClose <= 0 || maxClose <= 0 || currentClose <= 0) {
-      return null;
+    if (metric === "vwap") {
+      return profile.vwap;
     }
-    if (minClose === maxClose) {
-      return (currentClose / minClose - 1) * 100;
+    if (metric === "pointOfControl") {
+      return profile.pointOfControl;
     }
-    const binCount = Math.max(8, Math.min(40, Math.round(Math.sqrt(profilePoints.length) * 2)));
-    const binSize = (maxClose - minClose) / binCount;
-    const bins = Array.from({ length: binCount }, () => ({ volume: 0, weightedClose: 0 }));
-    profilePoints.forEach((point) => {
-      const volume = point.volume || 0;
-      const binIndex = Math.min(binCount - 1, Math.max(0, Math.floor((point.close - minClose) / binSize)));
-      bins[binIndex].volume += volume;
-      bins[binIndex].weightedClose += point.close * volume;
-    });
-    const pointOfControl = bins.reduce((best, bin) => (bin.volume > best.volume ? bin : best), bins[0]);
-    if (pointOfControl.volume <= 0) {
-      return null;
+    if (metric === "valueAreaHigh") {
+      return profile.valueAreaHigh;
     }
-    const pointOfControlPrice = pointOfControl.weightedClose / pointOfControl.volume;
-    return pointOfControlPrice > 0 ? (currentClose / pointOfControlPrice - 1) * 100 : null;
+    if (metric === "valueAreaLow") {
+      return profile.valueAreaLow;
+    }
+    if (metric === "vwapAboveBelowVolumeRatio") {
+      return profile.aboveBelowVolumeRatio;
+    }
+    if (metric === "volumeProfileSkew") {
+      return profile.skewPct;
+    }
+    return profile.vwap > 0 ? (points.at(-1)!.close / profile.vwap - 1) * 100 : null;
   }
   return null;
 }
