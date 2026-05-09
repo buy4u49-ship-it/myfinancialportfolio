@@ -201,9 +201,14 @@ def upbit_market_for_symbol(symbol: str) -> str:
     return f"KRW-{crypto_base_symbol(symbol)}"
 
 
-def discover_upbit_markets(symbols: list[str]) -> list[str]:
-    requested = {upbit_market_for_symbol(symbol) for symbol in symbols}
-    data = fetch_json(UPBIT_MARKET_URL)
+def discover_upbit_markets(symbols: list[str] | None = None) -> list[str]:
+    requested = {upbit_market_for_symbol(symbol) for symbol in symbols or []}
+    try:
+        data = fetch_json(UPBIT_MARKET_URL)
+    except Exception as exc:
+        fallback = sorted(requested or {upbit_market_for_symbol(symbol) for symbol in DEFAULT_CRYPTO_SYMBOLS})
+        print(f"{utc_now_iso()} upbit market discovery failed, using fallback list ({len(fallback)} markets): {exc}", flush=True)
+        return fallback
     if not isinstance(data, list):
         return sorted(requested)
     supported = {
@@ -211,7 +216,9 @@ def discover_upbit_markets(symbols: list[str]) -> list[str]:
         for item in data
         if isinstance(item, dict) and str(item.get("market") or "").upper().startswith("KRW-")
     }
-    return sorted(requested & supported)
+    if requested:
+        return sorted(requested & supported)
+    return sorted(supported)
 
 
 def parse_symbol_list(text: str) -> list[str]:
@@ -249,6 +256,14 @@ def load_stock_symbols(args: argparse.Namespace) -> list[str]:
         except Exception as exc:
             print(f"{utc_now_iso()} strategy universe load failed: {exc}", flush=True)
     return sorted({symbol.strip().upper() for symbol in symbols if symbol.strip() and "-" not in symbol})
+
+
+def shard_symbols(symbols: list[str], shard_index: int, shard_count: int) -> list[str]:
+    if shard_count <= 1:
+        return symbols
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError(f"stock shard index must be between 0 and {shard_count - 1}.")
+    return [symbol for index, symbol in enumerate(symbols) if index % shard_count == shard_index]
 
 
 def row_from_upbit_ticker(message: dict[str, object]) -> dict[str, object] | None:
@@ -334,45 +349,80 @@ def chunked(items: list[str], size: int) -> list[list[str]]:
     return [items[index:index + size] for index in range(0, len(items), size)]
 
 
-async def poll_yahoo_quotes(symbols: list[str], interval: float, batch_size: int) -> None:
+def yahoo_spark_results(batch: list[str]) -> list[dict[str, object]]:
+    query = urllib.parse.urlencode({"symbols": ",".join(batch), "range": "1d", "interval": "1m"})
+    payload = fetch_json(f"{YAHOO_SPARK_URL}?{query}")
+    if not isinstance(payload, dict):
+        return []
+    spark = payload.get("spark")
+    if isinstance(spark, dict) and isinstance(spark.get("result"), list):
+        return [item for item in spark["result"] if isinstance(item, dict)]
+    return []
+
+
+def yahoo_rows_for_batch(batch: list[str]) -> tuple[list[dict[str, object]], int]:
+    try:
+        rows = []
+        skipped = 0
+        for item in yahoo_spark_results(batch):
+            row = row_from_yahoo_spark(item)
+            if row:
+                rows.append(row)
+            else:
+                skipped += 1
+        return rows, skipped
+    except Exception as exc:
+        if len(batch) <= 1:
+            symbol = batch[0] if batch else "unknown"
+            print(f"{utc_now_iso()} yahoo quote skipped {symbol}: {exc}", flush=True)
+            return [], len(batch)
+        midpoint = max(1, len(batch) // 2)
+        left_rows, left_skipped = yahoo_rows_for_batch(batch[:midpoint])
+        right_rows, right_skipped = yahoo_rows_for_batch(batch[midpoint:])
+        return [*left_rows, *right_rows], left_skipped + right_skipped
+
+
+async def fetch_and_upsert_yahoo_batch(batch: list[str]) -> tuple[int, int]:
+    rows, skipped = await asyncio.to_thread(yahoo_rows_for_batch, batch)
+    if rows:
+        await asyncio.to_thread(supabase_upsert, rows)
+    return len(rows), skipped
+
+
+async def poll_yahoo_quotes(symbols: list[str], interval: float, batch_size: int, concurrency: int) -> None:
     if not symbols:
         print(f"{utc_now_iso()} stock quote polling disabled", flush=True)
         return
-    print(f"{utc_now_iso()} polling {len(symbols)} stock quotes every {interval}s", flush=True)
+    concurrency = max(1, concurrency)
+    print(f"{utc_now_iso()} polling {len(symbols)} stock quotes every {interval}s with {concurrency} workers", flush=True)
     batches = chunked(symbols, max(1, batch_size))
     while True:
+        started_at = datetime.now(timezone.utc)
         updated = 0
         skipped = 0
-        for batch in batches:
-            try:
-                query = urllib.parse.urlencode({"symbols": ",".join(batch), "range": "1d", "interval": "1m"})
-                payload = fetch_json(f"{YAHOO_SPARK_URL}?{query}")
-                results = []
-                if isinstance(payload, dict):
-                    spark = payload.get("spark")
-                    if isinstance(spark, dict) and isinstance(spark.get("result"), list):
-                        results = spark["result"]
-                rows = []
-                for item in results:
-                    if not isinstance(item, dict):
-                        skipped += 1
-                        continue
-                    row = row_from_yahoo_spark(item)
-                    if row:
-                        rows.append(row)
-                    else:
-                        skipped += 1
-                if rows:
-                    supabase_upsert(rows)
-                    updated += len(rows)
-            except Exception as exc:
-                print(f"{utc_now_iso()} yahoo quote batch failed: {exc}", flush=True)
-            await asyncio.sleep(0.3)
-        print(f"{utc_now_iso()} upserted {updated} stock quotes; skipped {skipped} invalid or missing quote rows", flush=True)
+        processed = 0
+        for batch_group in chunked(batches, concurrency):
+            results = await asyncio.gather(
+                *(fetch_and_upsert_yahoo_batch(batch) for batch in batch_group),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    print(f"{utc_now_iso()} yahoo quote batch failed: {result}", flush=True)
+                    continue
+                batch_updated, batch_skipped = result
+                updated += batch_updated
+                skipped += batch_skipped
+            processed += len(batch_group)
+            if processed % 50 == 0 or processed >= len(batches):
+                print(f"{utc_now_iso()} stock quote progress {processed}/{len(batches)} batches; upserted {updated}", flush=True)
+            await asyncio.sleep(0.05)
+        elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+        print(f"{utc_now_iso()} upserted {updated} stock quotes in {elapsed:.1f}s; skipped {skipped} invalid or missing quote rows", flush=True)
         await asyncio.sleep(interval)
 
 
-async def flush_quotes(latest_rows: dict[str, dict[str, object]], interval: float) -> None:
+async def flush_quotes(latest_rows: dict[str, dict[str, object]], interval: float, stream_name: str) -> None:
     while True:
         await asyncio.sleep(interval)
         if not latest_rows:
@@ -380,12 +430,12 @@ async def flush_quotes(latest_rows: dict[str, dict[str, object]], interval: floa
         rows = list(latest_rows.values())
         latest_rows.clear()
         supabase_upsert(rows)
-        print(f"{utc_now_iso()} upserted {len(rows)} quotes", flush=True)
+        print(f"{utc_now_iso()} {stream_name} upserted {len(rows)} quotes", flush=True)
 
 
-async def stream_upbit(markets: list[str], flush_interval: float, reconnect_delay: float) -> None:
+async def stream_upbit(markets: list[str], flush_interval: float, reconnect_delay: float, stream_name: str) -> None:
     latest_rows: dict[str, dict[str, object]] = {}
-    flush_task = asyncio.create_task(flush_quotes(latest_rows, flush_interval))
+    flush_task = asyncio.create_task(flush_quotes(latest_rows, flush_interval, stream_name))
     try:
         while True:
             try:
@@ -395,7 +445,7 @@ async def stream_upbit(markets: list[str], flush_interval: float, reconnect_dela
                         {"type": "ticker", "codes": markets},
                     ]
                     await websocket.send(json.dumps(subscribe_message))
-                    print(f"{utc_now_iso()} subscribed to {', '.join(markets)}", flush=True)
+                    print(f"{utc_now_iso()} {stream_name} subscribed to {len(markets)} markets: {', '.join(markets)}", flush=True)
                     async for raw_message in websocket:
                         if isinstance(raw_message, bytes):
                             raw_message = raw_message.decode("utf-8")
@@ -405,7 +455,7 @@ async def stream_upbit(markets: list[str], flush_interval: float, reconnect_dela
                             if row:
                                 latest_rows[str(row["symbol"])] = row
             except Exception as exc:
-                print(f"{utc_now_iso()} websocket error: {exc}", flush=True)
+                print(f"{utc_now_iso()} {stream_name} websocket error: {exc}", flush=True)
                 await asyncio.sleep(reconnect_delay)
     finally:
         flush_task.cancel()
@@ -413,11 +463,16 @@ async def stream_upbit(markets: list[str], flush_interval: float, reconnect_dela
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stream Upbit crypto quotes into Supabase.")
-    parser.add_argument("--symbols", nargs="*", default=DEFAULT_CRYPTO_SYMBOLS, help="App symbols such as BTC-KRW ETH-KRW.")
+    parser.add_argument("--symbols", nargs="*", default=None, help="Optional app symbols such as BTC-KRW ETH-KRW. Defaults to every Upbit KRW market.")
+    parser.add_argument("--disable-crypto", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO", "").lower() in {"1", "true", "yes"}, help="Disable Upbit crypto WebSocket streaming.")
+    parser.add_argument("--crypto-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_CRYPTO_BATCH_SIZE", "100")), help="Upbit markets per WebSocket subscription.")
     parser.add_argument("--stock-symbols", nargs="*", default=[], help="Stock symbols such as AAPL MSFT 005930.KS.")
     parser.add_argument("--stock-symbols-file", default="", help="Optional file with comma/newline separated stock symbols.")
     parser.add_argument("--stock-poll-interval", type=float, default=float(os.environ.get("PRICE_WORKER_STOCK_POLL_INTERVAL", "60")), help="Seconds between full stock quote polling passes.")
-    parser.add_argument("--stock-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_STOCK_BATCH_SIZE", "80")), help="Yahoo quote symbols per request.")
+    parser.add_argument("--stock-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_STOCK_BATCH_SIZE", "40")), help="Yahoo quote symbols per request.")
+    parser.add_argument("--stock-concurrency", type=int, default=int(os.environ.get("PRICE_WORKER_STOCK_CONCURRENCY", "6")), help="Concurrent Yahoo quote batches.")
+    parser.add_argument("--stock-shard-index", type=int, default=int(os.environ.get("PRICE_WORKER_STOCK_SHARD_INDEX", "0")), help="Zero-based stock symbol shard index.")
+    parser.add_argument("--stock-shard-count", type=int, default=int(os.environ.get("PRICE_WORKER_STOCK_SHARD_COUNT", "1")), help="Total number of stock symbol shards.")
     parser.add_argument("--universe-url", default="", help="Optional URL returning JSON strategy universe symbols.")
     parser.add_argument("--universe-secret", default="", help="Bearer secret for the strategy universe URL.")
     parser.add_argument("--flush-interval", type=float, default=1.5, help="Seconds between Supabase quote upserts.")
@@ -426,14 +481,33 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run_worker(args: argparse.Namespace) -> None:
-    markets = discover_upbit_markets(args.symbols)
-    if not markets:
-        raise SystemExit("No requested symbols are supported by Upbit KRW markets.")
-    stock_symbols = load_stock_symbols(args)
-    await asyncio.gather(
-        stream_upbit(markets, args.flush_interval, args.reconnect_delay),
-        poll_yahoo_quotes(stock_symbols, args.stock_poll_interval, args.stock_batch_size),
-    )
+    tasks = []
+    if not args.disable_crypto:
+        requested_symbols = parse_symbol_list(",".join(args.symbols or []))
+        requested_symbols.extend(parse_symbol_list(os.environ.get("PRICE_WORKER_CRYPTO_SYMBOLS", "")))
+        markets = discover_upbit_markets(requested_symbols)
+        if not markets:
+            raise SystemExit("No Upbit KRW markets are available for crypto streaming.")
+        crypto_batches = chunked(markets, max(1, args.crypto_batch_size))
+        print(f"{utc_now_iso()} crypto streaming {len(markets)} Upbit KRW markets across {len(crypto_batches)} websocket connection(s)", flush=True)
+        for index, market_batch in enumerate(crypto_batches, start=1):
+            tasks.append(stream_upbit(market_batch, args.flush_interval, args.reconnect_delay, f"crypto-{index}/{len(crypto_batches)}"))
+    else:
+        print(f"{utc_now_iso()} crypto quote streaming disabled", flush=True)
+
+    stock_symbols = shard_symbols(load_stock_symbols(args), args.stock_shard_index, args.stock_shard_count)
+    if stock_symbols:
+        print(
+            f"{utc_now_iso()} stock shard {args.stock_shard_index + 1}/{args.stock_shard_count} owns {len(stock_symbols)} symbols",
+            flush=True,
+        )
+        tasks.append(poll_yahoo_quotes(stock_symbols, args.stock_poll_interval, args.stock_batch_size, args.stock_concurrency))
+    else:
+        print(f"{utc_now_iso()} stock quote polling disabled for empty shard", flush=True)
+
+    if not tasks:
+        raise SystemExit("No quote worker tasks are enabled.")
+    await asyncio.gather(*tasks)
 
 
 def main() -> None:

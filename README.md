@@ -128,7 +128,7 @@ Or run the helper script, which automatically switches into this project folder:
 powershell -ExecutionPolicy Bypass -File "C:\Users\buy4u\OneDrive\문서\New project\run_market_price_worker.ps1"
 ```
 
-The worker streams Upbit ticker data over WebSocket and upserts the latest prices into `public.market_quote_cache`. The Streamlit app reads that cache first and falls back to direct Upbit REST quotes if the worker is not running or the cached quote is stale.
+The worker streams Upbit ticker data over WebSocket and upserts the latest prices into `public.market_quote_cache`. By default it discovers every Upbit KRW market from `https://api.upbit.com/v1/market/all?isDetails=false` and splits the subscription into batches with `PRICE_WORKER_CRYPTO_BATCH_SIZE` or `--crypto-batch-size`. Set `PRICE_WORKER_CRYPTO_SYMBOLS` or pass `--symbols BTC-KRW ETH-KRW` only when you want to limit crypto streaming to a smaller list. The Streamlit app reads that cache first and falls back to direct Upbit REST quotes if the worker is not running or the cached quote is stale.
 
 Streamlit Community Cloud normally runs only the Streamlit web app process, not a permanent background quote worker. If this worker runs only on your PC, the WebSocket cache updates only while your PC is on and the worker is running. Other users can still open the Streamlit app when your PC is off, but prices will come from the app's direct Upbit REST fallback instead of the faster Supabase WebSocket cache. For always-on cache updates, deploy this worker as a background worker on a separate hosting service such as Render, Railway, or Fly.io.
 
@@ -144,7 +144,7 @@ python .\market_price_worker.py
 
 This repo includes `Dockerfile`, `requirements-worker.txt`, and `fly.toml` so Fly.io runs only `market_price_worker.py`. Streamlit Community Cloud should still run `app.py`; Fly.io is only for the always-on Upbit WebSocket quote cache.
 
-The Fly.io app is configured with `auto_stop_machines = "off"` and `min_machines_running = 1` so the quote worker keeps running even when there is no web traffic. One `shared-cpu-1x@256MB` Machine is enough for this worker; running two Machines only duplicates the same Upbit quote writes and roughly doubles the compute cost.
+The Fly.io app is configured with `auto_stop_machines = "off"` and `min_machines_running = 1` so the quote worker keeps running even when there is no web traffic. One `shared-cpu-1x@256MB` Machine is intended to be enough for this worker, including all Upbit KRW markets, because the worker keeps multiple WebSocket subscriptions inside one process. Add another Machine only if logs show CPU, memory, or reconnect pressure; running two identical crypto workers duplicates the same quote writes and roughly doubles the compute cost.
 
 Before deploying, create `public.market_quote_cache` by running `supabase_market_quote_cache.sql` in the Supabase SQL Editor.
 
