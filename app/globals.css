@@ -1489,6 +1489,42 @@ th {
 .trade-entry-actions {
   align-items: center;
 }
+
+.portfolio-table .text-cell:first-child {
+  width: 128px;
+  max-width: 148px;
+}
+
+.portfolio-table .action-cell {
+  width: 232px;
+}
+
+.portfolio-trade-buttons .edit-position-button {
+  min-width: 58px;
+}
+
+.position-edit-row td {
+  background: #f8fbff;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.position-edit-row .text-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.position-edit-row input {
+  width: 100%;
+  min-width: 0;
+  text-align: right;
+}
+
+.neutral-label {
+  color: var(--muted);
+  background: var(--panel-soft);
+}
 .trade-label {
   display: inline-flex;
   align-items: center;
@@ -1523,6 +1559,50 @@ th {
 
 .history-highlight strong {
   font-size: 24px;
+}
+
+.history-panel-heading {
+  align-items: flex-start;
+}
+
+.history-title-block {
+  display: grid;
+  gap: 10px;
+}
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.history-filters select {
+  min-width: 112px;
+}
+
+.history-date-cell {
+  width: 118px;
+  max-width: 128px;
+}
+
+.history-edit-cell {
+  width: 104px;
+}
+
+.transaction-edit-row td {
+  background: #f8fbff;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.transaction-edit-row input,
+.transaction-edit-row select {
+  width: 100%;
+  min-width: 0;
+}
+
+.transaction-edit-row .number-cell input {
+  text-align: right;
 }
 
 .empty-cell,

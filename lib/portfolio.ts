@@ -72,6 +72,122 @@ function activePositions(record: UserRecord) {
     .filter((position) => position.symbol && position.quantity > 0);
 }
 
+function serializePositions(portfolio: Position[]) {
+  return portfolio
+    .filter((position) => position.symbol && position.quantity > 0.000000001)
+    .map((position) => ({
+      ...position,
+      quantity: Number(position.quantity.toFixed(12)),
+      avg_cost: Number(position.avg_cost.toFixed(8)),
+      cost_currency: String(position.cost_currency || position.currency || inferCurrency(position.symbol)).toUpperCase(),
+      updated_at: position.updated_at || new Date().toISOString()
+    }));
+}
+
+function normalizeTransaction(tx: PortfolioTransaction): PortfolioTransaction {
+  const type = tx.type === "SELL" ? "SELL" : "BUY";
+  const quantity = numberOrZero(tx.quantity);
+  const price = numberOrZero(tx.price);
+  const value = numberOrZero(tx.value) || quantity * price;
+  return {
+    ...tx,
+    id: String(tx.id || crypto.randomUUID()),
+    type,
+    symbol: normalizeSymbol(String(tx.symbol || ""), String(tx.currency || "")),
+    quantity,
+    price,
+    currency: String(tx.currency || inferCurrency(String(tx.symbol || ""))).toUpperCase(),
+    value,
+    cost_basis: tx.cost_basis === undefined ? undefined : numberOrZero(tx.cost_basis),
+    realized_gain_loss: tx.realized_gain_loss === undefined ? null : numberOrZero(tx.realized_gain_loss),
+    created_at: String(tx.created_at || new Date().toISOString())
+  };
+}
+
+function normalizedTransactions(record: UserRecord) {
+  return (Array.isArray(record.transactions) ? record.transactions : [])
+    .filter((tx): tx is PortfolioTransaction => Boolean(tx && typeof tx === "object" && tx.id))
+    .map(normalizeTransaction)
+    .filter((tx) => tx.symbol && tx.quantity > 0 && tx.price > 0);
+}
+
+function mergePosition(portfolio: Position[], symbol: string, quantity: number, avgCost: number, currency: string) {
+  if (quantity <= 0) {
+    return;
+  }
+  const existing = portfolio.find((position) => position.symbol === symbol);
+  if (existing) {
+    const previousCost = existing.quantity * existing.avg_cost;
+    const additionalCost = quantity * avgCost;
+    existing.quantity += quantity;
+    existing.avg_cost = existing.quantity > 0 ? (previousCost + additionalCost) / existing.quantity : avgCost;
+    existing.cost_currency = currency;
+    existing.updated_at = new Date().toISOString();
+  } else {
+    portfolio.push({
+      symbol,
+      quantity,
+      avg_cost: avgCost,
+      cost_currency: currency,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+  }
+}
+
+function removeBuyFromPosition(portfolio: Position[], tx: PortfolioTransaction) {
+  const existing = portfolio.find((position) => position.symbol === tx.symbol);
+  if (!existing) {
+    return;
+  }
+  const remainingQuantity = existing.quantity - tx.quantity;
+  const remainingCost = existing.quantity * existing.avg_cost - tx.value;
+  if (remainingQuantity <= 0.000000001) {
+    portfolio.splice(portfolio.indexOf(existing), 1);
+    return;
+  }
+  existing.quantity = remainingQuantity;
+  existing.avg_cost = Math.max(0, remainingCost) / remainingQuantity;
+  existing.updated_at = new Date().toISOString();
+}
+
+function reverseTransactionFromPortfolio(portfolio: Position[], tx: PortfolioTransaction) {
+  if (tx.type === "BUY") {
+    removeBuyFromPosition(portfolio, tx);
+    return;
+  }
+  const restoredAvgCost = tx.quantity > 0 ? (numberOrZero(tx.cost_basis) || tx.quantity * tx.price) / tx.quantity : tx.price;
+  mergePosition(portfolio, tx.symbol, tx.quantity, restoredAvgCost, tx.currency);
+}
+
+function applyTransactionToPortfolio(portfolio: Position[], tx: PortfolioTransaction) {
+  if (tx.type === "BUY") {
+    mergePosition(portfolio, tx.symbol, tx.quantity, tx.price, tx.currency);
+    return { costBasis: undefined as number | undefined, realizedGainLoss: null as number | null };
+  }
+  const existing = portfolio.find((position) => position.symbol === tx.symbol);
+  if (!existing) {
+    throw new Error("Sell quantity cannot exceed current holdings.");
+  }
+  const sellTolerance = Math.max(0.000000001, existing.quantity * 0.000001);
+  if (tx.quantity - existing.quantity > sellTolerance) {
+    throw new Error("Sell quantity cannot exceed current holdings.");
+  }
+  const executedQuantity = existing.quantity - tx.quantity <= sellTolerance ? existing.quantity : tx.quantity;
+  const costBasis = existing.avg_cost * executedQuantity;
+  const realizedGainLoss = executedQuantity * tx.price - costBasis;
+  existing.quantity = Math.max(0, existing.quantity - executedQuantity);
+  existing.updated_at = new Date().toISOString();
+  tx.quantity = executedQuantity;
+  tx.value = executedQuantity * tx.price;
+  return { costBasis, realizedGainLoss };
+}
+
+function transactionCashImpact(tx: PortfolioTransaction) {
+  return tx.type === "BUY" ? -tx.value : tx.value;
+}
+
+
 function normalizeAlerts(record: UserRecord): PriceAlert[] {
   return (Array.isArray(record.alerts) ? record.alerts : [])
     .filter((alert): alert is PriceAlert => Boolean(alert && typeof alert === "object" && alert.id && alert.symbol))
@@ -219,7 +335,8 @@ export async function buildPortfolioResponse(record: UserRecord): Promise<Portfo
 
   rows.sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0));
 
-  const transactions = Array.isArray(record.transactions) ? record.transactions : [];
+  const transactions = normalizedTransactions(record);
+  record.transactions = transactions;
   const cashSettings = normalizeCashSettings(record);
   const summary = buildPortfolioSummary(rows, transactions, cashSettings);
   const triggeredAlerts = await evaluatePriceAlerts(record);
@@ -346,13 +463,7 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
     cashBalance: cashSettings.cashBalance + (type === "BUY" ? -tradeValue : tradeValue)
   });
 
-  record.portfolio = portfolio
-    .filter((position) => position.quantity > 0.000000001)
-    .map((position) => ({
-      ...position,
-      quantity: Number(position.quantity.toFixed(12)),
-      avg_cost: Number(position.avg_cost.toFixed(8))
-    }));
+  record.portfolio = serializePositions(portfolio);
 
   const transaction: PortfolioTransaction = {
     id: crypto.randomUUID(),
@@ -367,6 +478,80 @@ export function applyTrade(record: UserRecord, input: TradeInput) {
     created_at: new Date().toISOString()
   };
   record.transactions = [...(Array.isArray(record.transactions) ? record.transactions : []), transaction];
+  return record;
+}
+
+export function updatePosition(record: UserRecord, input: { symbol?: unknown; quantity?: unknown; avgCost?: unknown; currency?: unknown }) {
+  const currency = String(input.currency || inferCurrency(String(input.symbol || ""))).toUpperCase();
+  const symbol = normalizeSymbol(String(input.symbol || ""), currency);
+  const quantity = numberOrZero(input.quantity);
+  const avgCost = numberOrZero(input.avgCost);
+  if (!symbol) {
+    throw new Error("Symbol is required.");
+  }
+  if (quantity < 0 || avgCost < 0) {
+    throw new Error("Quantity and average cost cannot be negative.");
+  }
+  const portfolio = activePositions(record).filter((position) => position.symbol !== symbol);
+  if (quantity > 0) {
+    portfolio.push({
+      symbol,
+      quantity,
+      avg_cost: avgCost,
+      cost_currency: currency,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+  }
+  record.portfolio = serializePositions(portfolio);
+  return record;
+}
+
+export function updateTransaction(record: UserRecord, input: { transactionId?: unknown; type?: unknown; symbol?: unknown; quantity?: unknown; price?: unknown; currency?: unknown; createdAt?: unknown }) {
+  const transactions = normalizedTransactions(record);
+  const transactionId = String(input.transactionId || "");
+  const index = transactions.findIndex((tx) => tx.id === transactionId);
+  if (index < 0) {
+    throw new Error("Transaction not found.");
+  }
+
+  const oldTransaction = transactions[index];
+  const type = input.type === "SELL" ? "SELL" : "BUY";
+  const currency = String(input.currency || oldTransaction.currency || inferCurrency(String(input.symbol || oldTransaction.symbol))).toUpperCase();
+  const symbol = normalizeSymbol(String(input.symbol || oldTransaction.symbol), currency);
+  const quantity = numberOrZero(input.quantity);
+  const price = numberOrZero(input.price);
+  if (!symbol || quantity <= 0 || price <= 0) {
+    throw new Error("Transaction symbol, quantity, and price are required.");
+  }
+
+  const portfolio = activePositions(record);
+  reverseTransactionFromPortfolio(portfolio, oldTransaction);
+  const nextTransaction: PortfolioTransaction = {
+    id: oldTransaction.id,
+    type,
+    symbol,
+    quantity,
+    price,
+    currency,
+    value: quantity * price,
+    cost_basis: undefined,
+    realized_gain_loss: null,
+    created_at: input.createdAt ? String(input.createdAt) : oldTransaction.created_at
+  };
+  const realized = applyTransactionToPortfolio(portfolio, nextTransaction);
+  nextTransaction.cost_basis = realized.costBasis;
+  nextTransaction.realized_gain_loss = realized.realizedGainLoss;
+
+  const cashSettings = normalizeCashSettings(record);
+  saveCashSettings(record, {
+    ...cashSettings,
+    cashBalance: cashSettings.cashBalance + transactionCashImpact(nextTransaction) - transactionCashImpact(oldTransaction)
+  });
+
+  transactions[index] = nextTransaction;
+  record.transactions = transactions;
+  record.portfolio = serializePositions(portfolio);
   return record;
 }
 export function addPriceAlert(record: UserRecord, input: { symbol: string; direction: string; targetPrice: number }) {

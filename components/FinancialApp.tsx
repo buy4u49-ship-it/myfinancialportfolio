@@ -52,6 +52,10 @@ type AuthMode = "login" | "register";
 type AuthCredentials = { username: string; password: string; displayName: string; email: string };
 type RecoveryDraft = { email: string; token: string; newPassword: string };
 type CashDraft = { includeCash: boolean; cashBalance: string; cashCurrency: string };
+type PositionEditDraft = { symbol: string; quantity: string; avgCost: string; currency: string };
+type TransactionEditDraft = { id: string; createdAtDate: string; symbol: string; type: TradeMode; quantity: string; price: string; currency: string };
+type TransactionPeriodMode = "year" | "month";
+type TransactionTypeFilter = "ALL" | TradeMode;
 type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
 type MappingOption = { statement: string; lineKey: string; label: string };
 
@@ -2411,6 +2415,7 @@ function MyPage({
     cashCurrency: cashSettings.cashCurrency || summaryCurrency
   });
   const [cashRowOpen, setCashRowOpen] = useState(false);
+  const [positionEditDraft, setPositionEditDraft] = useState<PositionEditDraft | null>(null);
   const [tradeAmountOverridesQuantity, setTradeAmountOverridesQuantity] = useState(false);
 
   useEffect(() => {
@@ -2462,11 +2467,38 @@ function MyPage({
   }
 
   function startTrade(row: PortfolioRow, mode: TradeMode) {
+    setPositionEditDraft(null);
     setActiveTrade({ symbol: row.symbol, mode });
     setQuantity("");
     setPrice(row.price ? String(row.price) : "");
     setTradeAmount("");
     setTradeAmountOverridesQuantity(false);
+  }
+
+  function startPositionEdit(row: PortfolioRow) {
+    setActiveTrade(null);
+    setPositionEditDraft({
+      symbol: row.symbol,
+      quantity: String(row.quantity),
+      avgCost: String(row.avgCost),
+      currency: row.currency || summaryCurrency
+    });
+  }
+
+  async function savePositionEdit() {
+    if (!positionEditDraft) {
+      return;
+    }
+    const data = await patchPortfolio({
+      action: "update_position",
+      symbol: positionEditDraft.symbol,
+      quantity: Number(positionEditDraft.quantity),
+      avgCost: Number(positionEditDraft.avgCost),
+      currency: positionEditDraft.currency || summaryCurrency
+    });
+    if (data) {
+      setPositionEditDraft(null);
+    }
   }
 
   async function saveCashDraft(nextCashDraft = cashDraft, closeCashRow = true) {
@@ -2555,6 +2587,7 @@ function MyPage({
               className="buy-button"
               disabled={!newSymbolNormalized}
               onClick={() => {
+                setPositionEditDraft(null);
                 setActiveTrade({ symbol: newSymbolNormalized, mode: "BUY" });
                 setQuantity("");
                 setPrice("");
@@ -2576,8 +2609,13 @@ function MyPage({
           portfolio={portfolio}
           cashDraft={cashDraft}
           cashRowOpen={cashRowOpen}
+          positionEditDraft={positionEditDraft}
           busy={busy}
           onStartTrade={startTrade}
+          onStartPositionEdit={startPositionEdit}
+          onPositionEditDraft={setPositionEditDraft}
+          onSavePositionEdit={() => void savePositionEdit()}
+          onCancelPositionEdit={() => setPositionEditDraft(null)}
           onCashBalance={(value) => setCashDraft((prev) => ({ ...prev, cashBalance: value }))}
           onSaveCash={() => void saveCashDraft()}
           onCancelCash={cancelCashEdit}
@@ -2590,7 +2628,7 @@ function MyPage({
         />
           </section>
 
-          <TransactionPanel transactions={transactions} currency={summaryCurrency} />
+          <TransactionPanel transactions={transactions} currency={summaryCurrency} busy={busy} onPatch={patchPortfolio} />
         </>
       ) : null}
 
@@ -3712,8 +3750,13 @@ function PortfolioTable({
   portfolio,
   cashDraft,
   cashRowOpen,
+  positionEditDraft,
   busy,
   onStartTrade,
+  onStartPositionEdit,
+  onPositionEditDraft,
+  onSavePositionEdit,
+  onCancelPositionEdit,
   onCashBalance,
   onSaveCash,
   onCancelCash,
@@ -3733,8 +3776,13 @@ function PortfolioTable({
   portfolio: PortfolioResponse | null;
   cashDraft: CashDraft;
   cashRowOpen: boolean;
+  positionEditDraft: PositionEditDraft | null;
   busy: boolean;
   onStartTrade: (row: PortfolioRow, mode: TradeMode) => void;
+  onStartPositionEdit: (row: PortfolioRow) => void;
+  onPositionEditDraft: (value: PositionEditDraft | null) => void;
+  onSavePositionEdit: () => void;
+  onCancelPositionEdit: () => void;
   onCashBalance: (value: string) => void;
   onSaveCash: () => void;
   onCancelCash: () => void;
@@ -3756,7 +3804,7 @@ function PortfolioTable({
   const safeDraftCashBalance = Number.isFinite(draftCashBalance) ? draftCashBalance : 0;
   const currentValue = portfolio?.summary.currentValue || 0;
   const savedCashAllocationPct = portfolio?.summary.cashIncluded && currentValue > 0 ? (savedCashBalance / currentValue) * 100 : null;
-  const draftCashAllocationPct = portfolio?.summary.cashIncluded && currentValue > 0 && safeDraftCashBalance > 0 ? (safeDraftCashBalance / currentValue) * 100 : null;
+  const draftCashAllocationPct = portfolio?.summary.cashIncluded && currentValue > 0 ? (safeDraftCashBalance / currentValue) * 100 : null;
 
   return (
     <div className="table-wrap">
@@ -3806,7 +3854,10 @@ function PortfolioTable({
                 <td className={`number-cell ${signedClass(row.gainLossPct)}`}>{formatPct(row.gainLossPct)}</td>
                 <td className="number-cell">{formatPct(row.allocationPct)}</td>
                 <td className="action-cell">
-                  <div className="trade-buttons">
+                  <div className="trade-buttons portfolio-trade-buttons">
+                    <button className="mini-ghost edit-position-button" onClick={() => onStartPositionEdit(row)}>
+                      Edit
+                    </button>
                     <button className="buy-button" onClick={() => onStartTrade(row, "BUY")}>
                       Buy
                     </button>
@@ -3816,6 +3867,16 @@ function PortfolioTable({
                   </div>
                 </td>
               </tr>
+              {positionEditDraft?.symbol === row.symbol ? (
+                <PositionEditRow
+                  row={row}
+                  draft={positionEditDraft}
+                  busy={busy}
+                  onDraft={onPositionEditDraft}
+                  onSave={onSavePositionEdit}
+                  onCancel={onCancelPositionEdit}
+                />
+              ) : null}
               {activeTrade?.symbol === row.symbol ? (
                 <TradeEntryRow
                   mode={activeTrade.mode}
@@ -3883,6 +3944,76 @@ function PortfolioTable({
   );
 }
 
+function PositionEditRow({
+  row,
+  draft,
+  busy,
+  onDraft,
+  onSave,
+  onCancel
+}: {
+  row: PortfolioRow;
+  draft: PositionEditDraft;
+  busy: boolean;
+  onDraft: (value: PositionEditDraft | null) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const quantity = Number(draft.quantity);
+  const avgCost = Number(draft.avgCost);
+  const safeQuantity = Number.isFinite(quantity) ? quantity : 0;
+  const safeAvgCost = Number.isFinite(avgCost) ? avgCost : 0;
+  const marketValue = row.price !== null && row.price !== undefined ? safeQuantity * row.price : null;
+  const costBasis = safeQuantity * safeAvgCost;
+  const gainLoss = marketValue === null ? null : marketValue - costBasis;
+  const gainLossPct = marketValue === null || costBasis <= 0 ? null : (marketValue / costBasis - 1) * 100;
+  const currency = draft.currency || row.currency;
+
+  return (
+    <tr className="position-edit-row">
+      <td className="text-cell strong">
+        <span className="trade-label neutral-label">EDIT</span>
+        <span>{row.symbol}</span>
+      </td>
+      <td className="number-cell">
+        <input
+          aria-label={`${row.symbol} quantity`}
+          type="number"
+          min="0"
+          step="any"
+          value={draft.quantity}
+          onChange={(event) => onDraft({ ...draft, quantity: event.target.value })}
+        />
+      </td>
+      <td className="number-cell">
+        <input
+          aria-label={`${row.symbol} average cost`}
+          type="number"
+          min="0"
+          step="any"
+          value={draft.avgCost}
+          onChange={(event) => onDraft({ ...draft, avgCost: event.target.value })}
+        />
+      </td>
+      <td className="number-cell">{formatMoney(row.price, currency)}</td>
+      <td className="number-cell">{formatMoney(marketValue, currency)}</td>
+      <td className={`number-cell ${signedClass(gainLoss)}`}>{formatMoney(gainLoss, currency)}</td>
+      <td className={`number-cell ${signedClass(gainLossPct)}`}>{formatPct(gainLossPct)}</td>
+      <td className="number-cell">N/A</td>
+      <td className="action-cell">
+        <div className="trade-buttons trade-entry-actions">
+          <button className="buy-button" onClick={onSave} disabled={busy}>
+            Save
+          </button>
+          <button className="mini-ghost" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function CashPortfolioDisplayRow({
   cashBalance,
   cashCurrency,
@@ -3943,7 +4074,6 @@ function CashPortfolioEditRow({
         <input
           aria-label="Cash balance"
           type="number"
-          min="0"
           step="any"
           placeholder={`Cash balance (${cashCurrency})`}
           value={cashBalanceText}
@@ -4762,22 +4892,147 @@ function FinancialRatioPanel({
   );
 }
 
+function transactionDateValue(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value.slice(0, 10);
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return [year, month, day].join("-");
+}
+
+function transactionDateToIso(dateText: string, fallback: string) {
+  if (!dateText) {
+    return fallback;
+  }
+  const [year, month, day] = dateText.split("-").map((part) => Number(part));
+  if (!year || !month || !day) {
+    return fallback;
+  }
+  return new Date(year, month - 1, day).toISOString();
+}
+
+const TRANSACTION_MONTH_OPTIONS = [
+  { value: "0", label: "Jan" },
+  { value: "1", label: "Feb" },
+  { value: "2", label: "Mar" },
+  { value: "3", label: "Apr" },
+  { value: "4", label: "May" },
+  { value: "5", label: "Jun" },
+  { value: "6", label: "Jul" },
+  { value: "7", label: "Aug" },
+  { value: "8", label: "Sep" },
+  { value: "9", label: "Oct" },
+  { value: "10", label: "Nov" },
+  { value: "11", label: "Dec" }
+];
+
 function TransactionPanel({
   transactions,
-  currency
+  currency,
+  busy,
+  onPatch
 }: {
   transactions: PortfolioTransaction[];
   currency: string;
+  busy: boolean;
+  onPatch: (body: Record<string, unknown>) => Promise<PortfolioResponse | null>;
 }) {
+  const [periodMode, setPeriodMode] = useState<TransactionPeriodMode>("year");
+  const [yearFilter, setYearFilter] = useState("all");
+  const [monthFilter, setMonthFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState<TransactionTypeFilter>("ALL");
+  const [editingTransaction, setEditingTransaction] = useState<TransactionEditDraft | null>(null);
   const realizedGain = transactions.reduce((sum, tx) => sum + (Number(tx.realized_gain_loss) || 0), 0);
   const totalBuy = transactions.filter((tx) => tx.type === "BUY").reduce((sum, tx) => sum + tx.value, 0);
   const realizedReturn = totalBuy > 0 ? (realizedGain / totalBuy) * 100 : null;
+  const currentYear = new Date().getFullYear();
+  const yearOptions = [currentYear, currentYear - 1];
+  const filteredTransactions = transactions.filter((tx) => {
+    const date = new Date(tx.created_at);
+    if (typeFilter !== "ALL" && tx.type !== typeFilter) {
+      return false;
+    }
+    if (Number.isNaN(date.getTime())) {
+      return true;
+    }
+    if (periodMode === "year" && yearFilter !== "all") {
+      return date.getFullYear() === Number(yearFilter);
+    }
+    if (periodMode === "month" && monthFilter !== "all") {
+      return date.getMonth() === Number(monthFilter);
+    }
+    return true;
+  });
+
+  function startTransactionEdit(tx: PortfolioTransaction) {
+    setEditingTransaction({
+      id: tx.id,
+      createdAtDate: transactionDateValue(tx.created_at),
+      symbol: tx.symbol,
+      type: tx.type,
+      quantity: String(tx.quantity),
+      price: String(tx.price),
+      currency: tx.currency || currency
+    });
+  }
+
+  async function saveTransactionEdit(original: PortfolioTransaction) {
+    if (!editingTransaction) {
+      return;
+    }
+    const data = await onPatch({
+      action: "update_transaction",
+      transactionId: editingTransaction.id,
+      createdAt: transactionDateToIso(editingTransaction.createdAtDate, original.created_at),
+      symbol: editingTransaction.symbol,
+      type: editingTransaction.type,
+      quantity: Number(editingTransaction.quantity),
+      price: Number(editingTransaction.price),
+      currency: editingTransaction.currency || original.currency
+    });
+    if (data) {
+      setEditingTransaction(null);
+    }
+  }
 
   return (
-    <section className="panel">
-      <div className="panel-heading">
-        <div>
+    <section className="panel transaction-history-panel">
+      <div className="panel-heading history-panel-heading">
+        <div className="history-title-block">
           <h2>Transaction History</h2>
+          <div className="history-filters">
+            <select value={periodMode} onChange={(event) => setPeriodMode(event.target.value as TransactionPeriodMode)}>
+              <option value="year">Yearly</option>
+              <option value="month">Monthly</option>
+            </select>
+            {periodMode === "year" ? (
+              <select value={yearFilter} onChange={(event) => setYearFilter(event.target.value)}>
+                <option value="all">All</option>
+                {yearOptions.map((year) => (
+                  <option key={year} value={String(year)}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <select value={monthFilter} onChange={(event) => setMonthFilter(event.target.value)}>
+                <option value="all">All</option>
+                {TRANSACTION_MONTH_OPTIONS.map((month) => (
+                  <option key={month.value} value={month.value}>
+                    {month.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as TransactionTypeFilter)}>
+              <option value="ALL">All</option>
+              <option value="BUY">Buy</option>
+              <option value="SELL">Sell</option>
+            </select>
+          </div>
         </div>
         <div className="history-highlight">
           <span>Recorded Realized P/L</span>
@@ -4790,34 +5045,98 @@ function TransactionPanel({
         <table className="history-table">
           <thead>
             <tr>
-              <th className="text-cell">Time</th>
+              <th className="text-cell history-date-cell">Time</th>
               <th className="text-cell">Symbol</th>
               <th className="text-cell">Type</th>
               <th className="number-cell">Quantity</th>
               <th className="number-cell">Price</th>
               <th className="number-cell">Value</th>
               <th className="number-cell">Trade P/L</th>
+              <th className="action-cell history-edit-cell">Edit</th>
             </tr>
           </thead>
           <tbody>
-            {transactions.map((tx) => (
-              <tr key={tx.id}>
-                <td className="text-cell">{new Date(tx.created_at).toLocaleString()}</td>
-                <td className="text-cell strong">{tx.symbol}</td>
-                <td className="text-cell">
-                  <span className={tx.type === "BUY" ? "trade-label buy" : "trade-label sell"}>{tx.type}</span>
-                </td>
-                <td className="number-cell">{formatNumber(tx.quantity, 8)}</td>
-                <td className="number-cell">{formatMoney(tx.price, tx.currency)}</td>
-                <td className="number-cell">{formatMoney(tx.value, tx.currency)}</td>
-                <td className={`number-cell ${signedClass(tx.realized_gain_loss)}`}>
-                  {tx.type === "BUY" ? "Open" : formatMoney(tx.realized_gain_loss, tx.currency)}
-                </td>
-              </tr>
-            ))}
-            {!transactions.length ? (
+            {filteredTransactions.map((tx) => {
+              const isEditing = editingTransaction?.id === tx.id;
+              const editValue = editingTransaction ? Number(editingTransaction.quantity) * Number(editingTransaction.price) : 0;
+              return isEditing && editingTransaction ? (
+                <tr key={tx.id} className="transaction-edit-row">
+                  <td className="text-cell history-date-cell">
+                    <input
+                      aria-label="Transaction date"
+                      type="date"
+                      value={editingTransaction.createdAtDate}
+                      onChange={(event) => setEditingTransaction({ ...editingTransaction, createdAtDate: event.target.value })}
+                    />
+                  </td>
+                  <td className="text-cell">
+                    <input
+                      aria-label="Transaction symbol"
+                      value={editingTransaction.symbol}
+                      onChange={(event) => setEditingTransaction({ ...editingTransaction, symbol: event.target.value.toUpperCase() })}
+                    />
+                  </td>
+                  <td className="text-cell">
+                    <select value={editingTransaction.type} onChange={(event) => setEditingTransaction({ ...editingTransaction, type: event.target.value as TradeMode })}>
+                      <option value="BUY">BUY</option>
+                      <option value="SELL">SELL</option>
+                    </select>
+                  </td>
+                  <td className="number-cell">
+                    <input
+                      aria-label="Transaction quantity"
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editingTransaction.quantity}
+                      onChange={(event) => setEditingTransaction({ ...editingTransaction, quantity: event.target.value })}
+                    />
+                  </td>
+                  <td className="number-cell">
+                    <input
+                      aria-label="Transaction price"
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editingTransaction.price}
+                      onChange={(event) => setEditingTransaction({ ...editingTransaction, price: event.target.value })}
+                    />
+                  </td>
+                  <td className="number-cell">{formatMoney(Number.isFinite(editValue) ? editValue : null, editingTransaction.currency)}</td>
+                  <td className="number-cell muted">Recalculated</td>
+                  <td className="action-cell history-edit-cell">
+                    <div className="trade-buttons trade-entry-actions">
+                      <button className="buy-button" disabled={busy} onClick={() => void saveTransactionEdit(tx)}>
+                        Save
+                      </button>
+                      <button className="mini-ghost" onClick={() => setEditingTransaction(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                <tr key={tx.id}>
+                  <td className="text-cell history-date-cell">{transactionDateValue(tx.created_at)}</td>
+                  <td className="text-cell strong">{tx.symbol}</td>
+                  <td className="text-cell">
+                    <span className={tx.type === "BUY" ? "trade-label buy" : "trade-label sell"}>{tx.type}</span>
+                  </td>
+                  <td className="number-cell">{formatNumber(tx.quantity, 8)}</td>
+                  <td className="number-cell">{formatMoney(tx.price, tx.currency)}</td>
+                  <td className="number-cell">{formatMoney(tx.value, tx.currency)}</td>
+                  <td className={"number-cell " + signedClass(tx.realized_gain_loss)}>{tx.type === "BUY" ? "Open" : formatMoney(tx.realized_gain_loss, tx.currency)}</td>
+                  <td className="action-cell history-edit-cell">
+                    <button className="mini-ghost" onClick={() => startTransactionEdit(tx)}>
+                      Edit
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {!filteredTransactions.length ? (
               <tr>
-                <td colSpan={7} className="empty-cell">
+                <td colSpan={8} className="empty-cell">
                   No transactions recorded yet.
                 </td>
               </tr>

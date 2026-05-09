@@ -9,7 +9,9 @@ import {
   saveStrategy,
   togglePriceAlert,
   updateCashSettings,
-  updateProfile
+  updatePosition,
+  updateProfile,
+  updateTransaction
 } from "@/lib/portfolio";
 import { deletePushToken, registerPushToken } from "@/lib/push";
 import { assertEmailAvailable, getUserRecord, saveUserRecord, validateAccountProfile } from "@/lib/userStore";
@@ -72,6 +74,23 @@ export async function PATCH(request: NextRequest) {
         includeCash: body.includeCash,
         cashBalance: body.cashBalance,
         cashCurrency: body.cashCurrency
+      });
+    } else if (action === "update_position") {
+      updatePosition(record, {
+        symbol: body.symbol,
+        quantity: body.quantity,
+        avgCost: body.avgCost,
+        currency: body.currency
+      });
+    } else if (action === "update_transaction") {
+      updateTransaction(record, {
+        transactionId: body.transactionId,
+        type: body.type,
+        symbol: body.symbol,
+        quantity: body.quantity,
+        price: body.price,
+        currency: body.currency,
+        createdAt: body.createdAt
       });
     } else if (action === "update_profile") {
       const profile = validateAccountProfile({
