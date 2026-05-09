@@ -299,6 +299,39 @@ def row_from_upbit_ticker(message: dict[str, object]) -> dict[str, object] | Non
     }
 
 
+def row_from_upbit_rest_ticker(ticker: dict[str, object]) -> dict[str, object] | None:
+    market = str(ticker.get("market") or "").upper()
+    if not market.startswith("KRW-"):
+        return None
+
+    price = float_or_none(ticker.get("trade_price"))
+    if price is None or price <= 0:
+        return None
+    previous_close = float_or_none(ticker.get("prev_closing_price"))
+    if previous_close is not None and previous_close <= 0:
+        previous_close = None
+    signed_change_rate = ticker.get("signed_change_rate")
+    change_pct = None
+    try:
+        if signed_change_rate is not None:
+            change_pct = float(signed_change_rate) * 100
+    except (TypeError, ValueError):
+        change_pct = None
+
+    return {
+        "symbol": app_symbol_from_upbit_market(market),
+        "provider_symbol": market,
+        "price": price,
+        "previous_close": previous_close,
+        "change_pct": change_pct,
+        "currency": "KRW",
+        "exchange": "Upbit REST Worker",
+        "source": "upbit_rest_worker",
+        "payload": ticker,
+        "updated_at": utc_now_iso(),
+    }
+
+
 def float_or_none(value: object) -> float | None:
     try:
         if value is None:
@@ -389,6 +422,75 @@ async def fetch_and_upsert_yahoo_batch(batch: list[str]) -> tuple[int, int]:
     return len(rows), skipped
 
 
+def upbit_rest_rows_for_batch(batch: list[str]) -> tuple[list[dict[str, object]], int]:
+    try:
+        query = urllib.parse.urlencode({"markets": ",".join(batch)})
+        payload = fetch_json(f"https://api.upbit.com/v1/ticker?{query}")
+        if not isinstance(payload, list):
+            return [], len(batch)
+        rows = []
+        skipped = 0
+        for item in payload:
+            row = row_from_upbit_rest_ticker(item) if isinstance(item, dict) else None
+            if row:
+                rows.append(row)
+            else:
+                skipped += 1
+        return rows, skipped
+    except Exception as exc:
+        if len(batch) <= 1:
+            market = batch[0] if batch else "unknown"
+            print(f"{utc_now_iso()} upbit REST quote skipped {market}: {exc}", flush=True)
+            return [], len(batch)
+        midpoint = max(1, len(batch) // 2)
+        left_rows, left_skipped = upbit_rest_rows_for_batch(batch[:midpoint])
+        right_rows, right_skipped = upbit_rest_rows_for_batch(batch[midpoint:])
+        return [*left_rows, *right_rows], left_skipped + right_skipped
+
+
+async def fetch_and_upsert_upbit_rest_batch(batch: list[str]) -> tuple[int, int]:
+    rows, skipped = await asyncio.to_thread(upbit_rest_rows_for_batch, batch)
+    if rows:
+        await asyncio.to_thread(supabase_upsert, rows)
+    return len(rows), skipped
+
+
+async def poll_upbit_rest_quotes(markets: list[str], interval: float, batch_size: int, concurrency: int) -> None:
+    if not markets:
+        print(f"{utc_now_iso()} crypto REST polling disabled", flush=True)
+        return
+    concurrency = max(1, concurrency)
+    batches = chunked(markets, max(1, batch_size))
+    print(
+        f"{utc_now_iso()} polling {len(markets)} crypto quotes every {interval}s with {concurrency} REST workers",
+        flush=True,
+    )
+    while True:
+        started_at = datetime.now(timezone.utc)
+        updated = 0
+        skipped = 0
+        processed = 0
+        for batch_group in chunked(batches, concurrency):
+            results = await asyncio.gather(
+                *(fetch_and_upsert_upbit_rest_batch(batch) for batch in batch_group),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    print(f"{utc_now_iso()} upbit REST quote batch failed: {result}", flush=True)
+                    continue
+                batch_updated, batch_skipped = result
+                updated += batch_updated
+                skipped += batch_skipped
+            processed += len(batch_group)
+            if processed % 20 == 0 or processed >= len(batches):
+                print(f"{utc_now_iso()} crypto REST progress {processed}/{len(batches)} batches; upserted {updated}", flush=True)
+            await asyncio.sleep(0.05)
+        elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+        print(f"{utc_now_iso()} upserted {updated} crypto REST quotes in {elapsed:.1f}s; skipped {skipped}", flush=True)
+        await asyncio.sleep(interval)
+
+
 async def poll_yahoo_quotes(symbols: list[str], interval: float, batch_size: int, concurrency: int) -> None:
     if not symbols:
         print(f"{utc_now_iso()} stock quote polling disabled", flush=True)
@@ -464,8 +566,13 @@ async def stream_upbit(markets: list[str], flush_interval: float, reconnect_dela
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stream Upbit crypto quotes into Supabase.")
     parser.add_argument("--symbols", nargs="*", default=None, help="Optional app symbols such as BTC-KRW ETH-KRW. Defaults to every Upbit KRW market.")
-    parser.add_argument("--disable-crypto", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO", "").lower() in {"1", "true", "yes"}, help="Disable Upbit crypto WebSocket streaming.")
+    parser.add_argument("--disable-crypto", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO", "").lower() in {"1", "true", "yes"}, help="Disable all Upbit crypto quote updates.")
+    parser.add_argument("--disable-crypto-websocket", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO_WEBSOCKET", "").lower() in {"1", "true", "yes"}, help="Disable Upbit crypto WebSocket streaming.")
     parser.add_argument("--crypto-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_CRYPTO_BATCH_SIZE", "100")), help="Upbit markets per WebSocket subscription.")
+    parser.add_argument("--disable-crypto-rest-poll", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO_REST_POLL", "").lower() in {"1", "true", "yes"}, help="Disable the Upbit REST polling cache backstop.")
+    parser.add_argument("--crypto-rest-poll-interval", type=float, default=float(os.environ.get("PRICE_WORKER_CRYPTO_REST_POLL_INTERVAL", "30")), help="Seconds between full crypto REST polling passes.")
+    parser.add_argument("--crypto-rest-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_CRYPTO_REST_BATCH_SIZE", "80")), help="Upbit markets per REST ticker request.")
+    parser.add_argument("--crypto-rest-concurrency", type=int, default=int(os.environ.get("PRICE_WORKER_CRYPTO_REST_CONCURRENCY", "2")), help="Concurrent Upbit REST ticker batches.")
     parser.add_argument("--stock-symbols", nargs="*", default=[], help="Stock symbols such as AAPL MSFT 005930.KS.")
     parser.add_argument("--stock-symbols-file", default="", help="Optional file with comma/newline separated stock symbols.")
     parser.add_argument("--stock-poll-interval", type=float, default=float(os.environ.get("PRICE_WORKER_STOCK_POLL_INTERVAL", "60")), help="Seconds between full stock quote polling passes.")
@@ -482,18 +589,26 @@ def parse_args() -> argparse.Namespace:
 
 async def run_worker(args: argparse.Namespace) -> None:
     tasks = []
+    requested_symbols = parse_symbol_list(",".join(args.symbols or []))
+    requested_symbols.extend(parse_symbol_list(os.environ.get("PRICE_WORKER_CRYPTO_SYMBOLS", "")))
+    markets = []
     if not args.disable_crypto:
-        requested_symbols = parse_symbol_list(",".join(args.symbols or []))
-        requested_symbols.extend(parse_symbol_list(os.environ.get("PRICE_WORKER_CRYPTO_SYMBOLS", "")))
         markets = discover_upbit_markets(requested_symbols)
         if not markets:
             raise SystemExit("No Upbit KRW markets are available for crypto streaming.")
+    if not args.disable_crypto and not args.disable_crypto_websocket:
         crypto_batches = chunked(markets, max(1, args.crypto_batch_size))
         print(f"{utc_now_iso()} crypto streaming {len(markets)} Upbit KRW markets across {len(crypto_batches)} websocket connection(s)", flush=True)
         for index, market_batch in enumerate(crypto_batches, start=1):
             tasks.append(stream_upbit(market_batch, args.flush_interval, args.reconnect_delay, f"crypto-{index}/{len(crypto_batches)}"))
-    else:
+    elif args.disable_crypto:
         print(f"{utc_now_iso()} crypto quote streaming disabled", flush=True)
+    else:
+        print(f"{utc_now_iso()} crypto websocket streaming disabled", flush=True)
+    if not args.disable_crypto and not args.disable_crypto_rest_poll:
+        tasks.append(poll_upbit_rest_quotes(markets, args.crypto_rest_poll_interval, args.crypto_rest_batch_size, args.crypto_rest_concurrency))
+    elif not args.disable_crypto:
+        print(f"{utc_now_iso()} crypto REST polling disabled", flush=True)
 
     stock_symbols = shard_symbols(load_stock_symbols(args), args.stock_shard_index, args.stock_shard_count)
     if stock_symbols:
