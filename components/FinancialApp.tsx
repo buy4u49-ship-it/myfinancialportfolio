@@ -3431,6 +3431,14 @@ function StrategiesPanel({
             const selectedMetric = metricOptions.some((metric) => metric.key === condition.leftMetric) ? condition.leftMetric : metricOptions[0]?.key || "price";
             const selectedMetricOption = strategyMetricOption(selectedMetric);
             const isSignalCondition = selectedMetricOption?.kind === "signal";
+            const rightMetric = condition.right.type === "metric" ? condition.right.metric : null;
+            const rightMetricOption = rightMetric ? strategyMetricOption(rightMetric) : null;
+            const inferredRightCategory = rightMetricOption?.category || selectedCategory;
+            const selectedRightCategory = availableCategories.some((category) => category.key === inferredRightCategory)
+              ? inferredRightCategory
+              : availableCategories[0]?.key || "price";
+            const rightMetricOptions = strategyMetricsForCategory(selectedRightCategory, draft.markets);
+            const selectedRightMetric = rightMetric && rightMetricOptions.some((metric) => metric.key === rightMetric) ? rightMetric : rightMetricOptions[0]?.key || "price";
             return (
               <div className={["strategy-condition-row", isSignalCondition ? "signal-condition-row" : ""].filter(Boolean).join(" ")} key={condition.id}>
                 <span className="condition-index">{index === 0 ? "Where" : "And"}</span>
@@ -3458,19 +3466,33 @@ function StrategiesPanel({
                       ))}
                     </select>
                     <select
-                      value={condition.right.type === "number" ? "__number__" : condition.right.metric}
+                      value={condition.right.type === "number" ? "__number__" : selectedRightCategory}
                       onChange={(event) => {
                         const value = event.target.value;
-                        updateRightOperand(condition.id, value === "__number__" ? { type: "number", value: 0 } : { type: "metric", metric: value as StrategyMetricKey });
+                        updateRightOperand(
+                          condition.id,
+                          value === "__number__"
+                            ? { type: "number", value: 0 }
+                            : { type: "metric", metric: firstStrategyMetricForCategory(value as StrategyConditionCategory, draft.markets) }
+                        );
                       }}
                     >
-                      {strategyMetricOptionsForMarkets(draft.markets).map((metric) => (
-                        <option key={metric.key} value={metric.key}>
-                          {metric.label}
+                      {availableCategories.map((category) => (
+                        <option key={category.key} value={category.key}>
+                          {category.label}
                         </option>
                       ))}
                       <option value="__number__">Number input</option>
                     </select>
+                    {condition.right.type === "metric" ? (
+                      <select value={selectedRightMetric} onChange={(event) => updateRightOperand(condition.id, { type: "metric", metric: event.target.value as StrategyMetricKey })}>
+                        {rightMetricOptions.map((metric) => (
+                          <option key={metric.key} value={metric.key}>
+                            {metric.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
                     {condition.right.type === "number" ? (
                       <input
                         type="number"

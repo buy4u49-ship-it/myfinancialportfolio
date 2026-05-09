@@ -1049,7 +1049,7 @@ select {
 
 .strategy-condition-row {
   display: grid;
-  grid-template-columns: 72px minmax(150px, 0.8fr) minmax(170px, 1fr) 86px minmax(180px, 1fr) minmax(120px, 0.5fr) minmax(112px, 0.45fr) 88px;
+  grid-template-columns: 72px minmax(142px, 0.75fr) minmax(160px, 1fr) 82px minmax(142px, 0.75fr) minmax(170px, 1fr) minmax(112px, 0.45fr) 88px;
   gap: 10px;
   align-items: center;
 }
