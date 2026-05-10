@@ -4,7 +4,7 @@ import {
   readFinancialFundamentalsCache,
   STRATEGY_QUOTE_CACHE_MAX_AGE_MS
 } from "./financialFundamentalsCache";
-import { getCachedMarketQuotes } from "./prices";
+import { getCachedMarketQuotes, getQuotes } from "./prices";
 import { defaultStrategyCondition, strategyMetricLabel, strategyMetricOption, STRATEGY_METRICS, STRATEGY_OPERATORS } from "./strategyConfig";
 import { getStrategyUniverse, readStrategyMetricCache, strategyMetricSnapshotFresh } from "./strategyMetricCache";
 import type {
@@ -224,6 +224,32 @@ function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, pr
   return price / eps;
 }
 
+function latestTechnicalClose(technical: StrategyMetricSnapshot["technical"] | undefined) {
+  const daily = technical?.daily || [];
+  for (let index = daily.length - 1; index >= 0; index -= 1) {
+    const close = positiveNumber(daily[index]?.close);
+    if (close !== null) {
+      return close;
+    }
+  }
+  return null;
+}
+
+function technicalChangePct(technical: StrategyMetricSnapshot["technical"] | undefined) {
+  const daily = technical?.daily || [];
+  const closes: number[] = [];
+  for (let index = daily.length - 1; index >= 0 && closes.length < 2; index -= 1) {
+    const close = positiveNumber(daily[index]?.close);
+    if (close !== null) {
+      closes.unshift(close);
+    }
+  }
+  if (closes.length < 2 || closes[0] === 0) {
+    return null;
+  }
+  return (closes[1] / closes[0] - 1) * 100;
+}
+
 function evaluationFromFundamental(
   fundamental: FinancialFundamentalSnapshot,
   quote: Quote | undefined,
@@ -234,8 +260,13 @@ function evaluationFromFundamental(
     positiveNumber(quote?.price) ??
     positiveNumber(supplementalMetrics.price) ??
     positiveNumber(supplemental?.price) ??
-    positiveNumber(fundamental.priceAtRefresh);
-  const changePct = finiteNumber(quote?.changePct) ?? finiteNumber(supplementalMetrics.changePct) ?? finiteNumber(supplemental?.changePct);
+    positiveNumber(fundamental.priceAtRefresh) ??
+    latestTechnicalClose(supplemental?.technical);
+  const changePct =
+    finiteNumber(quote?.changePct) ??
+    finiteNumber(supplementalMetrics.changePct) ??
+    finiteNumber(supplemental?.changePct) ??
+    technicalChangePct(supplemental?.technical);
   const companyPer = companyPerFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyPer);
   const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
     ...supplementalMetrics,
@@ -261,8 +292,12 @@ function evaluationFromFundamental(
 }
 
 function evaluationFromSupplemental(snapshot: StrategyMetricSnapshot, quote: Quote | undefined): EvaluationSnapshot {
-  const price = positiveNumber(quote?.price);
-  const changePct = finiteNumber(quote?.changePct);
+  const price = positiveNumber(quote?.price) ?? positiveNumber(snapshot.metrics.price) ?? positiveNumber(snapshot.price) ?? latestTechnicalClose(snapshot.technical);
+  const changePct =
+    finiteNumber(quote?.changePct) ??
+    finiteNumber(snapshot.metrics.changePct) ??
+    finiteNumber(snapshot.changePct) ??
+    technicalChangePct(snapshot.technical);
   return {
     symbol: snapshot.symbol,
     market: snapshot.market,
@@ -280,6 +315,24 @@ function evaluationFromSupplemental(snapshot: StrategyMetricSnapshot, quote: Quo
     fresh: strategyMetricSnapshotFresh(snapshot),
     refreshedAt: snapshot.refreshedAt
   };
+}
+
+async function getStrategyQuotes(symbols: string[], markets: StrategyMarket[]) {
+  const quoteCache = await getCachedMarketQuotes(symbols, { maxAgeMs: STRATEGY_QUOTE_CACHE_MAX_AGE_MS });
+  if (!markets.includes("crypto")) {
+    return quoteCache;
+  }
+  const missingCryptoSymbols = symbols.filter((symbol) => symbol.endsWith("-KRW") && !quoteCache.has(symbol));
+  if (!missingCryptoSymbols.length) {
+    return quoteCache;
+  }
+  const liveQuotes = await getQuotes(missingCryptoSymbols);
+  liveQuotes.forEach((quote, symbol) => {
+    if (positiveNumber(quote.price) !== null) {
+      quoteCache.set(symbol, quote);
+    }
+  });
+  return quoteCache;
 }
 
 function median(values: Array<number | null | undefined>) {
@@ -724,7 +777,7 @@ export async function evaluateStrategy(input: unknown, options: EvaluationOption
   const [fundamentalCache, supplementalCache, quoteCache] = await Promise.all([
     readFinancialFundamentalsCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
     readStrategyMetricCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
-    getCachedMarketQuotes(symbols, { maxAgeMs: STRATEGY_QUOTE_CACHE_MAX_AGE_MS })
+    getStrategyQuotes(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets)
   ]);
   const matches: StrategyEvaluation["matches"] = [];
   const errors: StrategyEvaluation["errors"] = [];
