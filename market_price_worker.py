@@ -524,20 +524,57 @@ async def poll_yahoo_quotes(symbols: list[str], interval: float, batch_size: int
         await asyncio.sleep(interval)
 
 
-async def flush_quotes(latest_rows: dict[str, dict[str, object]], interval: float, stream_name: str) -> None:
+async def flush_quotes(
+    latest_rows: dict[str, dict[str, object]],
+    interval: float,
+    stream_name: str,
+    stats: dict[str, int],
+) -> None:
     while True:
         await asyncio.sleep(interval)
         if not latest_rows:
             continue
         rows = list(latest_rows.values())
         latest_rows.clear()
-        supabase_upsert(rows)
+        try:
+            await asyncio.to_thread(supabase_upsert, rows)
+        except Exception as exc:
+            stats["upsert_errors"] += 1
+            for row in rows:
+                symbol = str(row.get("symbol") or "")
+                if symbol:
+                    latest_rows.setdefault(symbol, row)
+            print(
+                f"{utc_now_iso()} {stream_name} quote upsert failed; keeping {len(rows)} rows for retry: {exc}",
+                flush=True,
+            )
+            continue
+        stats["upserted"] += len(rows)
         print(f"{utc_now_iso()} {stream_name} upserted {len(rows)} quotes", flush=True)
+
+
+async def report_stream_status(latest_rows: dict[str, dict[str, object]], stream_name: str, stats: dict[str, int], interval: float = 60.0) -> None:
+    while True:
+        await asyncio.sleep(interval)
+        print(
+            f"{utc_now_iso()} {stream_name} status: websocket messages={stats['messages']}, "
+            f"accepted_rows={stats['accepted_rows']}, invalid_rows={stats['invalid_rows']}, pending_rows={len(latest_rows)}, "
+            f"upserted_rows={stats['upserted']}, upsert_errors={stats['upsert_errors']}",
+            flush=True,
+        )
 
 
 async def stream_upbit(markets: list[str], flush_interval: float, reconnect_delay: float, stream_name: str) -> None:
     latest_rows: dict[str, dict[str, object]] = {}
-    flush_task = asyncio.create_task(flush_quotes(latest_rows, flush_interval, stream_name))
+    stats = {
+        "messages": 0,
+        "accepted_rows": 0,
+        "invalid_rows": 0,
+        "upserted": 0,
+        "upsert_errors": 0,
+    }
+    flush_task = asyncio.create_task(flush_quotes(latest_rows, flush_interval, stream_name, stats))
+    status_task = asyncio.create_task(report_stream_status(latest_rows, stream_name, stats))
     try:
         while True:
             try:
@@ -552,15 +589,20 @@ async def stream_upbit(markets: list[str], flush_interval: float, reconnect_dela
                         if isinstance(raw_message, bytes):
                             raw_message = raw_message.decode("utf-8")
                         message = json.loads(raw_message)
+                        stats["messages"] += 1
                         if isinstance(message, dict):
                             row = row_from_upbit_ticker(message)
                             if row:
+                                stats["accepted_rows"] += 1
                                 latest_rows[str(row["symbol"])] = row
+                            else:
+                                stats["invalid_rows"] += 1
             except Exception as exc:
                 print(f"{utc_now_iso()} {stream_name} websocket error: {exc}", flush=True)
                 await asyncio.sleep(reconnect_delay)
     finally:
         flush_task.cancel()
+        status_task.cancel()
 
 
 def parse_args() -> argparse.Namespace:
@@ -569,7 +611,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-crypto", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO", "").lower() in {"1", "true", "yes"}, help="Disable all Upbit crypto quote updates.")
     parser.add_argument("--disable-crypto-websocket", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO_WEBSOCKET", "").lower() in {"1", "true", "yes"}, help="Disable Upbit crypto WebSocket streaming.")
     parser.add_argument("--crypto-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_CRYPTO_BATCH_SIZE", "100")), help="Upbit markets per WebSocket subscription.")
-    parser.add_argument("--disable-crypto-rest-poll", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO_REST_POLL", "").lower() in {"1", "true", "yes"}, help="Disable the Upbit REST polling cache backstop.")
+    parser.add_argument("--enable-crypto-rest-poll", action="store_true", default=os.environ.get("PRICE_WORKER_ENABLE_CRYPTO_REST_POLL", "").lower() in {"1", "true", "yes"}, help="Enable optional Upbit REST polling.")
+    parser.add_argument("--disable-crypto-rest-poll", action="store_true", default=os.environ.get("PRICE_WORKER_DISABLE_CRYPTO_REST_POLL", "").lower() in {"1", "true", "yes"}, help="Disable optional Upbit REST polling.")
     parser.add_argument("--crypto-rest-poll-interval", type=float, default=float(os.environ.get("PRICE_WORKER_CRYPTO_REST_POLL_INTERVAL", "30")), help="Seconds between full crypto REST polling passes.")
     parser.add_argument("--crypto-rest-batch-size", type=int, default=int(os.environ.get("PRICE_WORKER_CRYPTO_REST_BATCH_SIZE", "80")), help="Upbit markets per REST ticker request.")
     parser.add_argument("--crypto-rest-concurrency", type=int, default=int(os.environ.get("PRICE_WORKER_CRYPTO_REST_CONCURRENCY", "2")), help="Concurrent Upbit REST ticker batches.")
@@ -605,7 +648,8 @@ async def run_worker(args: argparse.Namespace) -> None:
         print(f"{utc_now_iso()} crypto quote streaming disabled", flush=True)
     else:
         print(f"{utc_now_iso()} crypto websocket streaming disabled", flush=True)
-    if not args.disable_crypto and not args.disable_crypto_rest_poll:
+    crypto_rest_poll_enabled = args.enable_crypto_rest_poll and not args.disable_crypto_rest_poll
+    if not args.disable_crypto and crypto_rest_poll_enabled:
         tasks.append(poll_upbit_rest_quotes(markets, args.crypto_rest_poll_interval, args.crypto_rest_batch_size, args.crypto_rest_concurrency))
     elif not args.disable_crypto:
         print(f"{utc_now_iso()} crypto REST polling disabled", flush=True)
