@@ -1,5 +1,5 @@
-import FinancialAppRoute from "@/components/FinancialAppRoute";
+import FinancialApp from "@/components/FinancialApp";
 
 export default function StrategiesPage() {
-  return <FinancialAppRoute page="strategies" />;
+  return <FinancialApp initialPage="strategies" />;
 }
