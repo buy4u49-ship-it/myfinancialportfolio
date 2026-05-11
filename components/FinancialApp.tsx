@@ -1,6 +1,7 @@
 "use client";
 
 import { CSSProperties, FormEvent, Fragment, ReactNode, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type {
   AdminResponse,
   ChartPoint,
@@ -44,7 +45,7 @@ type User = {
   isAdmin?: boolean;
 };
 
-type PageKey = "coin" | "us" | "korea" | "symbol" | "my" | "admin";
+type PageKey = "coin" | "us" | "korea" | "symbol" | "strategies" | "my" | "settings" | "admin";
 type TradeMode = "BUY" | "SELL";
 type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type MyTab = "portfolio" | "alerts" | "strategies" | "account";
@@ -64,8 +65,35 @@ const BASE_PAGES: Array<{ key: PageKey; label: string }> = [
   { key: "us", label: "US Stock Main" },
   { key: "korea", label: "Korea Stock Main" },
   { key: "symbol", label: "Symbol Detail" },
-  { key: "my", label: "My Page" }
+  { key: "strategies", label: "Strategies" },
+  { key: "my", label: "My Page" },
+  { key: "settings", label: "Settings" }
 ];
+
+function routeForPage(page: PageKey, symbol = "AAPL") {
+  if (page === "coin") {
+    return "/coins";
+  }
+  if (page === "us") {
+    return "/stocks/us";
+  }
+  if (page === "korea") {
+    return "/stocks/korea";
+  }
+  if (page === "symbol") {
+    return `/symbol/${encodeURIComponent(symbol || "AAPL")}`;
+  }
+  if (page === "strategies") {
+    return "/strategies";
+  }
+  if (page === "settings") {
+    return "/settings";
+  }
+  if (page === "admin") {
+    return "/admin";
+  }
+  return "/my";
+}
 
 const moneyFormatters = new Map<string, Intl.NumberFormat>();
 const numberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 });
@@ -249,16 +277,24 @@ async function registerFirebaseWebPushToken() {
   return token;
 }
 
-export default function FinancialApp() {
-  const [page, setPage] = useState<PageKey>("coin");
+export default function FinancialApp({
+  initialPage = "coin",
+  initialSymbol = "AAPL"
+}: {
+  initialPage?: PageKey;
+  initialSymbol?: string;
+}) {
+  const router = useRouter();
+  const initialLoadPageRef = useRef<PageKey>(initialPage);
+  const [page, setPage] = useState<PageKey>(initialPage);
   const [user, setUser] = useState<User | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
   const [marketData, setMarketData] = useState<Partial<Record<PageKey, MarketPageResponse>>>({});
   const [symbolDetail, setSymbolDetail] = useState<SymbolDetailResponse | null>(null);
   const [adminData, setAdminData] = useState<AdminResponse | null>(null);
   const [adminSelectedUsername, setAdminSelectedUsername] = useState("");
-  const [symbol, setSymbol] = useState("AAPL");
-  const [symbolDraft, setSymbolDraft] = useState("AAPL");
+  const [symbol, setSymbol] = useState(initialSymbol);
+  const [symbolDraft, setSymbolDraft] = useState(initialSymbol);
   const [benchmark, setBenchmark] = useState("SPY");
   const [historyYears, setHistoryYears] = useState(20);
   const [rollingWindow, setRollingWindow] = useState(36);
@@ -407,10 +443,22 @@ export default function FinancialApp() {
     await refreshLiveData(true);
   }
 
+  function navigatePage(nextPage: PageKey) {
+    setPage(nextPage);
+    router.push(routeForPage(nextPage, symbolDraft || symbol));
+  }
+
   useEffect(() => {
     async function boot() {
       setLoading(true);
-      await Promise.allSettled([loadSession(), loadMarket("coin")]);
+      const bootPage = initialLoadPageRef.current;
+      const tasks: Array<Promise<unknown>> = [loadSession()];
+      if (bootPage === "coin" || bootPage === "us" || bootPage === "korea") {
+        tasks.push(loadMarket(bootPage));
+      } else if (bootPage === "symbol") {
+        tasks.push(loadSymbol(initialSymbol));
+      }
+      await Promise.allSettled(tasks);
       setLoading(false);
     }
     boot();
@@ -423,7 +471,7 @@ export default function FinancialApp() {
       }
     } else if (page === "symbol" && !symbolDetail) {
       refreshCurrentPage();
-    } else if (page === "my" && user && !portfolio) {
+    } else if ((page === "my" || page === "strategies" || page === "settings") && user && !portfolio) {
       loadPortfolio();
     } else if (page === "admin") {
       if (user?.isAdmin) {
@@ -432,6 +480,7 @@ export default function FinancialApp() {
         }
       } else {
         setPage("coin");
+        router.replace(routeForPage("coin"));
       }
     }
   }, [page, user?.isAdmin]);
@@ -614,6 +663,7 @@ export default function FinancialApp() {
   async function confirmSettings() {
     if (page !== "symbol") {
       setPage("symbol");
+      router.push(routeForPage("symbol", symbol));
     }
     setSettingsBusy(true);
     setError("");
@@ -719,24 +769,23 @@ export default function FinancialApp() {
     setSymbol(next);
     setSymbolDraft(next);
     setPage("symbol");
+    router.push(routeForPage("symbol", next));
     setBusy(true);
     loadSymbol(next, symbolRange)
       .catch((err) => setError(err instanceof Error ? err.message : "Symbol load failed."))
       .finally(() => setBusy(false));
   }
 
-  const pageTitle =
-    page === "coin"
-      ? "Coin Main"
-      : page === "us"
-        ? "US Stock Main"
-        : page === "korea"
-          ? "Korea Stock Main"
-          : page === "symbol"
-            ? "Symbol Detail"
-            : page === "admin"
-              ? "Admin"
-              : "My Page";
+  const pageTitle = {
+    coin: "Coin Main",
+    us: "US Stock Main",
+    korea: "Korea Stock Main",
+    symbol: "Symbol Detail",
+    strategies: "Strategies",
+    my: "My Page",
+    settings: "Settings",
+    admin: "Admin"
+  }[page];
   const visiblePages = user?.isAdmin ? [...BASE_PAGES, { key: "admin" as const, label: "Admin" }] : BASE_PAGES;
 
   if (loading) {
@@ -785,7 +834,7 @@ export default function FinancialApp() {
           onResetPassword={() => submitRecovery("reset_password")}
           onConfirmSettings={confirmSettings}
           onOpenSymbol={openSymbol}
-          onGoMyPage={() => setPage("my")}
+          onGoMyPage={() => navigatePage("my")}
           onLogout={logout}
         />
       )}
@@ -803,7 +852,7 @@ export default function FinancialApp() {
                 Logout
               </button>
             ) : (
-              <button className="ghost-button" onClick={() => setPage("my")}>
+              <button className="ghost-button" onClick={() => navigatePage("my")}>
                 Login
               </button>
             )}
@@ -816,7 +865,7 @@ export default function FinancialApp() {
               <button
                 key={item.key}
                 className={page === item.key ? "active" : ""}
-                onClick={() => setPage(item.key)}
+                onClick={() => navigatePage(item.key)}
               >
                 {item.label}
               </button>
@@ -878,6 +927,60 @@ export default function FinancialApp() {
             onRefresh={() => loadAdmin()}
             onPatch={patchAdmin}
           />
+        ) : null}
+
+        {page === "strategies" ? (
+          user ? (
+            <StrategiesPanel
+              isAdmin={Boolean(user.isAdmin)}
+              strategies={portfolio?.strategies || []}
+              busy={busy}
+              onSave={(strategy) => patchPortfolio({ action: "save_strategy", strategy })}
+              onDelete={(strategyId) => patchPortfolio({ action: "delete_strategy", strategyId })}
+            />
+          ) : (
+            <AuthPanel
+              mode={authMode}
+              credentials={credentials}
+              recoveryDraft={recoveryDraft}
+              recoveryMessage={recoveryMessage}
+              busy={busy}
+              onMode={setAuthMode}
+              onCredentials={setCredentials}
+              onRecoveryDraft={setRecoveryDraft}
+              onFindUsername={() => submitRecovery("find_username")}
+              onRequestPasswordReset={() => submitRecovery("request_password_reset")}
+              onResetPassword={() => submitRecovery("reset_password")}
+              onSubmit={submitAuth}
+            />
+          )
+        ) : null}
+
+        {page === "settings" ? (
+          user ? (
+            <AccountPanel
+              user={user}
+              draft={profileDraft}
+              busy={busy}
+              onDraft={setProfileDraft}
+              onSave={() => patchPortfolio({ action: "update_profile", displayName: profileDraft.displayName, email: profileDraft.email })}
+            />
+          ) : (
+            <AuthPanel
+              mode={authMode}
+              credentials={credentials}
+              recoveryDraft={recoveryDraft}
+              recoveryMessage={recoveryMessage}
+              busy={busy}
+              onMode={setAuthMode}
+              onCredentials={setCredentials}
+              onRecoveryDraft={setRecoveryDraft}
+              onFindUsername={() => submitRecovery("find_username")}
+              onRequestPasswordReset={() => submitRecovery("request_password_reset")}
+              onResetPassword={() => submitRecovery("reset_password")}
+              onSubmit={submitAuth}
+            />
+          )
         ) : null}
 
         {page === "my" ? (
