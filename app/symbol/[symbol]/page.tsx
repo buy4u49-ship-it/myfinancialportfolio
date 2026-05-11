@@ -1,6 +1,6 @@
-import FinancialApp from "@/components/FinancialApp";
+import FinancialAppRoute from "@/components/FinancialAppRoute";
 
 export default async function SymbolDetailPage({ params }: { params: Promise<{ symbol: string }> }) {
   const { symbol } = await params;
-  return <FinancialApp initialPage="symbol" initialSymbol={decodeURIComponent(symbol || "AAPL").toUpperCase()} />;
+  return <FinancialAppRoute page="symbol" symbol={decodeURIComponent(symbol || "AAPL").toUpperCase()} />;
 }

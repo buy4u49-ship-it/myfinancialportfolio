@@ -1,5 +1,5 @@
-import FinancialApp from "@/components/FinancialApp";
+import { redirect } from "next/navigation";
 
-export default function SettingsPage() {
-  return <FinancialApp initialPage="settings" />;
+export default function SettingsRedirectPage() {
+  redirect("/my");
 }

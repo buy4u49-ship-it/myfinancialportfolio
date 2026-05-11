@@ -1,5 +1,5 @@
-import FinancialApp from "@/components/FinancialApp";
+import FinancialAppRoute from "@/components/FinancialAppRoute";
 
 export default function SymbolPage() {
-  return <FinancialApp initialPage="symbol" initialSymbol="AAPL" />;
+  return <FinancialAppRoute page="symbol" symbol="AAPL" />;
 }
