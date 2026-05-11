@@ -45,7 +45,8 @@ type User = {
   isAdmin?: boolean;
 };
 
-type PageKey = "coin" | "us" | "korea" | "symbol" | "strategies" | "my" | "settings" | "admin";
+export type FinancialAppPageKey = "coin" | "us" | "korea" | "symbol" | "strategies" | "my" | "admin";
+type PageKey = FinancialAppPageKey;
 type TradeMode = "BUY" | "SELL";
 type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type MyTab = "portfolio" | "alerts" | "strategies" | "account";
@@ -66,8 +67,7 @@ const BASE_PAGES: Array<{ key: PageKey; label: string }> = [
   { key: "korea", label: "Korea Stock Main" },
   { key: "symbol", label: "Symbol Detail" },
   { key: "strategies", label: "Strategies" },
-  { key: "my", label: "My Page" },
-  { key: "settings", label: "Settings" }
+  { key: "my", label: "My Page" }
 ];
 
 function routeForPage(page: PageKey, symbol = "AAPL") {
@@ -85,9 +85,6 @@ function routeForPage(page: PageKey, symbol = "AAPL") {
   }
   if (page === "strategies") {
     return "/strategies";
-  }
-  if (page === "settings") {
-    return "/settings";
   }
   if (page === "admin") {
     return "/admin";
@@ -471,7 +468,7 @@ export default function FinancialApp({
       }
     } else if (page === "symbol" && !symbolDetail) {
       refreshCurrentPage();
-    } else if ((page === "my" || page === "strategies" || page === "settings") && user && !portfolio) {
+    } else if ((page === "my" || page === "strategies") && user && !portfolio) {
       loadPortfolio();
     } else if (page === "admin") {
       if (user?.isAdmin) {
@@ -660,22 +657,6 @@ export default function FinancialApp({
     }
   }
 
-  async function confirmSettings() {
-    if (page !== "symbol") {
-      setPage("symbol");
-      router.push(routeForPage("symbol", symbol));
-    }
-    setSettingsBusy(true);
-    setError("");
-    try {
-      await loadSymbol(symbol, symbolRange);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Settings update failed.");
-    } finally {
-      setSettingsBusy(false);
-    }
-  }
-
   async function saveFinancialMapping(candidate: MappingCandidate, lineKey: string) {
     setBusy(true);
     setError("");
@@ -698,6 +679,22 @@ export default function FinancialApp({
       throw err;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function confirmSettings() {
+    if (page !== "symbol") {
+      setPage("symbol");
+      router.push(routeForPage("symbol", symbol));
+    }
+    setSettingsBusy(true);
+    setError("");
+    try {
+      await loadSymbol(symbol, symbolRange);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Settings update failed.");
+    } finally {
+      setSettingsBusy(false);
     }
   }
 
@@ -783,7 +780,6 @@ export default function FinancialApp({
     symbol: "Symbol Detail",
     strategies: "Strategies",
     my: "My Page",
-    settings: "Settings",
     admin: "Admin"
   }[page];
   const visiblePages = user?.isAdmin ? [...BASE_PAGES, { key: "admin" as const, label: "Admin" }] : BASE_PAGES;
@@ -937,33 +933,6 @@ export default function FinancialApp({
               busy={busy}
               onSave={(strategy) => patchPortfolio({ action: "save_strategy", strategy })}
               onDelete={(strategyId) => patchPortfolio({ action: "delete_strategy", strategyId })}
-            />
-          ) : (
-            <AuthPanel
-              mode={authMode}
-              credentials={credentials}
-              recoveryDraft={recoveryDraft}
-              recoveryMessage={recoveryMessage}
-              busy={busy}
-              onMode={setAuthMode}
-              onCredentials={setCredentials}
-              onRecoveryDraft={setRecoveryDraft}
-              onFindUsername={() => submitRecovery("find_username")}
-              onRequestPasswordReset={() => submitRecovery("request_password_reset")}
-              onResetPassword={() => submitRecovery("reset_password")}
-              onSubmit={submitAuth}
-            />
-          )
-        ) : null}
-
-        {page === "settings" ? (
-          user ? (
-            <AccountPanel
-              user={user}
-              draft={profileDraft}
-              busy={busy}
-              onDraft={setProfileDraft}
-              onSave={() => patchPortfolio({ action: "update_profile", displayName: profileDraft.displayName, email: profileDraft.email })}
             />
           ) : (
             <AuthPanel
@@ -1231,6 +1200,7 @@ function Sidebar({
           {settingsBusy ? "Applying..." : "Confirm"}
         </button>
       </section>
+
     </aside>
   );
 }
