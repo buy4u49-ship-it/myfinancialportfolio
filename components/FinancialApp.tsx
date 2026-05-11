@@ -3300,6 +3300,8 @@ function StrategiesPanel({
     let activeStep = "Warm caches";
     try {
       let latest: RefreshCacheResponse | null = null;
+      let latestFundamentals: RefreshCacheResponse | null = null;
+      let latestMetrics: RefreshCacheResponse | null = null;
       let totalFundamentals = 0;
       let totalMetrics = 0;
       let totalErrors = 0;
@@ -3317,6 +3319,11 @@ function StrategiesPanel({
             })
           );
           latest = data;
+          if (scope === "fundamentals") {
+            latestFundamentals = data;
+          } else {
+            latestMetrics = data;
+          }
           totalFundamentals += data.refreshedCount;
           totalMetrics += Number(data.metricRefreshedCount || 0);
           totalErrors += data.errors.length;
@@ -3332,12 +3339,19 @@ function StrategiesPanel({
       }
 
       if (latest) {
+        const fundamentalStatus = latestFundamentals || latest;
+        const metricStatus = latestMetrics || latest;
+        const universeCount = Math.max(Number(fundamentalStatus.universeCount || 0), Number(metricStatus.universeCount || 0));
+        const fundamentalCachedCount = Number(fundamentalStatus.cachedCount || 0);
+        const fundamentalStaleCount = Number(fundamentalStatus.staleCount || 0);
+        const metricCachedCount = latestMetrics ? Number(metricStatus.metricCachedCount || 0) : undefined;
+        const metricStaleCount = latestMetrics ? Number(metricStatus.metricStaleCount || 0) : 0;
         setStrategyStatus(
-          `Refreshed ${totalFundamentals.toLocaleString()} fundamentals and ${totalMetrics.toLocaleString()} metrics across cache batches. Cached ${latest.cachedCount.toLocaleString()}/${latest.universeCount.toLocaleString()} fundamentals${
-            latest.staleCount ? `, ${latest.staleCount.toLocaleString()} stale` : ""
+          `Refreshed ${totalFundamentals.toLocaleString()} fundamentals and ${totalMetrics.toLocaleString()} metrics across cache batches. Cached ${fundamentalCachedCount.toLocaleString()}/${universeCount.toLocaleString()} fundamentals${
+            fundamentalStaleCount ? `, ${fundamentalStaleCount.toLocaleString()} stale` : ""
           }${
-            latest.metricCachedCount !== undefined ? `. Metric cache ${latest.metricCachedCount.toLocaleString()}/${latest.universeCount.toLocaleString()}` : ""
-          }${latest.metricStaleCount ? `, ${latest.metricStaleCount.toLocaleString()} metric stale` : ""}${totalErrors ? `. ${totalErrors} refresh errors` : ""}${timeBudgetReached ? " Time budget reached; run Warm caches again to continue." : ""}.`
+            metricCachedCount !== undefined ? `. Metric cache ${metricCachedCount.toLocaleString()}/${universeCount.toLocaleString()}` : ""
+          }${metricStaleCount ? `, ${metricStaleCount.toLocaleString()} metric stale` : ""}${totalErrors ? `. ${totalErrors} refresh errors` : ""}${timeBudgetReached ? " Time budget reached; run Warm caches again to continue." : ""}.`
         );
       }
     } catch (err) {
