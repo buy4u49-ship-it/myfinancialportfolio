@@ -7,7 +7,10 @@ kill_timeout = "5s"
   dockerfile = "Dockerfile"
 
 [processes]
-  app = "python market_price_worker.py"
+  app = "python market_price_worker.py --stock-shard-count 4 --stock-shard-index 0"
+  stock1 = "python market_price_worker.py --disable-crypto --stock-shard-count 4 --stock-shard-index 1"
+  stock2 = "python market_price_worker.py --disable-crypto --stock-shard-count 4 --stock-shard-index 2"
+  stock3 = "python market_price_worker.py --disable-crypto --stock-shard-count 4 --stock-shard-index 3"
 
 [http_service]
   internal_port = 8080
