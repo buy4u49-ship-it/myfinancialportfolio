@@ -74,6 +74,31 @@ button:disabled {
   padding-left: 42px;
 }
 
+.app-frame.lang-ko {
+  font-size: 80%;
+}
+
+.app-frame.lang-ko .topbar h1 {
+  font-size: 34px;
+}
+
+.app-frame.lang-ko .side-section h2 {
+  font-size: 14px;
+}
+
+.app-frame.lang-ko .page-nav a,
+.app-frame.lang-ko .subtabs button,
+.app-frame.lang-ko .topbar-actions button,
+.app-frame.lang-ko input,
+.app-frame.lang-ko select {
+  font-size: 0.8rem;
+}
+
+.app-frame.lang-ko .summary-card strong,
+.app-frame.lang-ko .mini-metric strong {
+  font-size: 0.95em;
+}
+
 .side-panel {
   position: sticky;
   top: 0;

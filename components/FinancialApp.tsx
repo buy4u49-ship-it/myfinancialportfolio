@@ -137,7 +137,7 @@ const UI_TEXT = {
     benchmark: "벤치마크",
     buy: "매수",
     cash: "현금",
-    coinMain: "코인 메인",
+    coinMain: "암호화폐",
     confirm: "확인",
     createAccount: "계정 만들기",
     cumulativeGainLoss: "누적 손익",
@@ -156,7 +156,7 @@ const UI_TEXT = {
     id: "아이디",
     includeCash: "현금 포함",
     korean: "한국어",
-    koreaStockMain: "한국 주식 메인",
+    koreaStockMain: "국내 시장",
     language: "언어",
     login: "로그인",
     logout: "로그아웃",
@@ -176,17 +176,17 @@ const UI_TEXT = {
     return: "수익률",
     rollingBetaWindowMonths: "롤링 베타 기간(개월)",
     search: "검색",
-    searchPlaceholder: "심볼, 예: BTC-KRW",
+    searchPlaceholder: "종목, 예: BTC-KRW",
     sell: "매도",
     settings: "설정",
     strategies: "전략",
-    symbol: "심볼",
-    symbolDetail: "심볼 상세",
+    symbol: "종목",
+    symbolDetail: "종목 상세",
     totalGainLoss: "총 손익",
     totalInvestment: "총 투자금",
     totalReturn: "총 수익률",
     trade: "거래",
-    usStockMain: "미국 주식 메인",
+    usStockMain: "미국 시장",
     useExistingAccount: "기존 계정 사용",
     working: "처리 중..."
   }
@@ -260,7 +260,6 @@ const BASE_PAGES: Array<{ key: PageKey; labelKey: TranslationKey }> = [
   { key: "us", labelKey: "usStockMain" },
   { key: "korea", labelKey: "koreaStockMain" },
   { key: "symbol", labelKey: "symbolDetail" },
-  { key: "strategies", labelKey: "strategies" },
   { key: "my", labelKey: "myPage" }
 ];
 
@@ -1089,7 +1088,7 @@ export default function FinancialApp({
 
   return (
     <I18nContext.Provider value={i18n}>
-    <div className={`app-frame ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div className={`app-frame lang-${language} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <button
         type="button"
         className={`sidebar-toggle ${sidebarCollapsed ? "collapsed" : ""}`}
