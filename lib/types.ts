@@ -74,6 +74,26 @@ export type PortfolioRow = {
   updatedAt: string;
 };
 
+export type PortfolioImportPosition = {
+  symbol: string;
+  name?: string;
+  quantity: number;
+  avgCost: number;
+  currency: string;
+  marketValue?: number | null;
+  confidence?: number | null;
+  note?: string;
+};
+
+export type PortfolioImportPreviewResponse = {
+  brokerName?: string;
+  accountLabel?: string;
+  cashBalance?: number | null;
+  cashCurrency?: string;
+  positions: PortfolioImportPosition[];
+  warnings: string[];
+};
+
 export type PortfolioTransaction = {
   id: string;
   type: "BUY" | "SELL";

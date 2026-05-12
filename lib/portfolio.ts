@@ -8,6 +8,7 @@ import type {
   PortfolioCashSettings,
   PortfolioProjection,
   PortfolioResponse,
+  PortfolioImportPosition,
   PortfolioRow,
   PortfolioSummary,
   PortfolioTransaction,
@@ -504,6 +505,79 @@ export function updatePosition(record: UserRecord, input: { symbol?: unknown; qu
     });
   }
   record.portfolio = serializePositions(portfolio);
+  return record;
+}
+
+function normalizeImportPosition(input: unknown): PortfolioImportPosition | null {
+  const raw = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const currency = String(raw.currency || inferCurrency(String(raw.symbol || ""))).toUpperCase();
+  const symbol = normalizeSymbol(String(raw.symbol || ""), currency);
+  const quantity = numberOrZero(raw.quantity);
+  const avgCost = numberOrZero(raw.avgCost);
+  if (!symbol || quantity <= 0 || avgCost < 0) {
+    return null;
+  }
+  return {
+    symbol,
+    name: raw.name ? String(raw.name) : "",
+    quantity,
+    avgCost,
+    currency,
+    marketValue: Number.isFinite(Number(raw.marketValue)) ? Number(raw.marketValue) : null,
+    confidence: Number.isFinite(Number(raw.confidence)) ? Number(raw.confidence) : null,
+    note: raw.note ? String(raw.note) : ""
+  };
+}
+
+export function importPositions(
+  record: UserRecord,
+  input: {
+    positions?: unknown;
+    mode?: unknown;
+    cashBalance?: unknown;
+    cashCurrency?: unknown;
+    includeCash?: unknown;
+  }
+) {
+  const candidates = Array.isArray(input.positions) ? input.positions.map(normalizeImportPosition).filter((item): item is PortfolioImportPosition => Boolean(item)) : [];
+  if (!candidates.length && input.cashBalance === undefined) {
+    throw new Error("No importable positions were provided.");
+  }
+
+  let portfolio = activePositions(record);
+  const mode = input.mode === "add" ? "add" : "replace";
+  for (const candidate of candidates) {
+    const existing = portfolio.find((position) => position.symbol === candidate.symbol);
+    if (mode === "add" && existing) {
+      const previousCost = existing.quantity * existing.avg_cost;
+      const additionalCost = candidate.quantity * candidate.avgCost;
+      existing.quantity += candidate.quantity;
+      existing.avg_cost = existing.quantity > 0 ? (previousCost + additionalCost) / existing.quantity : candidate.avgCost;
+      existing.cost_currency = candidate.currency;
+      existing.updated_at = new Date().toISOString();
+    } else {
+      portfolio = portfolio.filter((position) => position.symbol !== candidate.symbol);
+      portfolio.push({
+        symbol: candidate.symbol,
+        quantity: candidate.quantity,
+        avg_cost: candidate.avgCost,
+        cost_currency: candidate.currency,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+    }
+  }
+  record.portfolio = serializePositions(portfolio);
+
+  if (input.cashBalance !== undefined) {
+    const current = normalizeCashSettings(record);
+    saveCashSettings(record, {
+      includeCash: input.includeCash === undefined ? true : input.includeCash === true,
+      cashBalance: numberOrZero(input.cashBalance),
+      cashCurrency: String(input.cashCurrency || current.cashCurrency || "KRW").toUpperCase()
+    });
+  }
+
   return record;
 }
 

@@ -11,6 +11,8 @@ import type {
   MarketPageResponse,
   PriceAlert,
   PortfolioResponse,
+  PortfolioImportPosition,
+  PortfolioImportPreviewResponse,
   PortfolioRow,
   PortfolioTransaction,
   Quote,
@@ -58,6 +60,7 @@ type PositionEditDraft = { symbol: string; quantity: string; avgCost: string; cu
 type TransactionEditDraft = { id: string; createdAtDate: string; symbol: string; type: TradeMode; quantity: string; price: string; currency: string };
 type TransactionPeriodMode = "year" | "month";
 type TransactionTypeFilter = "ALL" | TradeMode;
+type PortfolioImportMode = "replace" | "add";
 type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
 type MappingOption = { statement: string; lineKey: string; label: string };
 
@@ -90,6 +93,20 @@ const UI_TEXT = {
     gainLoss: "Gain/Loss",
     historyWindowYears: "History window in years",
     id: "ID",
+    importAddMode: "Add to current holdings",
+    importAnalyze: "Analyze screenshot",
+    importAnalyzing: "Analyzing...",
+    importApply: "Apply selected",
+    importBroker: "Source",
+    importCash: "Detected cash",
+    importConfidence: "Confidence",
+    importHelp: "Upload a holdings screenshot, review the extracted rows, then apply only the rows you trust.",
+    importMode: "Apply mode",
+    importNoRows: "No holdings were extracted yet.",
+    importReplaceMode: "Replace matching symbols",
+    importScreenshot: "Import screenshot",
+    importSelectImage: "Select image",
+    importWarnings: "Review warnings",
     includeCash: "include cash",
     korean: "한국어",
     koreaStockMain: "Korea Stock Main",
@@ -154,6 +171,20 @@ const UI_TEXT = {
     gainLoss: "손익",
     historyWindowYears: "조회 기간(년)",
     id: "아이디",
+    importAddMode: "현재 보유자산에 더하기",
+    importAnalyze: "스크린샷 분석",
+    importAnalyzing: "분석 중...",
+    importApply: "선택 항목 반영",
+    importBroker: "출처",
+    importCash: "인식된 현금",
+    importConfidence: "신뢰도",
+    importHelp: "보유자산 스크린샷을 업로드한 뒤 추출 결과를 확인하고 신뢰할 수 있는 항목만 반영하세요.",
+    importMode: "반영 방식",
+    importNoRows: "아직 추출된 보유자산이 없습니다.",
+    importReplaceMode: "같은 종목 덮어쓰기",
+    importScreenshot: "스크린샷 가져오기",
+    importSelectImage: "이미지 선택",
+    importWarnings: "주의사항 확인",
     includeCash: "현금 포함",
     korean: "한국어",
     koreaStockMain: "국내 시장",
@@ -2832,6 +2863,12 @@ function MyPage({
   const [cashRowOpen, setCashRowOpen] = useState(false);
   const [positionEditDraft, setPositionEditDraft] = useState<PositionEditDraft | null>(null);
   const [tradeAmountOverridesQuantity, setTradeAmountOverridesQuantity] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPreview, setImportPreview] = useState<PortfolioImportPreviewResponse | null>(null);
+  const [importSelected, setImportSelected] = useState<Record<string, boolean>>({});
+  const [importMode, setImportMode] = useState<PortfolioImportMode>("replace");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState("");
 
   useEffect(() => {
     setCashDraft({
@@ -2943,6 +2980,75 @@ function MyPage({
     setCashRowOpen(false);
   }
 
+  function importKey(position: PortfolioImportPosition, index: number) {
+    return `${position.symbol || "row"}-${index}`;
+  }
+
+  async function analyzeImportScreenshot() {
+    if (!importFile) {
+      setImportError("Choose a screenshot image first.");
+      return;
+    }
+    setImportBusy(true);
+    setImportError("");
+    try {
+      const form = new FormData();
+      form.append("image", importFile);
+      const data = await parseJsonResponse<PortfolioImportPreviewResponse>(
+        await fetch("/api/portfolio-import-screenshot", {
+          method: "POST",
+          body: form
+        })
+      );
+      setImportPreview(data);
+      setImportSelected(
+        Object.fromEntries(
+          data.positions.map((position, index) => [importKey(position, index), true])
+        )
+      );
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "Screenshot analysis failed.");
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  function updateImportPosition(index: number, patch: Partial<PortfolioImportPosition>) {
+    setImportPreview((prev) =>
+      prev
+        ? {
+            ...prev,
+            positions: prev.positions.map((position, positionIndex) => (positionIndex === index ? { ...position, ...patch } : position))
+          }
+        : prev
+    );
+  }
+
+  async function applyImportedPositions() {
+    if (!importPreview) {
+      return;
+    }
+    const selectedPositions = importPreview.positions.filter((position, index) => importSelected[importKey(position, index)]);
+    if (!selectedPositions.length && importPreview.cashBalance === undefined) {
+      setImportError("Select at least one holding to import.");
+      return;
+    }
+    const data = await patchPortfolio({
+      action: "import_positions",
+      mode: importMode,
+      positions: selectedPositions,
+      cashBalance: importPreview.cashBalance ?? undefined,
+      cashCurrency: importPreview.cashCurrency || summaryCurrency,
+      includeCash: importPreview.cashBalance !== undefined && importPreview.cashBalance !== null
+    });
+    if (data) {
+      setImportPreview(null);
+      setImportFile(null);
+      setImportSelected({});
+      setImportError("");
+    }
+  }
+
   return (
     <>
       <nav className="subtabs my-tabs">
@@ -2968,6 +3074,21 @@ function MyPage({
             currency={summaryCurrency}
             cashDraft={cashDraft}
             onCashInclusion={updateCashInclusion}
+          />
+          <PortfolioImportPanel
+            file={importFile}
+            preview={importPreview}
+            selected={importSelected}
+            mode={importMode}
+            busy={importBusy || busy}
+            error={importError}
+            currency={summaryCurrency}
+            onFile={setImportFile}
+            onAnalyze={() => void analyzeImportScreenshot()}
+            onSelected={setImportSelected}
+            onMode={setImportMode}
+            onPosition={updateImportPosition}
+            onApply={() => void applyImportedPositions()}
           />
           <section className="summary-grid">
             <SummaryCard label="Current Wealth" value={formatMoney(portfolio?.summary.currentValue, summaryCurrency)} />
@@ -3169,6 +3290,159 @@ function PortfolioAnalytics({
           tone={signedClass(projection?.expectedGainLoss)}
         />
       </article>
+    </section>
+  );
+}
+
+function PortfolioImportPanel({
+  file,
+  preview,
+  selected,
+  mode,
+  busy,
+  error,
+  currency,
+  onFile,
+  onAnalyze,
+  onSelected,
+  onMode,
+  onPosition,
+  onApply
+}: {
+  file: File | null;
+  preview: PortfolioImportPreviewResponse | null;
+  selected: Record<string, boolean>;
+  mode: PortfolioImportMode;
+  busy: boolean;
+  error: string;
+  currency: string;
+  onFile: (file: File | null) => void;
+  onAnalyze: () => void;
+  onSelected: (value: Record<string, boolean>) => void;
+  onMode: (value: PortfolioImportMode) => void;
+  onPosition: (index: number, patch: Partial<PortfolioImportPosition>) => void;
+  onApply: () => void;
+}) {
+  const { t, language } = useI18n();
+  const rowKey = (position: PortfolioImportPosition, index: number) => `${position.symbol || "row"}-${index}`;
+  const selectedCount = preview?.positions.filter((position, index) => selected[rowKey(position, index)]).length || 0;
+  const detectedCash = preview?.cashBalance !== null && preview?.cashBalance !== undefined;
+  return (
+    <section className="panel import-panel">
+      <div className="panel-heading">
+        <div>
+          <h2>
+            <TText k="importScreenshot" />
+          </h2>
+          <p className="muted">
+            <TText k="importHelp" />
+          </p>
+        </div>
+        <div className="import-upload-actions">
+          <label className="ghost-button import-file-label">
+            <TText k="importSelectImage" />
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(event) => onFile(event.target.files?.[0] || null)}
+            />
+          </label>
+          <button className="primary-button" disabled={busy || !file} onClick={onAnalyze}>
+            {busy ? <TText k="importAnalyzing" /> : <TText k="importAnalyze" />}
+          </button>
+        </div>
+      </div>
+      {file ? <div className="muted import-file-name">{file.name}</div> : null}
+      {error ? <div className="alert">{error}</div> : null}
+      {preview ? (
+        <div className="import-preview">
+          <div className="import-preview-meta">
+            {preview.brokerName ? (
+              <span>
+                <TText k="importBroker" />: <strong>{preview.brokerName}</strong>
+              </span>
+            ) : null}
+            {detectedCash ? (
+              <span>
+                <TText k="importCash" />: <strong>{formatMoney(preview.cashBalance || 0, preview.cashCurrency || currency)}</strong>
+              </span>
+            ) : null}
+          </div>
+          {preview.warnings.length ? (
+            <div className="alert import-warning">
+              <strong>
+                <TText k="importWarnings" />
+              </strong>
+              {preview.warnings.map((warning) => (
+                <div key={warning}>{warning}</div>
+              ))}
+            </div>
+          ) : null}
+          <div className="import-mode-row">
+            <span>
+              <TText k="importMode" />
+            </span>
+            <select value={mode} onChange={(event) => onMode(event.target.value === "add" ? "add" : "replace")}>
+              <option value="replace">{t("importReplaceMode")}</option>
+              <option value="add">{t("importAddMode")}</option>
+            </select>
+            <button className="primary-button" disabled={busy || (!selectedCount && !detectedCash)} onClick={onApply}>
+              <TText k="importApply" /> ({selectedCount})
+            </button>
+          </div>
+          {preview.positions.length ? (
+            <div className="import-position-list">
+              {preview.positions.map((position, index) => {
+                const key = rowKey(position, index);
+                const confidence = position.confidence === null || position.confidence === undefined ? null : position.confidence <= 1 ? position.confidence * 100 : position.confidence;
+                return (
+                  <article className="import-position-card" key={key}>
+                    <label className="checkbox-label import-position-check">
+                      <input
+                        type="checkbox"
+                        checked={selected[key] !== false}
+                        onChange={(event) => onSelected({ ...selected, [key]: event.target.checked })}
+                      />
+                      <strong>{position.symbol || position.name || "Unknown"}</strong>
+                    </label>
+                    <div className="import-position-grid">
+                      <label>
+                        <TText k="symbol" />
+                        <input value={position.symbol} onChange={(event) => onPosition(index, { symbol: event.target.value.toUpperCase() })} />
+                      </label>
+                      <label>
+                        <TText k="quantity" />
+                        <input type="number" step="any" value={position.quantity} onChange={(event) => onPosition(index, { quantity: Number(event.target.value) })} />
+                      </label>
+                      <label>
+                        <TText k="averageCost" />
+                        <input type="number" step="any" value={position.avgCost} onChange={(event) => onPosition(index, { avgCost: Number(event.target.value) })} />
+                      </label>
+                      <label>
+                        <TText k="marketValue" />
+                        <input type="number" step="any" value={position.marketValue ?? ""} onChange={(event) => onPosition(index, { marketValue: event.target.value ? Number(event.target.value) : null })} />
+                      </label>
+                      <label>
+                        <TText k="cash" />
+                        <input value={position.currency || currency} onChange={(event) => onPosition(index, { currency: event.target.value.toUpperCase() })} />
+                      </label>
+                      <label>
+                        <TText k="importConfidence" />
+                        <input readOnly value={confidence === null ? "N/A" : `${formatNumber(confidence, 1)}%`} />
+                      </label>
+                    </div>
+                    {position.name || position.note ? <p className="muted import-position-note">{[position.name, position.note].filter(Boolean).join(" · ")}</p> : null}
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-cell">
+              <TText k="importNoRows" />
+            </div>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
