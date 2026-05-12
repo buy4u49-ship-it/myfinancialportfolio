@@ -1,7 +1,6 @@
 "use client";
 
-import { CSSProperties, FormEvent, Fragment, ReactNode, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { CSSProperties, createContext, FormEvent, Fragment, MouseEvent, ReactNode, useContext, useEffect, useRef, useState } from "react";
 import type {
   AdminResponse,
   ChartPoint,
@@ -47,6 +46,7 @@ type User = {
 
 export type FinancialAppPageKey = "coin" | "us" | "korea" | "symbol" | "strategies" | "my" | "admin";
 type PageKey = FinancialAppPageKey;
+type Language = "ko" | "en";
 type TradeMode = "BUY" | "SELL";
 type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
 type MyTab = "portfolio" | "alerts" | "strategies" | "account";
@@ -61,13 +61,207 @@ type TransactionTypeFilter = "ALL" | TradeMode;
 type MappingCandidate = SymbolDetailResponse["statements"]["mappingCandidates"][number];
 type MappingOption = { statement: string; lineKey: string; label: string };
 
-const BASE_PAGES: Array<{ key: PageKey; label: string }> = [
-  { key: "coin", label: "Coin Main" },
-  { key: "us", label: "US Stock Main" },
-  { key: "korea", label: "Korea Stock Main" },
-  { key: "symbol", label: "Symbol Detail" },
-  { key: "strategies", label: "Strategies" },
-  { key: "my", label: "My Page" }
+const UI_TEXT = {
+  en: {
+    account: "Account",
+    addCash: "Add Cash",
+    addSymbolPlaceholder: "Symbol, e.g. BTC-KRW",
+    admin: "Admin",
+    allocation: "Allocation",
+    applying: "Applying...",
+    averageCost: "Average Cost",
+    benchmark: "Benchmark",
+    buy: "Buy",
+    cash: "Cash",
+    coinMain: "Coin Main",
+    confirm: "Confirm",
+    createAccount: "Create account",
+    cumulativeGainLoss: "Cumulative Gain/Loss",
+    cumulativeReturn: "Cumulative Return",
+    currentPortfolio: "Current Portfolio",
+    currentPrice: "Current Price",
+    currentWealth: "Current Wealth",
+    displayName: "Display name",
+    edit: "Edit",
+    email: "Email",
+    english: "English",
+    expectedGainLoss: "Expected Gain/Loss",
+    expectedPortfolioValue: "Expected Portfolio Value",
+    gainLoss: "Gain/Loss",
+    historyWindowYears: "History window in years",
+    id: "ID",
+    includeCash: "include cash",
+    korean: "한국어",
+    koreaStockMain: "Korea Stock Main",
+    language: "Language",
+    login: "Login",
+    logout: "Logout",
+    marketValue: "Market Value",
+    monthlyExpectedLogReturn: "Monthly Expected Log Return",
+    myPage: "My Page",
+    openMyPage: "Open My Page",
+    password: "PW",
+    portfolio: "Portfolio",
+    portfolioAllocation: "Portfolio Allocation",
+    portfolioBeta36M: "Portfolio Beta (36M)",
+    portfolioExpectedReturn: "Portfolio Expected Return",
+    portfolioSummary: "Portfolio Summary",
+    priceAlerts: "Price Alerts",
+    quantity: "Quantity",
+    refresh: "Refresh",
+    return: "Return",
+    rollingBetaWindowMonths: "Rolling beta window in months",
+    search: "Search",
+    searchPlaceholder: "Symbol, e.g. BTC-KRW",
+    sell: "Sell",
+    settings: "Settings",
+    strategies: "Strategies",
+    symbol: "Symbol",
+    symbolDetail: "Symbol Detail",
+    totalGainLoss: "Total Gain/Loss",
+    totalInvestment: "Total Investment",
+    totalReturn: "Total Return",
+    trade: "Trade",
+    usStockMain: "US Stock Main",
+    useExistingAccount: "Use existing account",
+    working: "Working..."
+  },
+  ko: {
+    account: "계정",
+    addCash: "현금 추가",
+    addSymbolPlaceholder: "심볼, 예: BTC-KRW",
+    admin: "관리자",
+    allocation: "비중",
+    applying: "적용 중...",
+    averageCost: "평균단가",
+    benchmark: "벤치마크",
+    buy: "매수",
+    cash: "현금",
+    coinMain: "코인 메인",
+    confirm: "확인",
+    createAccount: "계정 만들기",
+    cumulativeGainLoss: "누적 손익",
+    cumulativeReturn: "누적 수익률",
+    currentPortfolio: "현재 포트폴리오",
+    currentPrice: "현재가",
+    currentWealth: "현재 자산",
+    displayName: "표시 이름",
+    edit: "수정",
+    email: "이메일",
+    english: "English",
+    expectedGainLoss: "예상 손익",
+    expectedPortfolioValue: "예상 포트폴리오 가치",
+    gainLoss: "손익",
+    historyWindowYears: "조회 기간(년)",
+    id: "아이디",
+    includeCash: "현금 포함",
+    korean: "한국어",
+    koreaStockMain: "한국 주식 메인",
+    language: "언어",
+    login: "로그인",
+    logout: "로그아웃",
+    marketValue: "평가금액",
+    monthlyExpectedLogReturn: "월간 예상 로그수익률",
+    myPage: "마이페이지",
+    openMyPage: "마이페이지 열기",
+    password: "비밀번호",
+    portfolio: "포트폴리오",
+    portfolioAllocation: "포트폴리오 비중",
+    portfolioBeta36M: "포트폴리오 베타(36M)",
+    portfolioExpectedReturn: "포트폴리오 예상 수익",
+    portfolioSummary: "포트폴리오 요약",
+    priceAlerts: "가격 알림",
+    quantity: "보유수량",
+    refresh: "새로고침",
+    return: "수익률",
+    rollingBetaWindowMonths: "롤링 베타 기간(개월)",
+    search: "검색",
+    searchPlaceholder: "심볼, 예: BTC-KRW",
+    sell: "매도",
+    settings: "설정",
+    strategies: "전략",
+    symbol: "심볼",
+    symbolDetail: "심볼 상세",
+    totalGainLoss: "총 손익",
+    totalInvestment: "총 투자금",
+    totalReturn: "총 수익률",
+    trade: "거래",
+    usStockMain: "미국 주식 메인",
+    useExistingAccount: "기존 계정 사용",
+    working: "처리 중..."
+  }
+} as const;
+
+type TranslationKey = keyof typeof UI_TEXT.en;
+type I18nValue = {
+  language: Language;
+  t: (key: TranslationKey) => string;
+  text: (label: string) => string;
+};
+
+const TEXT_KEY_BY_LABEL: Record<string, TranslationKey> = {
+  "Account": "account",
+  "Add Cash": "addCash",
+  "Admin": "admin",
+  "Allocation": "allocation",
+  "Average Cost": "averageCost",
+  "Buy": "buy",
+  "Cash": "cash",
+  "Cumulative Gain/Loss": "cumulativeGainLoss",
+  "Cumulative Return": "cumulativeReturn",
+  "Current Portfolio": "currentPortfolio",
+  "Current Price": "currentPrice",
+  "Current Wealth": "currentWealth",
+  "Edit": "edit",
+  "Expected Gain/Loss": "expectedGainLoss",
+  "Expected Portfolio Value": "expectedPortfolioValue",
+  "Gain/Loss": "gainLoss",
+  "Market Value": "marketValue",
+  "Monthly Expected Log Return": "monthlyExpectedLogReturn",
+  "My Page": "myPage",
+  "Portfolio": "portfolio",
+  "Portfolio Allocation": "portfolioAllocation",
+  "Portfolio Beta (36M)": "portfolioBeta36M",
+  "Portfolio Expected Return": "portfolioExpectedReturn",
+  "Portfolio Summary": "portfolioSummary",
+  "Price Alerts": "priceAlerts",
+  "Quantity": "quantity",
+  "Return": "return",
+  "Sell": "sell",
+  "Strategies": "strategies",
+  "Symbol": "symbol",
+  "Total Gain/Loss": "totalGainLoss",
+  "Total Investment": "totalInvestment",
+  "Total Return": "totalReturn",
+  "Trade": "trade"
+};
+
+const I18nContext = createContext<I18nValue>({
+  language: "ko" as Language,
+  t: (key: TranslationKey) => UI_TEXT.ko[key],
+  text: (label: string) => label
+});
+
+function translate(language: Language, key: TranslationKey) {
+  return UI_TEXT[language][key] || UI_TEXT.en[key] || key;
+}
+
+function translateLabel(language: Language, label: string) {
+  const key = TEXT_KEY_BY_LABEL[label];
+  return key ? translate(language, key) : label;
+}
+
+function useI18n() {
+  return useContext(I18nContext);
+}
+
+const BASE_PAGES: Array<{ key: PageKey; labelKey: TranslationKey }> = [
+  { key: "coin", labelKey: "coinMain" },
+  { key: "us", labelKey: "usStockMain" },
+  { key: "korea", labelKey: "koreaStockMain" },
+  { key: "symbol", labelKey: "symbolDetail" },
+  { key: "strategies", labelKey: "strategies" },
+  { key: "my", labelKey: "myPage" }
 ];
 
 function routeForPage(page: PageKey, symbol = "AAPL") {
@@ -90,6 +284,36 @@ function routeForPage(page: PageKey, symbol = "AAPL") {
     return "/admin";
   }
   return "/my";
+}
+
+function pageFromPathname(pathname: string): { page: PageKey; symbol?: string } {
+  const parts = pathname.split("/").filter(Boolean);
+  const first = parts[0] || "";
+  const second = parts[1] || "";
+
+  if (first === "coins" || first === "") {
+    return { page: "coin" };
+  }
+  if (first === "stocks" && second === "us") {
+    return { page: "us" };
+  }
+  if (first === "stocks" && second === "korea") {
+    return { page: "korea", symbol: "005930.KS" };
+  }
+  if (first === "symbol") {
+    return { page: "symbol", symbol: decodeURIComponent(second || "AAPL").toUpperCase() };
+  }
+  if (first === "strategies") {
+    return { page: "strategies" };
+  }
+  if (first === "admin") {
+    return { page: "admin" };
+  }
+  return { page: "my" };
+}
+
+function isMobileViewport() {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 920px)").matches;
 }
 
 const moneyFormatters = new Map<string, Intl.NumberFormat>();
@@ -281,9 +505,9 @@ export default function FinancialApp({
   initialPage?: PageKey;
   initialSymbol?: string;
 }) {
-  const router = useRouter();
   const initialLoadPageRef = useRef<PageKey>(initialPage);
   const [page, setPage] = useState<PageKey>(initialPage);
+  const [language, setLanguage] = useState<Language>("ko");
   const [user, setUser] = useState<User | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
   const [marketData, setMarketData] = useState<Partial<Record<PageKey, MarketPageResponse>>>({});
@@ -304,7 +528,7 @@ export default function FinancialApp({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [error, setError] = useState("");
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [activeTrade, setActiveTrade] = useState<{ symbol: string; mode: TradeMode } | null>(null);
@@ -440,9 +664,36 @@ export default function FinancialApp({
     await refreshLiveData(true);
   }
 
+  function updateAppUrl(href: string, mode: "push" | "replace" = "push") {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (mode === "replace") {
+      window.history.replaceState(null, "", href);
+    } else {
+      window.history.pushState(null, "", href);
+    }
+  }
+
   function navigatePage(nextPage: PageKey) {
     setPage(nextPage);
-    router.push(routeForPage(nextPage, symbolDraft || symbol));
+    updateAppUrl(routeForPage(nextPage, symbolDraft || symbol));
+    if (isMobileViewport()) {
+      setSidebarCollapsed(true);
+    }
+  }
+
+  function handlePageLink(event: MouseEvent<HTMLAnchorElement>, nextPage: PageKey) {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    navigatePage(nextPage);
+  }
+
+  function changeLanguage(nextLanguage: Language) {
+    setLanguage(nextLanguage);
+    window.localStorage.setItem("mfp-language", nextLanguage);
   }
 
   useEffect(() => {
@@ -462,6 +713,39 @@ export default function FinancialApp({
   }, []);
 
   useEffect(() => {
+    const savedLanguage = window.localStorage.getItem("mfp-language");
+    if (savedLanguage === "ko" || savedLanguage === "en") {
+      setLanguage(savedLanguage);
+    }
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 920px)");
+    setSidebarCollapsed(media.matches);
+    const onChange = (event: MediaQueryListEvent) => {
+      setSidebarCollapsed(event.matches);
+    };
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const next = pageFromPathname(window.location.pathname);
+      setPage(next.page);
+      if (next.symbol) {
+        setSymbol(next.symbol);
+        setSymbolDraft(next.symbol);
+      }
+      if (isMobileViewport()) {
+        setSidebarCollapsed(true);
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
     if (page === "coin" || page === "us" || page === "korea") {
       if (!marketData[page]) {
         refreshCurrentPage();
@@ -477,7 +761,7 @@ export default function FinancialApp({
         }
       } else {
         setPage("coin");
-        router.replace(routeForPage("coin"));
+        updateAppUrl(routeForPage("coin"), "replace");
       }
     }
   }, [page, user?.isAdmin]);
@@ -685,7 +969,7 @@ export default function FinancialApp({
   async function confirmSettings() {
     if (page !== "symbol") {
       setPage("symbol");
-      router.push(routeForPage("symbol", symbol));
+      updateAppUrl(routeForPage("symbol", symbol));
     }
     setSettingsBusy(true);
     setError("");
@@ -766,33 +1050,45 @@ export default function FinancialApp({
     setSymbol(next);
     setSymbolDraft(next);
     setPage("symbol");
-    router.push(routeForPage("symbol", next));
+    updateAppUrl(routeForPage("symbol", next));
+    if (isMobileViewport()) {
+      setSidebarCollapsed(true);
+    }
     setBusy(true);
     loadSymbol(next, symbolRange)
       .catch((err) => setError(err instanceof Error ? err.message : "Symbol load failed."))
       .finally(() => setBusy(false));
   }
 
+  const i18n = {
+    language,
+    t: (key: TranslationKey) => translate(language, key),
+    text: (label: string) => translateLabel(language, label)
+  };
+  const { t } = i18n;
   const pageTitle = {
-    coin: "Coin Main",
-    us: "US Stock Main",
-    korea: "Korea Stock Main",
-    symbol: "Symbol Detail",
-    strategies: "Strategies",
-    my: "My Page",
-    admin: "Admin"
+    coin: t("coinMain"),
+    us: t("usStockMain"),
+    korea: t("koreaStockMain"),
+    symbol: t("symbolDetail"),
+    strategies: t("strategies"),
+    my: t("myPage"),
+    admin: t("admin")
   }[page];
-  const visiblePages = user?.isAdmin ? [...BASE_PAGES, { key: "admin" as const, label: "Admin" }] : BASE_PAGES;
+  const visiblePages = user?.isAdmin ? [...BASE_PAGES, { key: "admin" as const, labelKey: "admin" as const }] : BASE_PAGES;
 
   if (loading) {
     return (
-      <main className="app-shell">
-        <div className="loading-panel">Loading financial dashboard...</div>
-      </main>
+      <I18nContext.Provider value={i18n}>
+        <main className="app-shell">
+          <div className="loading-panel">Loading financial dashboard...</div>
+        </main>
+      </I18nContext.Provider>
     );
   }
 
   return (
+    <I18nContext.Provider value={i18n}>
     <div className={`app-frame ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <button
         type="button"
@@ -801,8 +1097,20 @@ export default function FinancialApp({
         aria-label={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
         title={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
       >
-        {sidebarCollapsed ? ">" : "<"}
+        <span className={`hamburger-icon ${sidebarCollapsed ? "" : "open"}`} aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </span>
       </button>
+      {!sidebarCollapsed ? (
+        <button
+          type="button"
+          className="mobile-sidebar-backdrop"
+          aria-label="Close sidebar"
+          onClick={() => setSidebarCollapsed(true)}
+        />
+      ) : null}
       {sidebarCollapsed ? null : (
         <Sidebar
           user={user}
@@ -840,16 +1148,32 @@ export default function FinancialApp({
             <h1>{pageTitle}</h1>
           </div>
           <div className="topbar-actions">
+            <div className="language-toggle" role="group" aria-label={t("language")}>
+              <button
+                type="button"
+                className={language === "ko" ? "active" : ""}
+                onClick={() => changeLanguage("ko")}
+              >
+                {t("korean")}
+              </button>
+              <button
+                type="button"
+                className={language === "en" ? "active" : ""}
+                onClick={() => changeLanguage("en")}
+              >
+                {t("english")}
+              </button>
+            </div>
             <button className="ghost-button" onClick={refreshCurrentPage} disabled={busy}>
-              Refresh
+              {t("refresh")}
             </button>
             {user ? (
               <button className="ghost-button" onClick={logout}>
-                Logout
+                {t("logout")}
               </button>
             ) : (
               <button className="ghost-button" onClick={() => navigatePage("my")}>
-                Login
+                {t("login")}
               </button>
             )}
           </div>
@@ -858,20 +1182,21 @@ export default function FinancialApp({
         <div className="nav-search-row">
           <nav className="page-nav">
             {visiblePages.map((item) => (
-              <button
+              <a
                 key={item.key}
+                href={routeForPage(item.key, symbolDraft || symbol)}
                 className={page === item.key ? "active" : ""}
-                onClick={() => navigatePage(item.key)}
+                onClick={(event) => handlePageLink(event, item.key)}
               >
-                {item.label}
-              </button>
+                {t(item.labelKey)}
+              </a>
             ))}
           </nav>
 
           <div className="symbol-toolbar">
             <input
               value={symbolDraft}
-              placeholder="Symbol, e.g. BTC-KRW"
+              placeholder={t("searchPlaceholder")}
               onChange={(event) => setSymbolDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -880,7 +1205,7 @@ export default function FinancialApp({
               }}
             />
             <button className="primary-button" onClick={() => openSymbol(symbolDraft)}>
-              Search
+              {t("search")}
             </button>
           </div>
         </div>
@@ -1003,6 +1328,7 @@ export default function FinancialApp({
         ) : null}
       </main>
     </div>
+    </I18nContext.Provider>
   );
 }
 
@@ -1065,6 +1391,7 @@ function Sidebar({
 }) {
   const currency = portfolio?.summary.currency || "KRW";
   const candidates = buildSearchCandidates(symbolDraft);
+  const { t } = useI18n();
   return (
     <aside className="side-panel">
       <section className="side-section side-brand-section" aria-label="Application brand">
@@ -1078,14 +1405,14 @@ function Sidebar({
           <MiniMetric label="Total Investment" value={formatMoney(portfolio.summary.costBasis, currency)} />
           <MiniMetric label="Total Gain/Loss" value={formatMoney(portfolio.summary.unrealizedGainLoss, currency)} tone={signedClass(portfolio.summary.unrealizedGainLoss)} />
           <MiniMetric label="Total Return" value={formatPct(portfolio.summary.totalReturnPct)} tone={signedClass(portfolio.summary.totalReturnPct)} />
-          <button className="ghost-button" onClick={onGoMyPage}>My Page</button>
-          <button className="ghost-button" onClick={onLogout}>Logout</button>
+          <button className="ghost-button" onClick={onGoMyPage}>{t("myPage")}</button>
+          <button className="ghost-button" onClick={onLogout}>{t("logout")}</button>
         </section>
       ) : (
         <section className="side-section">
           <form className="side-auth-form" onSubmit={onSubmitAuth}>
             <label>
-              ID
+              {t("id")}
               <input
                 value={credentials.username}
                 onChange={(event) => onCredentials({ ...credentials, username: event.target.value })}
@@ -1094,7 +1421,7 @@ function Sidebar({
               />
             </label>
             <label>
-              PW
+              {t("password")}
               <input
                 type="password"
                 value={credentials.password}
@@ -1106,7 +1433,7 @@ function Sidebar({
             {authMode === "register" ? (
               <>
                 <label>
-                  Display name
+                  {t("displayName")}
                   <input
                     value={credentials.displayName}
                     onChange={(event) => onCredentials({ ...credentials, displayName: event.target.value })}
@@ -1115,7 +1442,7 @@ function Sidebar({
                   />
                 </label>
                 <label>
-                  Email
+                  {t("email")}
                   <input
                     type="email"
                     value={credentials.email}
@@ -1127,7 +1454,7 @@ function Sidebar({
               </>
             ) : null}
             <button className="primary-button" disabled={busy}>
-              {busy ? "Working..." : authMode === "login" ? "Login" : "Create account"}
+              {busy ? t("working") : authMode === "login" ? t("login") : t("createAccount")}
             </button>
             <button
               type="button"
@@ -1141,7 +1468,7 @@ function Sidebar({
               }}
               disabled={busy}
             >
-              {authMode === "login" ? "Create account" : "Use existing account"}
+              {authMode === "login" ? t("createAccount") : t("useExistingAccount")}
             </button>
           </form>
           {authMode === "login" ? (
@@ -1155,14 +1482,14 @@ function Sidebar({
               onResetPassword={onResetPassword}
             />
           ) : null}
-          <button className="ghost-button" onClick={onGoMyPage}>Open My Page</button>
+          <button className="ghost-button" onClick={onGoMyPage}>{t("openMyPage")}</button>
         </section>
       )}
 
       <section className="side-section">
-        <h2>Search</h2>
+        <h2>{t("search")}</h2>
         <label>
-          Symbol
+          {t("symbol")}
           <input
             value={symbolDraft}
             onChange={(event) => onSymbolDraft(event.target.value)}
@@ -1183,21 +1510,21 @@ function Sidebar({
       </section>
 
       <section className="side-section">
-        <h2>Settings</h2>
+        <h2>{t("settings")}</h2>
         <label>
-          Benchmark
+          {t("benchmark")}
           <input value={benchmark} onChange={(event) => onBenchmark(event.target.value.toUpperCase())} />
         </label>
         <label>
-          History window in years
+          {t("historyWindowYears")}
           <input type="number" min="1" max="20" value={historyYears} onChange={(event) => onHistoryYears(Number(event.target.value))} />
         </label>
         <label>
-          Rolling beta window in months
+          {t("rollingBetaWindowMonths")}
           <input type="number" min="6" max="60" value={rollingWindow} onChange={(event) => onRollingWindow(Number(event.target.value))} />
         </label>
         <button className="primary-button" onClick={onConfirmSettings} disabled={settingsBusy}>
-          {settingsBusy ? "Applying..." : "Confirm"}
+          {settingsBusy ? t("applying") : t("confirm")}
         </button>
       </section>
 
@@ -2477,6 +2804,7 @@ function MyPage({
   submitAlert: () => void;
   patchPortfolio: (body: Record<string, unknown>) => Promise<PortfolioResponse | null>;
 }) {
+  const { t } = useI18n();
   const rows = portfolio?.rows || [];
   const transactions = portfolio?.transactions || [];
   const summaryCurrency = portfolio?.summary.currency || "KRW";
@@ -2605,10 +2933,10 @@ function MyPage({
     <>
       <nav className="subtabs my-tabs">
         {[
-          ["portfolio", "Portfolio"],
-          ["alerts", "Price Alerts"],
-          ["strategies", "Strategies"],
-          ["account", "Account"]
+          ["portfolio", t("portfolio")],
+          ["alerts", t("priceAlerts")],
+          ["strategies", t("strategies")],
+          ["account", t("account")]
         ].map(([key, label]) => (
           <button key={key} className={activeTab === key ? "active" : ""} onClick={() => setActiveTab(key as MyTab)}>
             {label}
@@ -2645,13 +2973,13 @@ function MyPage({
           <section className="panel">
         <div className="panel-heading">
           <div>
-            <h2>Current Portfolio</h2>
+            <h2>{t("currentPortfolio")}</h2>
           </div>
           <div className="add-position">
             <button type="button" className="ghost-button add-cash-button" onClick={() => setCashRowOpen(true)}>
-              Add Cash
+              {t("addCash")}
             </button>
-            <input placeholder="Symbol, e.g. BTC-KRW" value={newSymbol} onChange={(event) => setNewSymbol(event.target.value)} />
+            <input placeholder={t("addSymbolPlaceholder")} value={newSymbol} onChange={(event) => setNewSymbol(event.target.value)} />
             <select value={newCurrency} onChange={(event) => setNewCurrency(event.target.value)}>
               <option value="KRW">KRW</option>
               <option value="USD">USD</option>
@@ -2668,7 +2996,7 @@ function MyPage({
                 setTradeAmountOverridesQuantity(false);
               }}
             >
-              Buy
+              {t("buy")}
             </button>
           </div>
         </div>
@@ -2773,14 +3101,15 @@ function PortfolioAnalytics({
   cashDraft: CashDraft;
   onCashInclusion: (includeCash: boolean) => void | Promise<void>;
 }) {
+  const { t } = useI18n();
   const projection = portfolio?.projection;
   return (
     <section className="portfolio-analytics">
       <article className="allocation-panel">
         <div className="allocation-panel-header">
-          <h2>Portfolio Allocation</h2>
+          <h2>{t("portfolioAllocation")}</h2>
           <label className="allocation-cash-toggle">
-            <span>include cash</span>
+            <span>{t("includeCash")}</span>
             <input
               type="checkbox"
               checked={cashDraft.includeCash}
@@ -2792,7 +3121,7 @@ function PortfolioAnalytics({
         <AllocationDonut rows={rows} portfolio={portfolio} currency={currency} />
       </article>
       <article className="portfolio-card-stack">
-        <h2>Portfolio Summary</h2>
+        <h2>{t("portfolioSummary")}</h2>
         <MiniMetric label="Current Wealth" value={formatMoney(portfolio?.summary.currentValue, currency)} />
         <MiniMetric label="Total Investment" value={formatMoney(portfolio?.summary.costBasis, currency)} />
         <MiniMetric
@@ -2807,7 +3136,7 @@ function PortfolioAnalytics({
         />
       </article>
       <article className="portfolio-card-stack">
-        <h2>Portfolio Expected Return</h2>
+        <h2>{t("portfolioExpectedReturn")}</h2>
         <MiniMetric label="Portfolio Beta (36M)" value={formatNumber(projection?.portfolioBeta, 4)} />
         <MiniMetric
           label="Monthly Expected Log Return"
@@ -2826,9 +3155,10 @@ function PortfolioAnalytics({
 }
 
 function MiniMetric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: string }) {
+  const { text } = useI18n();
   return (
     <div className="mini-metric">
-      <span>{label}</span>
+      <span>{text(label)}</span>
       <strong className={tone}>{value}</strong>
     </div>
   );
@@ -3902,6 +4232,7 @@ function PortfolioTable({
   onCancel: () => void;
   onSubmit: (symbol: string, mode: TradeMode, currency: string) => void;
 }) {
+  const { t } = useI18n();
   const activeRow = activeTrade ? rows.find((row) => row.symbol === activeTrade.symbol) : undefined;
   const fallbackCurrency = portfolio?.summary.currency || newCurrency;
   const cashSettings = portfolio?.cashSettings || { includeCash: false, cashBalance: 0, cashCurrency: fallbackCurrency };
@@ -3920,15 +4251,15 @@ function PortfolioTable({
       <table className="portfolio-table">
         <thead>
           <tr>
-            <th className="text-cell">Symbol</th>
-            <th className="number-cell">Quantity</th>
-            <th className="number-cell">Average Cost</th>
-            <th className="number-cell">Current Price</th>
-            <th className="number-cell">Market Value</th>
-            <th className="number-cell">Gain/Loss</th>
-            <th className="number-cell">Return</th>
-            <th className="number-cell">Allocation</th>
-            <th className="action-cell">Trade</th>
+            <th className="text-cell">{t("symbol")}</th>
+            <th className="number-cell">{t("quantity")}</th>
+            <th className="number-cell">{t("averageCost")}</th>
+            <th className="number-cell">{t("currentPrice")}</th>
+            <th className="number-cell">{t("marketValue")}</th>
+            <th className="number-cell">{t("gainLoss")}</th>
+            <th className="number-cell">{t("return")}</th>
+            <th className="number-cell">{t("allocation")}</th>
+            <th className="action-cell">{t("trade")}</th>
           </tr>
         </thead>
         <tbody>
@@ -3951,27 +4282,27 @@ function PortfolioTable({
           {rows.map((row) => (
             <Fragment key={row.symbol}>
               <tr>
-                <td className="text-cell strong">{row.symbol}</td>
-                <td className="number-cell">{numberFormatter.format(row.quantity)}</td>
-                <td className="number-cell">{formatMoney(row.avgCost, row.currency)}</td>
-                <td className="number-cell">
+                <td className="text-cell strong" data-label={t("symbol")}>{row.symbol}</td>
+                <td className="number-cell" data-label={t("quantity")}>{numberFormatter.format(row.quantity)}</td>
+                <td className="number-cell" data-label={t("averageCost")}>{formatMoney(row.avgCost, row.currency)}</td>
+                <td className="number-cell" data-label={t("currentPrice")}>
                   <div>{formatMoney(row.price, row.currency)}</div>
                   <span className={signedClass(row.changePct)}>{formatPct(row.changePct)}</span>
                 </td>
-                <td className="number-cell">{formatMoney(row.marketValue, row.currency)}</td>
-                <td className={`number-cell ${signedClass(row.gainLoss)}`}>{formatMoney(row.gainLoss, row.currency)}</td>
-                <td className={`number-cell ${signedClass(row.gainLossPct)}`}>{formatPct(row.gainLossPct)}</td>
-                <td className="number-cell">{formatPct(row.allocationPct)}</td>
-                <td className="action-cell">
+                <td className="number-cell" data-label={t("marketValue")}>{formatMoney(row.marketValue, row.currency)}</td>
+                <td className={`number-cell ${signedClass(row.gainLoss)}`} data-label={t("gainLoss")}>{formatMoney(row.gainLoss, row.currency)}</td>
+                <td className={`number-cell ${signedClass(row.gainLossPct)}`} data-label={t("return")}>{formatPct(row.gainLossPct)}</td>
+                <td className="number-cell" data-label={t("allocation")}>{formatPct(row.allocationPct)}</td>
+                <td className="action-cell" data-label={t("trade")}>
                   <div className="trade-buttons portfolio-trade-buttons">
                     <button className="mini-ghost edit-position-button" onClick={() => onStartPositionEdit(row)}>
-                      Edit
+                      {t("edit")}
                     </button>
                     <button className="buy-button" onClick={() => onStartTrade(row, "BUY")}>
-                      Buy
+                      {t("buy")}
                     </button>
                     <button className="sell-button" onClick={() => onStartTrade(row, "SELL")}>
-                      Sell
+                      {t("sell")}
                     </button>
                   </div>
                 </td>
@@ -4324,9 +4655,10 @@ function TradeOnlyRow(props: Omit<Parameters<typeof TradeEntryRow>[0], "heldQuan
   return <TradeEntryRow {...props} />;
 }
 function SummaryCard({ label, value, tone = "neutral" }: { label: string; value: string; tone?: string }) {
+  const { text } = useI18n();
   return (
     <article className="summary-card">
-      <span>{label}</span>
+      <span>{text(label)}</span>
       <strong className={tone}>{value}</strong>
     </article>
   );
