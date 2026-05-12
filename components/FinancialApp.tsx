@@ -255,6 +255,20 @@ function useI18n() {
   return useContext(I18nContext);
 }
 
+function localizedTextNode(language: Language, value: string) {
+  return language === "ko" ? <span className="ko-text">{value}</span> : value;
+}
+
+function TText({ k }: { k: TranslationKey }) {
+  const { language, t } = useI18n();
+  return <>{localizedTextNode(language, t(k))}</>;
+}
+
+function LabelText({ label }: { label: string }) {
+  const { language, text } = useI18n();
+  return <>{localizedTextNode(language, text(label))}</>;
+}
+
 const BASE_PAGES: Array<{ key: PageKey; labelKey: TranslationKey }> = [
   { key: "coin", labelKey: "coinMain" },
   { key: "us", labelKey: "usStockMain" },
@@ -1144,7 +1158,7 @@ export default function FinancialApp({
       <main className="app-shell">
         <header className="topbar app-topbar">
           <div className="topbar-title-group">
-            <h1>{pageTitle}</h1>
+            <h1>{localizedTextNode(language, pageTitle)}</h1>
           </div>
           <div className="topbar-actions">
             <div className="language-toggle" role="group" aria-label={t("language")}>
@@ -1153,7 +1167,7 @@ export default function FinancialApp({
                 className={language === "ko" ? "active" : ""}
                 onClick={() => changeLanguage("ko")}
               >
-                {t("korean")}
+                <span className="ko-text">{t("korean")}</span>
               </button>
               <button
                 type="button"
@@ -1164,15 +1178,15 @@ export default function FinancialApp({
               </button>
             </div>
             <button className="ghost-button" onClick={refreshCurrentPage} disabled={busy}>
-              {t("refresh")}
+              <TText k="refresh" />
             </button>
             {user ? (
               <button className="ghost-button" onClick={logout}>
-                {t("logout")}
+                <TText k="logout" />
               </button>
             ) : (
               <button className="ghost-button" onClick={() => navigatePage("my")}>
-                {t("login")}
+                <TText k="login" />
               </button>
             )}
           </div>
@@ -1187,7 +1201,7 @@ export default function FinancialApp({
                 className={page === item.key ? "active" : ""}
                 onClick={(event) => handlePageLink(event, item.key)}
               >
-                {t(item.labelKey)}
+                <TText k={item.labelKey} />
               </a>
             ))}
           </nav>
@@ -1196,6 +1210,7 @@ export default function FinancialApp({
             <input
               value={symbolDraft}
               placeholder={t("searchPlaceholder")}
+              className={language === "ko" ? "ko-placeholder" : ""}
               onChange={(event) => setSymbolDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -1204,7 +1219,7 @@ export default function FinancialApp({
               }}
             />
             <button className="primary-button" onClick={() => openSymbol(symbolDraft)}>
-              {t("search")}
+              <TText k="search" />
             </button>
           </div>
         </div>
@@ -1404,14 +1419,14 @@ function Sidebar({
           <MiniMetric label="Total Investment" value={formatMoney(portfolio.summary.costBasis, currency)} />
           <MiniMetric label="Total Gain/Loss" value={formatMoney(portfolio.summary.unrealizedGainLoss, currency)} tone={signedClass(portfolio.summary.unrealizedGainLoss)} />
           <MiniMetric label="Total Return" value={formatPct(portfolio.summary.totalReturnPct)} tone={signedClass(portfolio.summary.totalReturnPct)} />
-          <button className="ghost-button" onClick={onGoMyPage}>{t("myPage")}</button>
-          <button className="ghost-button" onClick={onLogout}>{t("logout")}</button>
+          <button className="ghost-button" onClick={onGoMyPage}><TText k="myPage" /></button>
+          <button className="ghost-button" onClick={onLogout}><TText k="logout" /></button>
         </section>
       ) : (
         <section className="side-section">
           <form className="side-auth-form" onSubmit={onSubmitAuth}>
             <label>
-              {t("id")}
+              <TText k="id" />
               <input
                 value={credentials.username}
                 onChange={(event) => onCredentials({ ...credentials, username: event.target.value })}
@@ -1420,7 +1435,7 @@ function Sidebar({
               />
             </label>
             <label>
-              {t("password")}
+              <TText k="password" />
               <input
                 type="password"
                 value={credentials.password}
@@ -1432,7 +1447,7 @@ function Sidebar({
             {authMode === "register" ? (
               <>
                 <label>
-                  {t("displayName")}
+                  <TText k="displayName" />
                   <input
                     value={credentials.displayName}
                     onChange={(event) => onCredentials({ ...credentials, displayName: event.target.value })}
@@ -1441,7 +1456,7 @@ function Sidebar({
                   />
                 </label>
                 <label>
-                  {t("email")}
+                  <TText k="email" />
                   <input
                     type="email"
                     value={credentials.email}
@@ -1453,7 +1468,7 @@ function Sidebar({
               </>
             ) : null}
             <button className="primary-button" disabled={busy}>
-              {busy ? t("working") : authMode === "login" ? t("login") : t("createAccount")}
+              {busy ? <TText k="working" /> : authMode === "login" ? <TText k="login" /> : <TText k="createAccount" />}
             </button>
             <button
               type="button"
@@ -1467,7 +1482,7 @@ function Sidebar({
               }}
               disabled={busy}
             >
-              {authMode === "login" ? t("createAccount") : t("useExistingAccount")}
+              {authMode === "login" ? <TText k="createAccount" /> : <TText k="useExistingAccount" />}
             </button>
           </form>
           {authMode === "login" ? (
@@ -1481,14 +1496,14 @@ function Sidebar({
               onResetPassword={onResetPassword}
             />
           ) : null}
-          <button className="ghost-button" onClick={onGoMyPage}>{t("openMyPage")}</button>
+          <button className="ghost-button" onClick={onGoMyPage}><TText k="openMyPage" /></button>
         </section>
       )}
 
       <section className="side-section">
-        <h2>{t("search")}</h2>
+        <h2><TText k="search" /></h2>
         <label>
-          {t("symbol")}
+          <TText k="symbol" />
           <input
             value={symbolDraft}
             onChange={(event) => onSymbolDraft(event.target.value)}
@@ -1509,21 +1524,21 @@ function Sidebar({
       </section>
 
       <section className="side-section">
-        <h2>{t("settings")}</h2>
+        <h2><TText k="settings" /></h2>
         <label>
-          {t("benchmark")}
+          <TText k="benchmark" />
           <input value={benchmark} onChange={(event) => onBenchmark(event.target.value.toUpperCase())} />
         </label>
         <label>
-          {t("historyWindowYears")}
+          <TText k="historyWindowYears" />
           <input type="number" min="1" max="20" value={historyYears} onChange={(event) => onHistoryYears(Number(event.target.value))} />
         </label>
         <label>
-          {t("rollingBetaWindowMonths")}
+          <TText k="rollingBetaWindowMonths" />
           <input type="number" min="6" max="60" value={rollingWindow} onChange={(event) => onRollingWindow(Number(event.target.value))} />
         </label>
         <button className="primary-button" onClick={onConfirmSettings} disabled={settingsBusy}>
-          {settingsBusy ? t("applying") : t("confirm")}
+          {settingsBusy ? <TText k="applying" /> : <TText k="confirm" />}
         </button>
       </section>
 
@@ -2803,7 +2818,7 @@ function MyPage({
   submitAlert: () => void;
   patchPortfolio: (body: Record<string, unknown>) => Promise<PortfolioResponse | null>;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const rows = portfolio?.rows || [];
   const transactions = portfolio?.transactions || [];
   const summaryCurrency = portfolio?.summary.currency || "KRW";
@@ -2932,13 +2947,13 @@ function MyPage({
     <>
       <nav className="subtabs my-tabs">
         {[
-          ["portfolio", t("portfolio")],
-          ["alerts", t("priceAlerts")],
-          ["strategies", t("strategies")],
-          ["account", t("account")]
-        ].map(([key, label]) => (
+          ["portfolio", "portfolio"],
+          ["alerts", "priceAlerts"],
+          ["strategies", "strategies"],
+          ["account", "account"]
+        ].map(([key, labelKey]) => (
           <button key={key} className={activeTab === key ? "active" : ""} onClick={() => setActiveTab(key as MyTab)}>
-            {label}
+            <TText k={labelKey as TranslationKey} />
           </button>
         ))}
       </nav>
@@ -2972,13 +2987,18 @@ function MyPage({
           <section className="panel">
         <div className="panel-heading">
           <div>
-            <h2>{t("currentPortfolio")}</h2>
+            <h2><TText k="currentPortfolio" /></h2>
           </div>
           <div className="add-position">
             <button type="button" className="ghost-button add-cash-button" onClick={() => setCashRowOpen(true)}>
-              {t("addCash")}
+              <TText k="addCash" />
             </button>
-            <input placeholder={t("addSymbolPlaceholder")} value={newSymbol} onChange={(event) => setNewSymbol(event.target.value)} />
+            <input
+              className={language === "ko" ? "ko-placeholder" : ""}
+              placeholder={t("addSymbolPlaceholder")}
+              value={newSymbol}
+              onChange={(event) => setNewSymbol(event.target.value)}
+            />
             <select value={newCurrency} onChange={(event) => setNewCurrency(event.target.value)}>
               <option value="KRW">KRW</option>
               <option value="USD">USD</option>
@@ -2995,7 +3015,7 @@ function MyPage({
                 setTradeAmountOverridesQuantity(false);
               }}
             >
-              {t("buy")}
+              <TText k="buy" />
             </button>
           </div>
         </div>
@@ -3106,9 +3126,9 @@ function PortfolioAnalytics({
     <section className="portfolio-analytics">
       <article className="allocation-panel">
         <div className="allocation-panel-header">
-          <h2>{t("portfolioAllocation")}</h2>
+          <h2><TText k="portfolioAllocation" /></h2>
           <label className="allocation-cash-toggle">
-            <span>{t("includeCash")}</span>
+            <span><TText k="includeCash" /></span>
             <input
               type="checkbox"
               checked={cashDraft.includeCash}
@@ -3120,7 +3140,7 @@ function PortfolioAnalytics({
         <AllocationDonut rows={rows} portfolio={portfolio} currency={currency} />
       </article>
       <article className="portfolio-card-stack">
-        <h2>{t("portfolioSummary")}</h2>
+        <h2><TText k="portfolioSummary" /></h2>
         <MiniMetric label="Current Wealth" value={formatMoney(portfolio?.summary.currentValue, currency)} />
         <MiniMetric label="Total Investment" value={formatMoney(portfolio?.summary.costBasis, currency)} />
         <MiniMetric
@@ -3135,7 +3155,7 @@ function PortfolioAnalytics({
         />
       </article>
       <article className="portfolio-card-stack">
-        <h2>{t("portfolioExpectedReturn")}</h2>
+        <h2><TText k="portfolioExpectedReturn" /></h2>
         <MiniMetric label="Portfolio Beta (36M)" value={formatNumber(projection?.portfolioBeta, 4)} />
         <MiniMetric
           label="Monthly Expected Log Return"
@@ -3154,10 +3174,9 @@ function PortfolioAnalytics({
 }
 
 function MiniMetric({ label, value, tone = "neutral" }: { label: string; value: string; tone?: string }) {
-  const { text } = useI18n();
   return (
     <div className="mini-metric">
-      <span>{text(label)}</span>
+      <span><LabelText label={label} /></span>
       <strong className={tone}>{value}</strong>
     </div>
   );
@@ -4250,15 +4269,15 @@ function PortfolioTable({
       <table className="portfolio-table">
         <thead>
           <tr>
-            <th className="text-cell">{t("symbol")}</th>
-            <th className="number-cell">{t("quantity")}</th>
-            <th className="number-cell">{t("averageCost")}</th>
-            <th className="number-cell">{t("currentPrice")}</th>
-            <th className="number-cell">{t("marketValue")}</th>
-            <th className="number-cell">{t("gainLoss")}</th>
-            <th className="number-cell">{t("return")}</th>
-            <th className="number-cell">{t("allocation")}</th>
-            <th className="action-cell">{t("trade")}</th>
+            <th className="text-cell"><TText k="symbol" /></th>
+            <th className="number-cell"><TText k="quantity" /></th>
+            <th className="number-cell"><TText k="averageCost" /></th>
+            <th className="number-cell"><TText k="currentPrice" /></th>
+            <th className="number-cell"><TText k="marketValue" /></th>
+            <th className="number-cell"><TText k="gainLoss" /></th>
+            <th className="number-cell"><TText k="return" /></th>
+            <th className="number-cell"><TText k="allocation" /></th>
+            <th className="action-cell"><TText k="trade" /></th>
           </tr>
         </thead>
         <tbody>
@@ -4295,13 +4314,13 @@ function PortfolioTable({
                 <td className="action-cell" data-label={t("trade")}>
                   <div className="trade-buttons portfolio-trade-buttons">
                     <button className="mini-ghost edit-position-button" onClick={() => onStartPositionEdit(row)}>
-                      {t("edit")}
+                      <TText k="edit" />
                     </button>
                     <button className="buy-button" onClick={() => onStartTrade(row, "BUY")}>
-                      {t("buy")}
+                      <TText k="buy" />
                     </button>
                     <button className="sell-button" onClick={() => onStartTrade(row, "SELL")}>
-                      {t("sell")}
+                      <TText k="sell" />
                     </button>
                   </div>
                 </td>
@@ -4654,10 +4673,9 @@ function TradeOnlyRow(props: Omit<Parameters<typeof TradeEntryRow>[0], "heldQuan
   return <TradeEntryRow {...props} />;
 }
 function SummaryCard({ label, value, tone = "neutral" }: { label: string; value: string; tone?: string }) {
-  const { text } = useI18n();
   return (
     <article className="summary-card">
-      <span>{text(label)}</span>
+      <span><LabelText label={label} /></span>
       <strong className={tone}>{value}</strong>
     </article>
   );
