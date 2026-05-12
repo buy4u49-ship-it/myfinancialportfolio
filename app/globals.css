@@ -928,6 +928,101 @@ select {
   margin-top: 18px;
 }
 
+.import-panel {
+  margin-top: 18px;
+}
+
+.import-upload-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.import-file-label {
+  position: relative;
+  overflow: hidden;
+}
+
+.import-file-label input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.import-file-name {
+  margin: -6px 0 12px;
+  overflow-wrap: anywhere;
+}
+
+.import-preview {
+  display: grid;
+  gap: 14px;
+}
+
+.import-preview-meta,
+.import-mode-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.import-mode-row select {
+  min-width: 210px;
+}
+
+.import-warning {
+  margin: 0;
+}
+
+.import-position-list {
+  display: grid;
+  gap: 12px;
+}
+
+.import-position-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 14px;
+}
+
+.import-position-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.import-position-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.import-position-grid label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.import-position-grid input {
+  width: 100%;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.import-position-note {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .allocation-panel,
 .portfolio-card-stack {
   background: transparent;
@@ -1939,6 +2034,20 @@ th {
 
   .strategy-condition-row {
     grid-template-columns: 1fr;
+  }
+
+  .import-upload-actions,
+  .import-mode-row {
+    align-items: stretch;
+  }
+
+  .import-upload-actions > *,
+  .import-mode-row > * {
+    width: 100%;
+  }
+
+  .import-position-grid {
+    grid-template-columns: 1fr 1fr;
   }
 
   .add-position {

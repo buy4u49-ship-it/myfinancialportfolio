@@ -6,6 +6,7 @@ import {
   buildPortfolioResponse,
   deletePriceAlert,
   deleteStrategy,
+  importPositions,
   saveStrategy,
   togglePriceAlert,
   updateCashSettings,
@@ -81,6 +82,14 @@ export async function PATCH(request: NextRequest) {
         quantity: body.quantity,
         avgCost: body.avgCost,
         currency: body.currency
+      });
+    } else if (action === "import_positions") {
+      importPositions(record, {
+        positions: body.positions,
+        mode: body.mode,
+        cashBalance: body.cashBalance,
+        cashCurrency: body.cashCurrency,
+        includeCash: body.includeCash
       });
     } else if (action === "update_transaction") {
       updateTransaction(record, {
