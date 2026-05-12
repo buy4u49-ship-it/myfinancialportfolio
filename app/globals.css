@@ -74,29 +74,13 @@ button:disabled {
   padding-left: 42px;
 }
 
-.app-frame.lang-ko {
+.ko-text {
   font-size: 80%;
+  line-height: 1.2;
 }
 
-.app-frame.lang-ko .topbar h1 {
-  font-size: 34px;
-}
-
-.app-frame.lang-ko .side-section h2 {
-  font-size: 14px;
-}
-
-.app-frame.lang-ko .page-nav a,
-.app-frame.lang-ko .subtabs button,
-.app-frame.lang-ko .topbar-actions button,
-.app-frame.lang-ko input,
-.app-frame.lang-ko select {
-  font-size: 0.8rem;
-}
-
-.app-frame.lang-ko .summary-card strong,
-.app-frame.lang-ko .mini-metric strong {
-  font-size: 0.95em;
+input.ko-placeholder::placeholder {
+  font-size: 80%;
 }
 
 .side-panel {
@@ -2014,6 +1998,10 @@ th {
     font-size: 12px;
     font-weight: 850;
     text-align: left;
+  }
+
+  .app-frame.lang-ko .portfolio-table td::before {
+    font-size: 9.6px;
   }
 
   .portfolio-table td:first-child {
