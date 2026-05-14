@@ -1,4 +1,4 @@
-import { buildFinancialFundamentalFromSources } from "./marketData";
+import { buildFinancialFundamentalFromSources, buildFinancialFundamentalProfileFromSources } from "./marketData";
 import { getCachedMarketQuotes } from "./prices";
 import { normalizeSymbol } from "./symbols";
 import { getStrategyUniverse } from "./strategyMetricCache";
@@ -79,9 +79,27 @@ function isStockMarket(market: StrategyMarket): market is Exclude<StrategyMarket
   return market === "us" || market === "korea";
 }
 
+function isMissingClassification(snapshot: FinancialFundamentalSnapshot | undefined) {
+  if (!snapshot) {
+    return true;
+  }
+  const sector = snapshot.sector.trim();
+  const industry = snapshot.industry.trim();
+  return !sector || !industry || sector === "Unclassified" || industry === "Unclassified";
+}
+
 function isFresh(refreshedAt: string | undefined) {
   const refreshed = refreshedAt ? Date.parse(refreshedAt) : 0;
   return Number.isFinite(refreshed) && Date.now() - refreshed <= FINANCIAL_FUNDAMENTALS_CACHE_MAX_AGE_MS;
+}
+
+function canRepairClassificationOnly(item: {
+  snapshot?: FinancialFundamentalSnapshot;
+  officialSource: boolean;
+  missingEps: boolean;
+  missingClassification: boolean;
+}) {
+  return Boolean(item.snapshot && item.missingClassification && isFresh(item.snapshot.refreshedAt) && (!item.missingEps || item.officialSource));
 }
 
 function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapshot | null {
@@ -234,32 +252,44 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
         const snapshot = cache.get(`${market}:${symbol}`);
         const officialSource = snapshot?.source === "sec_company_facts" || snapshot?.source === "opendart_monthly_cache";
         const missingEps = snapshot?.eps === null || snapshot?.eps === 0;
+        const missingClassification = isMissingClassification(snapshot);
         return {
           market,
           symbol,
           snapshot,
           officialSource,
           missingEps,
+          missingClassification,
           refreshedAtMs: snapshot?.refreshedAt ? Date.parse(snapshot.refreshedAt) : 0
         };
       })
     )
-    .filter((item) => options.force || !item.snapshot || !isFresh(item.snapshot.refreshedAt) || (item.missingEps && !item.officialSource))
+    .filter(
+      (item) =>
+        options.force ||
+        !item.snapshot ||
+        item.missingClassification ||
+        !isFresh(item.snapshot.refreshedAt) ||
+        (item.missingEps && !item.officialSource)
+    )
     .sort((a, b) => {
-      const priority = (item: { snapshot?: FinancialFundamentalSnapshot; officialSource: boolean; missingEps: boolean }) => {
+      const priority = (item: { snapshot?: FinancialFundamentalSnapshot; officialSource: boolean; missingEps: boolean; missingClassification: boolean }) => {
         if (!item.snapshot) {
           return 0;
         }
-        if (item.missingEps && !item.officialSource) {
+        if (item.missingClassification) {
           return 1;
         }
-        if (item.missingEps) {
+        if (item.missingEps && !item.officialSource) {
           return 2;
         }
-        if (!item.officialSource) {
+        if (item.missingEps) {
           return 3;
         }
-        return 4;
+        if (!item.officialSource) {
+          return 4;
+        }
+        return 5;
       };
       return priority(a) - priority(b) || a.refreshedAtMs - b.refreshedAtMs;
     })
@@ -279,7 +309,20 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
     const settled = await Promise.allSettled(
       candidateChunk.map((candidate) =>
         withTimeout(
-          buildFinancialFundamentalFromSources(candidate.symbol, candidate.market, quoteCache.get(candidate.symbol) || null),
+          canRepairClassificationOnly(candidate)
+            ? buildFinancialFundamentalProfileFromSources(candidate.symbol, candidate.market, quoteCache.get(candidate.symbol) || null).then((profile) => {
+                if (!profile || !profile.sector || !profile.industry || !candidate.snapshot) {
+                  return null;
+                }
+                return {
+                  ...candidate.snapshot,
+                  name: profile.name || candidate.snapshot.name,
+                  sector: profile.sector,
+                  industry: profile.industry,
+                  currency: profile.currency || candidate.snapshot.currency
+                };
+              })
+            : buildFinancialFundamentalFromSources(candidate.symbol, candidate.market, quoteCache.get(candidate.symbol) || null),
           itemTimeoutMs,
           `Financial fundamentals refresh timed out for ${candidate.symbol}.`
         )

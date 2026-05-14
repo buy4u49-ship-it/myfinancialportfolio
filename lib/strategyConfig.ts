@@ -176,6 +176,12 @@ export const STRATEGY_METRICS: StrategyMetricOption[] = [
   },
   { key: "companyEps", label: "Company EPS", category: "fundamental", kind: "ratio" },
   { key: "companyPer", label: "Company PER", category: "fundamental", kind: "ratio" },
+  { key: "industryAvgEps", label: "Industry Average EPS", category: "fundamental", kind: "ratio" },
+  { key: "industryAvgPer", label: "Industry Average PER", category: "fundamental", kind: "ratio" },
+  { key: "industryAvgRoe", label: "Industry Average ROE", category: "fundamental", kind: "percent" },
+  { key: "sectorAvgEps", label: "Sector Average EPS", category: "fundamental", kind: "ratio" },
+  { key: "sectorAvgPer", label: "Sector Average PER", category: "fundamental", kind: "ratio" },
+  { key: "sectorAvgRoe", label: "Sector Average ROE", category: "fundamental", kind: "percent" },
   { key: "industryPer", label: "Industry Median PER", category: "fundamental", kind: "ratio" },
   { key: "companyPbr", label: "Company PBR", category: "fundamental", kind: "ratio" },
   { key: "companyRoe", label: "Company ROE", category: "fundamental", kind: "percent" },
@@ -209,7 +215,7 @@ export function defaultStrategyCondition(index = 1): StrategyCondition {
     category: "fundamental",
     leftMetric: "companyPer",
     operator: "<",
-    right: { type: "metric", metric: "industryPer" },
+    right: { type: "metric", metric: "industryAvgPer" },
     params: {}
   };
 }

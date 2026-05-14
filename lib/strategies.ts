@@ -182,12 +182,32 @@ type EvaluationSnapshot = {
 
 type StrategyTechnicalPoint = NonNullable<StrategyMetricSnapshot["technical"]>["daily"][number];
 
-const INDUSTRY_MEDIAN_MIN_COMPANIES = 5;
+const GROUP_AGGREGATE_MIN_COMPANIES = 5;
 
-type IndustryMedianMetric = "industryPer" | "industryRoe";
-type IndustryMetrics = {
-  per: number | null;
-  roe: number | null;
+type AggregateMetricKey =
+  | "industryPer"
+  | "industryRoe"
+  | "industryAvgEps"
+  | "industryAvgPer"
+  | "industryAvgRoe"
+  | "sectorAvgEps"
+  | "sectorAvgPer"
+  | "sectorAvgRoe";
+type AggregateScope = "industry" | "sector";
+type AggregateSourceMetric = "companyEps" | "companyPer" | "companyRoe";
+type AggregateMetricDefinition = {
+  scope: AggregateScope;
+  sourceMetric: AggregateSourceMetric;
+  aggregate: "average" | "median";
+  valueKey: "eps" | "per" | "roe";
+};
+type PeerGroupMetrics = {
+  avgEps: number | null;
+  avgPer: number | null;
+  avgRoe: number | null;
+  medianPer: number | null;
+  medianRoe: number | null;
+  epsCount: number;
   perCount: number;
   roeCount: number;
   count: number;
@@ -212,29 +232,51 @@ function nonZeroNumber(value: number | null | undefined) {
   return num !== null && num !== 0 ? num : null;
 }
 
-function metricReferencesIndustryMedian(metric: StrategyMetricKey) {
-  return metric === "industryPer" || metric === "industryRoe";
+function aggregateMetricDefinition(metric: StrategyMetricKey): AggregateMetricDefinition | null {
+  if (metric === "industryPer") {
+    return { scope: "industry", sourceMetric: "companyPer", aggregate: "median", valueKey: "per" };
+  }
+  if (metric === "industryRoe") {
+    return { scope: "industry", sourceMetric: "companyRoe", aggregate: "median", valueKey: "roe" };
+  }
+  if (metric === "industryAvgEps") {
+    return { scope: "industry", sourceMetric: "companyEps", aggregate: "average", valueKey: "eps" };
+  }
+  if (metric === "industryAvgPer") {
+    return { scope: "industry", sourceMetric: "companyPer", aggregate: "average", valueKey: "per" };
+  }
+  if (metric === "industryAvgRoe") {
+    return { scope: "industry", sourceMetric: "companyRoe", aggregate: "average", valueKey: "roe" };
+  }
+  if (metric === "sectorAvgEps") {
+    return { scope: "sector", sourceMetric: "companyEps", aggregate: "average", valueKey: "eps" };
+  }
+  if (metric === "sectorAvgPer") {
+    return { scope: "sector", sourceMetric: "companyPer", aggregate: "average", valueKey: "per" };
+  }
+  if (metric === "sectorAvgRoe") {
+    return { scope: "sector", sourceMetric: "companyRoe", aggregate: "average", valueKey: "roe" };
+  }
+  return null;
 }
 
-function industryMedianMetric(metric: StrategyMetricKey): IndustryMedianMetric | null {
-  return metricReferencesIndustryMedian(metric) ? (metric as IndustryMedianMetric) : null;
-}
-
-function strategyIndustryMedianMetrics(strategy: StrategyDefinition) {
-  const metrics = new Set<IndustryMedianMetric>();
+function strategyAggregateMetrics(strategy: StrategyDefinition) {
+  const metrics = new Set<AggregateMetricKey>();
   strategy.conditions.forEach((condition) => {
-    const left = industryMedianMetric(condition.leftMetric);
-    if (left) {
-      metrics.add(left);
+    if (aggregateMetricDefinition(condition.leftMetric)) {
+      metrics.add(condition.leftMetric as AggregateMetricKey);
     }
     if (condition.right.type === "metric") {
-      const right = industryMedianMetric(condition.right.metric);
-      if (right) {
-        metrics.add(right);
+      if (aggregateMetricDefinition(condition.right.metric)) {
+        metrics.add(condition.right.metric as AggregateMetricKey);
       }
     }
   });
   return metrics;
+}
+
+function aggregateMetricsNeedCurrentPrices(metrics: Set<AggregateMetricKey>) {
+  return Array.from(metrics).some((metric) => aggregateMetricDefinition(metric)?.sourceMetric === "companyPer");
 }
 
 function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, priceValue: number | null | undefined) {
@@ -650,6 +692,14 @@ function industryGroupKey(snapshot: EvaluationSnapshot) {
   return `${snapshot.market}:${snapshot.industry || "Unclassified"}`;
 }
 
+function sectorGroupKey(snapshot: EvaluationSnapshot) {
+  return `${snapshot.market}:${snapshot.sector || "Unclassified"}`;
+}
+
+function aggregateGroupKey(snapshot: EvaluationSnapshot, scope: AggregateScope) {
+  return scope === "industry" ? industryGroupKey(snapshot) : sectorGroupKey(snapshot);
+}
+
 function strategySectorMatches(strategy: StrategyDefinition, snapshot: EvaluationSnapshot) {
   if (!strategy.sectors?.length || snapshot.market === "crypto") {
     return true;
@@ -657,43 +707,59 @@ function strategySectorMatches(strategy: StrategyDefinition, snapshot: Evaluatio
   return strategy.sectors.includes(snapshot.sector);
 }
 
-function hasClassifiedIndustry(snapshot: EvaluationSnapshot) {
-  const industry = snapshot.industry.trim();
-  return Boolean(industry && industry !== "Unclassified");
+function hasClassifiedAggregateGroup(snapshot: EvaluationSnapshot, scope: AggregateScope) {
+  const value = (scope === "industry" ? snapshot.industry : snapshot.sector).trim();
+  return Boolean(value && value !== "Unclassified");
 }
 
-function companyMetricForIndustryMedian(snapshot: EvaluationSnapshot, metric: IndustryMedianMetric) {
-  return metric === "industryPer" ? finiteNumber(snapshot.metrics.companyPer) : finiteNumber(snapshot.metrics.companyRoe);
+function companyMetricForAggregate(snapshot: EvaluationSnapshot, metric: AggregateSourceMetric) {
+  return finiteNumber(snapshot.metrics[metric]);
 }
 
-function industryMetricValue(industry: IndustryMetrics | undefined, metric: IndustryMedianMetric) {
-  if (!industry) {
+function aggregateMetricValue(group: PeerGroupMetrics | undefined, definition: AggregateMetricDefinition) {
+  if (!group) {
     return null;
   }
-  return metric === "industryPer" ? industry.per : industry.roe;
+  if (definition.aggregate === "median") {
+    return definition.valueKey === "per" ? group.medianPer : group.medianRoe;
+  }
+  if (definition.valueKey === "eps") {
+    return group.avgEps;
+  }
+  if (definition.valueKey === "per") {
+    return group.avgPer;
+  }
+  return group.avgRoe;
 }
 
-function industryMetricCount(industry: IndustryMetrics | undefined, metric: IndustryMedianMetric) {
-  if (!industry) {
+function aggregateMetricCount(group: PeerGroupMetrics | undefined, definition: AggregateMetricDefinition) {
+  if (!group) {
     return 0;
   }
-  return metric === "industryPer" ? industry.perCount : industry.roeCount;
+  if (definition.valueKey === "eps") {
+    return group.epsCount;
+  }
+  if (definition.valueKey === "per") {
+    return group.perCount;
+  }
+  return group.roeCount;
 }
 
-function snapshotCanUseIndustryMedian(snapshot: EvaluationSnapshot, metric: IndustryMedianMetric) {
-  return hasClassifiedIndustry(snapshot) && companyMetricForIndustryMedian(snapshot, metric) !== null;
-}
-
-function industryMedianRequirementsMet(
+function aggregateRequirementsMet(
   snapshot: EvaluationSnapshot,
-  industry: IndustryMetrics | undefined,
-  requiredMetrics: Set<IndustryMedianMetric>
+  peerGroups: Record<AggregateScope, Map<string, PeerGroupMetrics>>,
+  requiredMetrics: Set<AggregateMetricKey>
 ) {
-  for (const metric of requiredMetrics) {
+  for (const metric of Array.from(requiredMetrics)) {
+    const definition = aggregateMetricDefinition(metric);
+    if (!definition) {
+      continue;
+    }
+    const group = peerGroups[definition.scope].get(aggregateGroupKey(snapshot, definition.scope));
     if (
-      !snapshotCanUseIndustryMedian(snapshot, metric) ||
-      industryMetricCount(industry, metric) < INDUSTRY_MEDIAN_MIN_COMPANIES ||
-      industryMetricValue(industry, metric) === null
+      !hasClassifiedAggregateGroup(snapshot, definition.scope) ||
+      aggregateMetricCount(group, definition) < GROUP_AGGREGATE_MIN_COMPANIES ||
+      aggregateMetricValue(group, definition) === null
     ) {
       return false;
     }
@@ -701,22 +767,27 @@ function industryMedianRequirementsMet(
   return true;
 }
 
-function universeIndustryMetrics(snapshots: EvaluationSnapshot[]) {
+function universePeerGroupMetrics(snapshots: EvaluationSnapshot[], scope: AggregateScope) {
   const groups = new Map<string, EvaluationSnapshot[]>();
   snapshots.forEach((snapshot) => {
-    if (!hasClassifiedIndustry(snapshot)) {
+    if (!hasClassifiedAggregateGroup(snapshot, scope)) {
       return;
     }
-    const key = industryGroupKey(snapshot);
+    const key = aggregateGroupKey(snapshot, scope);
     groups.set(key, [...(groups.get(key) || []), snapshot]);
   });
-  const metrics = new Map<string, IndustryMetrics>();
+  const metrics = new Map<string, PeerGroupMetrics>();
   groups.forEach((items, key) => {
+    const epsValues = items.map((item) => companyMetricForAggregate(item, "companyEps")).filter((value): value is number => value !== null);
     const perValues = items.map((item) => finiteNumber(item.metrics.companyPer)).filter((value): value is number => value !== null);
     const roeValues = items.map((item) => finiteNumber(item.metrics.companyRoe)).filter((value): value is number => value !== null);
     metrics.set(key, {
-      per: median(perValues),
-      roe: median(roeValues),
+      avgEps: average(epsValues),
+      avgPer: average(perValues),
+      avgRoe: average(roeValues),
+      medianPer: median(perValues),
+      medianRoe: median(roeValues),
+      epsCount: epsValues.length,
       perCount: perValues.length,
       roeCount: roeValues.length,
       count: items.length
@@ -728,22 +799,29 @@ function universeIndustryMetrics(snapshots: EvaluationSnapshot[]) {
 function evaluateSnapshot(
   snapshot: EvaluationSnapshot,
   strategy: StrategyDefinition,
-  industryMetrics: Map<string, IndustryMetrics>,
-  requiredIndustryMetrics: Set<IndustryMedianMetric>
+  peerGroups: Record<AggregateScope, Map<string, PeerGroupMetrics>>,
+  requiredAggregateMetrics: Set<AggregateMetricKey>
 ) {
   if (!strategySectorMatches(strategy, snapshot)) {
     return null;
   }
-  const industry = industryMetrics.get(industryGroupKey(snapshot));
-  if (requiredIndustryMetrics.size && !industryMedianRequirementsMet(snapshot, industry, requiredIndustryMetrics)) {
+  if (requiredAggregateMetrics.size && !aggregateRequirementsMet(snapshot, peerGroups, requiredAggregateMetrics)) {
     return null;
   }
+  const industry = peerGroups.industry.get(industryGroupKey(snapshot));
+  const sector = peerGroups.sector.get(sectorGroupKey(snapshot));
   const metrics = {
     ...snapshot.metrics,
     price: snapshot.metrics.price ?? snapshot.price,
     changePct: snapshot.metrics.changePct ?? snapshot.changePct,
-    industryPer: industry?.per ?? snapshot.metrics.industryPer ?? null,
-    industryRoe: industry?.roe ?? snapshot.metrics.industryRoe ?? null
+    industryAvgEps: industry?.avgEps ?? snapshot.metrics.industryAvgEps ?? null,
+    industryAvgPer: industry?.avgPer ?? snapshot.metrics.industryAvgPer ?? null,
+    industryAvgRoe: industry?.avgRoe ?? snapshot.metrics.industryAvgRoe ?? null,
+    sectorAvgEps: sector?.avgEps ?? snapshot.metrics.sectorAvgEps ?? null,
+    sectorAvgPer: sector?.avgPer ?? snapshot.metrics.sectorAvgPer ?? null,
+    sectorAvgRoe: sector?.avgRoe ?? snapshot.metrics.sectorAvgRoe ?? null,
+    industryPer: industry?.medianPer ?? snapshot.metrics.industryPer ?? null,
+    industryRoe: industry?.medianRoe ?? snapshot.metrics.industryRoe ?? null
   };
   const resolvedMetrics = { ...metrics };
   strategy.conditions.forEach((condition) => {
@@ -775,7 +853,7 @@ function evaluateSnapshot(
 
 export async function evaluateStrategy(input: unknown, options: EvaluationOptions = {}): Promise<StrategyEvaluation> {
   const strategy = normalizeStrategy(input);
-  const requiredIndustryMetrics = strategyIndustryMedianMetrics(strategy);
+  const requiredAggregateMetrics = strategyAggregateMetrics(strategy);
   const universeByMarket = await Promise.all(strategy.markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
   const universeEntries = universeByMarket.flatMap(({ market, symbols }) => symbols.map((symbol) => ({ market, symbol })));
   const universeCount = universeEntries.length;
@@ -783,15 +861,49 @@ export async function evaluateStrategy(input: unknown, options: EvaluationOption
   const batchLimit = Math.max(1, Math.min(800, Math.round(options.limit || universeCount || 1)));
   const selectedEntries = options.limit ? universeEntries.slice(batchOffset, batchOffset + batchLimit) : universeEntries;
   const selectedMarkets = Array.from(new Set(selectedEntries.map((entry) => entry.market)));
-  const cacheEntries = requiredIndustryMetrics.size
+  const queryMarkets = selectedMarkets.length ? selectedMarkets : strategy.markets;
+  const fundamentalEntries = requiredAggregateMetrics.size
     ? universeEntries.filter((entry) => selectedMarkets.includes(entry.market))
     : selectedEntries;
-  const symbols = Array.from(new Set(cacheEntries.map((entry) => entry.symbol)));
-  const [fundamentalCache, supplementalCache, quoteCache] = await Promise.all([
-    readFinancialFundamentalsCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
-    readStrategyMetricCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
-    getCachedMarketQuotes(symbols, { maxAgeMs: STRATEGY_QUOTE_CACHE_MAX_AGE_MS })
+  const fundamentalSymbols = Array.from(new Set(fundamentalEntries.map((entry) => entry.symbol)));
+  const selectedSymbols = Array.from(new Set(selectedEntries.map((entry) => entry.symbol)));
+  const [fundamentalCache, supplementalCache] = await Promise.all([
+    readFinancialFundamentalsCache(fundamentalSymbols, queryMarkets),
+    readStrategyMetricCache(selectedSymbols, queryMarkets)
   ]);
+  const preliminarySnapshots = new Map<string, EvaluationSnapshot>();
+  for (const fundamental of fundamentalCache.values()) {
+    preliminarySnapshots.set(`${fundamental.market}:${fundamental.symbol}`, evaluationFromFundamental(fundamental, undefined, undefined));
+  }
+
+  const quoteSymbols = new Set(selectedSymbols);
+  if (aggregateMetricsNeedCurrentPrices(requiredAggregateMetrics)) {
+    const selectedGroupKeys: Record<AggregateScope, Set<string>> = {
+      industry: new Set(),
+      sector: new Set()
+    };
+    selectedEntries.forEach(({ market, symbol }) => {
+      const snapshot = preliminarySnapshots.get(`${market}:${symbol}`);
+      if (!snapshot || !strategySectorMatches(strategy, snapshot)) {
+        return;
+      }
+      requiredAggregateMetrics.forEach((metric) => {
+        const definition = aggregateMetricDefinition(metric);
+        if (definition?.sourceMetric === "companyPer" && hasClassifiedAggregateGroup(snapshot, definition.scope)) {
+          selectedGroupKeys[definition.scope].add(aggregateGroupKey(snapshot, definition.scope));
+        }
+      });
+    });
+    preliminarySnapshots.forEach((snapshot) => {
+      if (
+        selectedGroupKeys.industry.has(industryGroupKey(snapshot)) ||
+        selectedGroupKeys.sector.has(sectorGroupKey(snapshot))
+      ) {
+        quoteSymbols.add(snapshot.symbol);
+      }
+    });
+  }
+  const quoteCache = await getCachedMarketQuotes(Array.from(quoteSymbols), { maxAgeMs: STRATEGY_QUOTE_CACHE_MAX_AGE_MS });
   const matches: StrategyEvaluation["matches"] = [];
   const errors: StrategyEvaluation["errors"] = [];
   const evaluationSnapshots = new Map<string, EvaluationSnapshot>();
@@ -812,7 +924,10 @@ export async function evaluateStrategy(input: unknown, options: EvaluationOption
   }
 
   const cachedSnapshots = Array.from(evaluationSnapshots.values()).filter((snapshot) => selectedMarkets.includes(snapshot.market));
-  const industryMetrics = universeIndustryMetrics(cachedSnapshots);
+  const peerGroups = {
+    industry: universePeerGroupMetrics(cachedSnapshots, "industry"),
+    sector: universePeerGroupMetrics(cachedSnapshots, "sector")
+  };
   const priceCachedCount = cachedSnapshots.filter((snapshot) => snapshot.price !== null).length;
   const priceMissingCount = Math.max(0, cachedSnapshots.length - priceCachedCount);
 
@@ -833,7 +948,7 @@ export async function evaluateStrategy(input: unknown, options: EvaluationOption
       if (snapshot.price === null) {
         missingPriceCount += 1;
       }
-      const match = evaluateSnapshot(snapshot, strategy, industryMetrics, requiredIndustryMetrics);
+      const match = evaluateSnapshot(snapshot, strategy, peerGroups, requiredAggregateMetrics);
       if (match) {
         matches.push(match);
       }

@@ -3710,10 +3710,13 @@ function strategyMetricsForCategory(category: StrategyConditionCategory, markets
 
 function defaultRightOperandForMetric(metric: StrategyMetricKey): StrategyRightOperand {
   if (metric === "companyPer") {
-    return { type: "metric", metric: "industryPer" };
+    return { type: "metric", metric: "industryAvgPer" };
   }
   if (metric === "companyRoe") {
-    return { type: "metric", metric: "industryRoe" };
+    return { type: "metric", metric: "industryAvgRoe" };
+  }
+  if (metric === "companyEps") {
+    return { type: "metric", metric: "industryAvgEps" };
   }
   if (strategyMetricOption(metric)?.kind === "signal") {
     return { type: "number", value: 1 };
@@ -3987,7 +3990,7 @@ function StrategiesPanel({
     type RefreshScope = "fundamentals" | "metrics";
 
     const scopePlans: Array<{ scope: RefreshScope; batchSize: number; batchCount: number }> = [
-      { scope: "fundamentals", batchSize: 6, batchCount: 12 },
+      { scope: "fundamentals", batchSize: 30, batchCount: 12 },
       { scope: "metrics", batchSize: 40, batchCount: 12 }
     ];
     setCacheBusy(true);

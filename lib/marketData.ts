@@ -916,6 +916,12 @@ const SEC_CIKS: Record<string, string> = {
 };
 
 let secTickerMapPromise: Promise<Map<string, string>> | null = null;
+const secSubmissionProfilePromises = new Map<string, Promise<SecSubmissionProfile | null>>();
+
+type SecSubmissionProfile = {
+  sector: string;
+  industry: string;
+};
 
 function secTickerCandidates(symbol: string) {
   const normalized = marketDataSymbol(symbol).toUpperCase();
@@ -982,6 +988,160 @@ async function resolveSecCik(symbol: string) {
     }
   }
   return null;
+}
+
+function secSectorFromSic(sic: number | null, description: string) {
+  const text = description.toLowerCase();
+  if (text.includes("real estate") || text.includes("reit")) {
+    return "Real Estate";
+  }
+  if (text.includes("bank") || text.includes("insurance") || text.includes("investment") || text.includes("broker") || text.includes("credit")) {
+    return "Financial Services";
+  }
+  if (text.includes("pharmaceutical") || text.includes("medical") || text.includes("health") || text.includes("biological")) {
+    return "Healthcare";
+  }
+  if (text.includes("semiconductor") || text.includes("software") || text.includes("computer") || text.includes("data processing")) {
+    return "Technology";
+  }
+  if (text.includes("telecommunications") || text.includes("broadcast") || text.includes("cable") || text.includes("publishing")) {
+    return "Communication Services";
+  }
+  if (text.includes("electric") || text.includes("gas transmission") || text.includes("water supply") || text.includes("utility")) {
+    return "Utilities";
+  }
+  if (text.includes("oil") || text.includes("gas") || text.includes("petroleum") || text.includes("coal")) {
+    return "Energy";
+  }
+  if (sic === null) {
+    return "";
+  }
+  if (sic >= 100 && sic <= 999) {
+    return "Consumer Defensive";
+  }
+  if (sic >= 1000 && sic <= 1499) {
+    return "Basic Materials";
+  }
+  if (sic >= 1500 && sic <= 1799) {
+    return "Industrials";
+  }
+  if (sic >= 2000 && sic <= 2199) {
+    return "Consumer Defensive";
+  }
+  if (sic >= 2200 && sic <= 2599) {
+    return "Consumer Cyclical";
+  }
+  if (sic >= 2600 && sic <= 2899) {
+    return "Basic Materials";
+  }
+  if (sic >= 2900 && sic <= 2999) {
+    return "Energy";
+  }
+  if (sic >= 3000 && sic <= 3569) {
+    return "Industrials";
+  }
+  if (sic >= 3570 && sic <= 3699) {
+    return "Technology";
+  }
+  if (sic >= 3700 && sic <= 3799) {
+    return "Industrials";
+  }
+  if (sic >= 3800 && sic <= 3899) {
+    return "Healthcare";
+  }
+  if (sic >= 3900 && sic <= 3999) {
+    return "Consumer Cyclical";
+  }
+  if (sic >= 4000 && sic <= 4799) {
+    return "Industrials";
+  }
+  if (sic >= 4800 && sic <= 4899) {
+    return "Communication Services";
+  }
+  if (sic >= 4900 && sic <= 4999) {
+    return "Utilities";
+  }
+  if (sic >= 5000 && sic <= 5199) {
+    return "Industrials";
+  }
+  if (sic >= 5200 && sic <= 5999) {
+    return "Consumer Cyclical";
+  }
+  if (sic >= 6000 && sic <= 6499) {
+    return "Financial Services";
+  }
+  if (sic >= 6500 && sic <= 6799) {
+    return "Real Estate";
+  }
+  if (sic >= 7000 && sic <= 7999) {
+    return text.includes("business services") || text.includes("prepackaged software") ? "Technology" : "Consumer Cyclical";
+  }
+  if (sic >= 8000 && sic <= 8099) {
+    return "Healthcare";
+  }
+  if (sic >= 8100 && sic <= 8999) {
+    return "Industrials";
+  }
+  return "";
+}
+
+function secIndustryDescription(value: unknown) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^services[-\s]*/i, "Services - ")
+    .replace(/^retail[-\s]*/i, "Retail - ")
+    .trim();
+}
+
+async function fetchSecSubmissionProfile(symbol: string): Promise<SecSubmissionProfile | null> {
+  const cik = await resolveSecCik(symbol);
+  if (!cik) {
+    return null;
+  }
+  const cached = secSubmissionProfilePromises.get(cik);
+  if (cached) {
+    return cached;
+  }
+  const promise = (async () => {
+    try {
+      const response = await fetch(`https://data.sec.gov/submissions/CIK${cik}.json`, {
+        headers: {
+          accept: "application/json",
+          "user-agent": "myfinancialportfolio-next/1.0 contact@example.com"
+        },
+        next: { revalidate: 604800 }
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const payload = (await response.json()) as Record<string, unknown>;
+      const industry = secIndustryDescription(payload.sicDescription);
+      const sic = numberOrNull(payload.sic);
+      const sector = secSectorFromSic(sic, industry);
+      return sector || industry ? { sector, industry: industry || (sector ? SECTOR_DEFAULT_INDUSTRIES[sector] || sector : "") } : null;
+    } catch {
+      return null;
+    }
+  })();
+  secSubmissionProfilePromises.set(cik, promise);
+  return promise;
+}
+
+function canonicalFundamentalClassification(
+  symbol: string,
+  resolvedProfile: { sector?: string; industry?: string },
+  secProfile: SecSubmissionProfile | null,
+  quote: Quote | null | undefined
+) {
+  const normalized = normalizeSymbol(symbol);
+  const useSecClassification = !isKoreaSymbol(normalized) && !isCryptoSymbol(normalized) && Boolean(secProfile?.sector || secProfile?.industry);
+  const sector = (useSecClassification ? secProfile?.sector : "") || resolvedProfile.sector || quote?.sector || "";
+  const industry =
+    (useSecClassification ? secProfile?.industry : "") ||
+    resolvedProfile.industry ||
+    quote?.industry ||
+    (sector ? SECTOR_DEFAULT_INDUSTRIES[sector] || "" : "");
+  return { sector, industry };
 }
 
 const SEC_FACT_FIELDS: Record<string, string[]> = {
@@ -2185,6 +2345,7 @@ export async function buildFinancialFundamentalFromSources(
   let company = ratioValues(summary);
   let netIncome: number | null = null;
   let averageEquity: number | null = null;
+  let secProfile: SecSubmissionProfile | null = null;
 
   if (isKoreaSymbol(normalized)) {
     const koreaFinancial = await koreaOpenDartFinancial(normalized, marketPrice);
@@ -2195,7 +2356,8 @@ export async function buildFinancialFundamentalFromSources(
       company = mergeRatioValues(koreaFinancial.ratioValues ?? periodToRatioValues(latest), company);
     }
   } else {
-    const facts = await fetchSecCompanyFacts(normalized);
+    const [facts, submissionProfile] = await Promise.all([fetchSecCompanyFacts(normalized), fetchSecSubmissionProfile(normalized)]);
+    secProfile = submissionProfile;
     const periods = secPeriods(facts);
     const latest = periods[0];
     if (latest) {
@@ -2212,12 +2374,13 @@ export async function buildFinancialFundamentalFromSources(
   }
 
   const eps = company.eps ?? (company.per !== null && company.per !== 0 && marketPrice !== null ? marketPrice / company.per : null);
+  const { sector, industry } = canonicalFundamentalClassification(normalized, resolvedProfile, secProfile, quote);
   return {
     symbol: normalized,
     market,
     name: resolvedProfile.name || quote?.name || normalized,
-    sector: resolvedProfile.sector || quote?.sector || "",
-    industry: resolvedProfile.industry || quote?.industry || "",
+    sector,
+    industry,
     currency: quote?.currency || String(priceModule.currency || (isKoreaSymbol(normalized) ? "KRW" : "USD")).toUpperCase(),
     fiscalYear,
     eps,
@@ -2228,6 +2391,34 @@ export async function buildFinancialFundamentalFromSources(
     priceAtRefresh: marketPrice,
     source,
     refreshedAt: new Date().toISOString()
+  };
+}
+
+export async function buildFinancialFundamentalProfileFromSources(
+  symbol: string,
+  market: Exclude<StrategyMarket, "crypto">,
+  quote: Quote | null = null
+) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized || isCryptoSymbol(normalized)) {
+    return null;
+  }
+  const summary = await fetchYahooSummary(normalized);
+  const profile = {
+    ...((summary.assetProfile || {}) as Record<string, unknown>),
+    ...((summary.summaryProfile || {}) as Record<string, unknown>)
+  };
+  const priceModule = (summary.price || {}) as Record<string, unknown>;
+  const resolvedProfile = fallbackProfile(normalized, profile, priceModule);
+  const secProfile = isKoreaSymbol(normalized) ? null : await fetchSecSubmissionProfile(normalized);
+  const { sector, industry } = canonicalFundamentalClassification(normalized, resolvedProfile, secProfile, quote);
+  return {
+    symbol: normalized,
+    market,
+    name: resolvedProfile.name || quote?.name || normalized,
+    sector,
+    industry,
+    currency: quote?.currency || String(priceModule.currency || (isKoreaSymbol(normalized) ? "KRW" : "USD")).toUpperCase()
   };
 }
 
