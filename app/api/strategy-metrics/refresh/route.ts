@@ -86,7 +86,7 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
     const remainingBudgetMs = () => Math.max(5_000, routeBudgetMs - (Date.now() - routeStartedAt));
     const requestedLimit = Math.max(1, Math.min(50, Math.round(Number(body.limit ?? params.get("limit") ?? 20))));
     const force = body.force === true || params.get("force") === "true";
-    const fundamentalLimit = Math.min(requestedLimit, 6);
+    const fundamentalLimit = requestedLimit;
     const metricLimit = requestedLimit;
     const fundamentalResult =
       scope === "metrics"
