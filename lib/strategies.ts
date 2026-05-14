@@ -184,6 +184,15 @@ type StrategyTechnicalPoint = NonNullable<StrategyMetricSnapshot["technical"]>["
 
 const INDUSTRY_MEDIAN_MIN_COMPANIES = 5;
 
+type IndustryMedianMetric = "industryPer" | "industryRoe";
+type IndustryMetrics = {
+  per: number | null;
+  roe: number | null;
+  perCount: number;
+  roeCount: number;
+  count: number;
+};
+
 type EvaluationOptions = {
   offset?: number;
   limit?: number;
@@ -207,12 +216,25 @@ function metricReferencesIndustryMedian(metric: StrategyMetricKey) {
   return metric === "industryPer" || metric === "industryRoe";
 }
 
-function strategyUsesIndustryMedians(strategy: StrategyDefinition) {
-  return strategy.conditions.some(
-    (condition) =>
-      metricReferencesIndustryMedian(condition.leftMetric) ||
-      (condition.right.type === "metric" && metricReferencesIndustryMedian(condition.right.metric))
-  );
+function industryMedianMetric(metric: StrategyMetricKey): IndustryMedianMetric | null {
+  return metricReferencesIndustryMedian(metric) ? (metric as IndustryMedianMetric) : null;
+}
+
+function strategyIndustryMedianMetrics(strategy: StrategyDefinition) {
+  const metrics = new Set<IndustryMedianMetric>();
+  strategy.conditions.forEach((condition) => {
+    const left = industryMedianMetric(condition.leftMetric);
+    if (left) {
+      metrics.add(left);
+    }
+    if (condition.right.type === "metric") {
+      const right = industryMedianMetric(condition.right.metric);
+      if (right) {
+        metrics.add(right);
+      }
+    }
+  });
+  return metrics;
 }
 
 function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, priceValue: number | null | undefined) {
@@ -635,46 +657,86 @@ function strategySectorMatches(strategy: StrategyDefinition, snapshot: Evaluatio
   return strategy.sectors.includes(snapshot.sector);
 }
 
-function isIndustryMedianEligible(snapshot: EvaluationSnapshot) {
+function hasClassifiedIndustry(snapshot: EvaluationSnapshot) {
   const industry = snapshot.industry.trim();
-  const per = finiteNumber(snapshot.metrics.companyPer);
-  const roe = finiteNumber(snapshot.metrics.companyRoe);
-  return (
-    Boolean(industry && industry !== "Unclassified") &&
-    per !== null &&
-    roe !== null
-  );
+  return Boolean(industry && industry !== "Unclassified");
+}
+
+function companyMetricForIndustryMedian(snapshot: EvaluationSnapshot, metric: IndustryMedianMetric) {
+  return metric === "industryPer" ? finiteNumber(snapshot.metrics.companyPer) : finiteNumber(snapshot.metrics.companyRoe);
+}
+
+function industryMetricValue(industry: IndustryMetrics | undefined, metric: IndustryMedianMetric) {
+  if (!industry) {
+    return null;
+  }
+  return metric === "industryPer" ? industry.per : industry.roe;
+}
+
+function industryMetricCount(industry: IndustryMetrics | undefined, metric: IndustryMedianMetric) {
+  if (!industry) {
+    return 0;
+  }
+  return metric === "industryPer" ? industry.perCount : industry.roeCount;
+}
+
+function snapshotCanUseIndustryMedian(snapshot: EvaluationSnapshot, metric: IndustryMedianMetric) {
+  return hasClassifiedIndustry(snapshot) && companyMetricForIndustryMedian(snapshot, metric) !== null;
+}
+
+function industryMedianRequirementsMet(
+  snapshot: EvaluationSnapshot,
+  industry: IndustryMetrics | undefined,
+  requiredMetrics: Set<IndustryMedianMetric>
+) {
+  for (const metric of requiredMetrics) {
+    if (
+      !snapshotCanUseIndustryMedian(snapshot, metric) ||
+      industryMetricCount(industry, metric) < INDUSTRY_MEDIAN_MIN_COMPANIES ||
+      industryMetricValue(industry, metric) === null
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function universeIndustryMetrics(snapshots: EvaluationSnapshot[]) {
   const groups = new Map<string, EvaluationSnapshot[]>();
   snapshots.forEach((snapshot) => {
-    if (!isIndustryMedianEligible(snapshot)) {
+    if (!hasClassifiedIndustry(snapshot)) {
       return;
     }
     const key = industryGroupKey(snapshot);
     groups.set(key, [...(groups.get(key) || []), snapshot]);
   });
-  const metrics = new Map<string, { per: number | null; roe: number | null; count: number }>();
+  const metrics = new Map<string, IndustryMetrics>();
   groups.forEach((items, key) => {
+    const perValues = items.map((item) => finiteNumber(item.metrics.companyPer)).filter((value): value is number => value !== null);
+    const roeValues = items.map((item) => finiteNumber(item.metrics.companyRoe)).filter((value): value is number => value !== null);
     metrics.set(key, {
-      per: median(items.map((item) => item.metrics.companyPer)),
-      roe: median(items.map((item) => item.metrics.companyRoe)),
+      per: median(perValues),
+      roe: median(roeValues),
+      perCount: perValues.length,
+      roeCount: roeValues.length,
       count: items.length
     });
   });
   return metrics;
 }
 
-function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefinition, industryMetrics: Map<string, { per: number | null; roe: number | null; count: number }>) {
+function evaluateSnapshot(
+  snapshot: EvaluationSnapshot,
+  strategy: StrategyDefinition,
+  industryMetrics: Map<string, IndustryMetrics>,
+  requiredIndustryMetrics: Set<IndustryMedianMetric>
+) {
   if (!strategySectorMatches(strategy, snapshot)) {
     return null;
   }
   const industry = industryMetrics.get(industryGroupKey(snapshot));
-  if (strategyUsesIndustryMedians(strategy)) {
-    if (!industry || industry.count < INDUSTRY_MEDIAN_MIN_COMPANIES || !isIndustryMedianEligible(snapshot)) {
-      return null;
-    }
+  if (requiredIndustryMetrics.size && !industryMedianRequirementsMet(snapshot, industry, requiredIndustryMetrics)) {
+    return null;
   }
   const metrics = {
     ...snapshot.metrics,
@@ -713,6 +775,7 @@ function evaluateSnapshot(snapshot: EvaluationSnapshot, strategy: StrategyDefini
 
 export async function evaluateStrategy(input: unknown, options: EvaluationOptions = {}): Promise<StrategyEvaluation> {
   const strategy = normalizeStrategy(input);
+  const requiredIndustryMetrics = strategyIndustryMedianMetrics(strategy);
   const universeByMarket = await Promise.all(strategy.markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
   const universeEntries = universeByMarket.flatMap(({ market, symbols }) => symbols.map((symbol) => ({ market, symbol })));
   const universeCount = universeEntries.length;
@@ -720,7 +783,10 @@ export async function evaluateStrategy(input: unknown, options: EvaluationOption
   const batchLimit = Math.max(1, Math.min(800, Math.round(options.limit || universeCount || 1)));
   const selectedEntries = options.limit ? universeEntries.slice(batchOffset, batchOffset + batchLimit) : universeEntries;
   const selectedMarkets = Array.from(new Set(selectedEntries.map((entry) => entry.market)));
-  const symbols = Array.from(new Set(selectedEntries.map((entry) => entry.symbol)));
+  const cacheEntries = requiredIndustryMetrics.size
+    ? universeEntries.filter((entry) => selectedMarkets.includes(entry.market))
+    : selectedEntries;
+  const symbols = Array.from(new Set(cacheEntries.map((entry) => entry.symbol)));
   const [fundamentalCache, supplementalCache, quoteCache] = await Promise.all([
     readFinancialFundamentalsCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
     readStrategyMetricCache(symbols, selectedMarkets.length ? selectedMarkets : strategy.markets),
@@ -767,7 +833,7 @@ export async function evaluateStrategy(input: unknown, options: EvaluationOption
       if (snapshot.price === null) {
         missingPriceCount += 1;
       }
-      const match = evaluateSnapshot(snapshot, strategy, industryMetrics);
+      const match = evaluateSnapshot(snapshot, strategy, industryMetrics, requiredIndustryMetrics);
       if (match) {
         matches.push(match);
       }
