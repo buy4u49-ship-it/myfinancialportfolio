@@ -75,6 +75,11 @@ function isMissingMarketCapColumn(error: unknown) {
   return message.includes("market_cap") && (message.includes("column") || message.includes("schema cache"));
 }
 
+function isMissingFinancialColumn(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return (message.includes("column") || message.includes("schema cache")) && message.includes("financial_fundamentals_cache");
+}
+
 function isStockMarket(market: StrategyMarket): market is Exclude<StrategyMarket, "crypto"> {
   return market === "us" || market === "korea";
 }
@@ -129,9 +134,25 @@ function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapsh
     fiscalYear: numberOrNull(row.fiscal_year),
     eps: epsOrNull(row.eps),
     roePct: numberOrNull(row.roe_pct),
+    roaPct: numberOrNull(row.roa_pct),
+    netMarginPct: numberOrNull(row.net_margin_pct),
+    operatingMarginPct: numberOrNull(row.operating_margin_pct),
+    revenueGrowthPct: numberOrNull(row.revenue_growth_pct),
+    operatingIncomeGrowthPct: numberOrNull(row.operating_income_growth_pct),
+    earningsGrowthPct: numberOrNull(row.earnings_growth_pct),
+    revenue: numberOrNull(row.revenue),
+    operatingIncome: numberOrNull(row.operating_income),
     netIncome: numberOrNull(row.net_income),
+    totalAssets: numberOrNull(row.total_assets),
+    averageAssets: numberOrNull(row.average_assets),
+    totalEquity: numberOrNull(row.total_equity),
     averageEquity: numberOrNull(row.average_equity),
     marketCap: numberOrNull(row.market_cap),
+    sharesOutstanding: numberOrNull(row.shares_outstanding),
+    bookValuePerShare: numberOrNull(row.book_value_per_share),
+    ebitda: numberOrNull(row.ebitda),
+    totalDebt: numberOrNull(row.total_debt),
+    cashAndShortInvestments: numberOrNull(row.cash_and_short_investments),
     priceAtRefresh: numberOrNull(row.price_at_refresh),
     source: String(row.source || "financial_fundamentals_cache"),
     refreshedAt: String(row.refreshed_at || "")
@@ -149,9 +170,25 @@ function snapshotToRow(snapshot: FinancialFundamentalSnapshot) {
     fiscal_year: snapshot.fiscalYear,
     eps: snapshot.eps,
     roe_pct: snapshot.roePct,
+    roa_pct: snapshot.roaPct,
+    net_margin_pct: snapshot.netMarginPct,
+    operating_margin_pct: snapshot.operatingMarginPct,
+    revenue_growth_pct: snapshot.revenueGrowthPct,
+    operating_income_growth_pct: snapshot.operatingIncomeGrowthPct,
+    earnings_growth_pct: snapshot.earningsGrowthPct,
+    revenue: snapshot.revenue,
+    operating_income: snapshot.operatingIncome,
     net_income: snapshot.netIncome,
+    total_assets: snapshot.totalAssets,
+    average_assets: snapshot.averageAssets,
+    total_equity: snapshot.totalEquity,
     average_equity: snapshot.averageEquity,
     market_cap: snapshot.marketCap,
+    shares_outstanding: snapshot.sharesOutstanding,
+    book_value_per_share: snapshot.bookValuePerShare,
+    ebitda: snapshot.ebitda,
+    total_debt: snapshot.totalDebt,
+    cash_and_short_investments: snapshot.cashAndShortInvestments,
     price_at_refresh: snapshot.priceAtRefresh,
     source: snapshot.source,
     refreshed_at: snapshot.refreshedAt,
@@ -170,9 +207,7 @@ export async function readFinancialFundamentalsCache(symbols: string[], markets?
   for (const symbolChunk of chunk(uniqueSymbols, 250)) {
     let query = supabaseAdmin()
       .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
-      .select(
-        "symbol,market,name,sector,industry,currency,fiscal_year,eps,roe_pct,net_income,average_equity,market_cap,price_at_refresh,source,refreshed_at"
-      )
+      .select("*")
       .in("symbol", symbolChunk);
     if (stockMarkets?.length) {
       query = query.in("market", stockMarkets);
@@ -213,6 +248,26 @@ export async function readFinancialFundamentalsCache(symbols: string[], markets?
   return snapshots;
 }
 
+function baseFinancialRow(row: ReturnType<typeof snapshotToRow>) {
+  return {
+    symbol: row.symbol,
+    market: row.market,
+    name: row.name,
+    sector: row.sector,
+    industry: row.industry,
+    currency: row.currency,
+    fiscal_year: row.fiscal_year,
+    eps: row.eps,
+    roe_pct: row.roe_pct,
+    net_income: row.net_income,
+    average_equity: row.average_equity,
+    price_at_refresh: row.price_at_refresh,
+    source: row.source,
+    refreshed_at: row.refreshed_at,
+    updated_at: row.updated_at
+  };
+}
+
 export async function writeFinancialFundamentalsCache(snapshots: FinancialFundamentalSnapshot[]) {
   if (!snapshots.length) {
     return;
@@ -221,8 +276,8 @@ export async function writeFinancialFundamentalsCache(snapshots: FinancialFundam
     const { error } = await supabaseAdmin()
       .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
       .upsert(rowChunk, { onConflict: "symbol,market" });
-    if (error && isMissingMarketCapColumn(error)) {
-      const fallbackRows = rowChunk.map(({ market_cap: _marketCap, ...row }) => row);
+    if (error && (isMissingMarketCapColumn(error) || isMissingFinancialColumn(error))) {
+      const fallbackRows = rowChunk.map(baseFinancialRow);
       const fallback = await supabaseAdmin()
         .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
         .upsert(fallbackRows, { onConflict: "symbol,market" });

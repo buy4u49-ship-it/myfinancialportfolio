@@ -20,7 +20,29 @@ import { inflateRawSync } from "node:zlib";
 
 type MarketKey = "crypto" | "us" | "korea";
 export type ChartRange = "1D" | "1W" | "1M" | "1Y" | "YTD";
-type RatioValues = { eps: number | null; per: number | null; netMargin: number | null; operatingMargin: number | null; roe: number | null };
+type RatioValues = {
+  eps: number | null;
+  per: number | null;
+  netMargin: number | null;
+  operatingMargin: number | null;
+  roe: number | null;
+  roa: number | null;
+  revenueGrowth: number | null;
+  operatingIncomeGrowth: number | null;
+  earningsGrowth: number | null;
+  bookValuePerShare: number | null;
+  sharesOutstanding: number | null;
+  ebitda: number | null;
+  totalDebt: number | null;
+  cashAndShortInvestments: number | null;
+  revenue: number | null;
+  operatingIncome: number | null;
+  netIncome: number | null;
+  totalAssets: number | null;
+  averageAssets: number | null;
+  totalEquity: number | null;
+  averageEquity: number | null;
+};
 type PeriodRatioValues = RatioValues & { fiscalYear: number | null };
 type MonthlyReturnPoint = { time: string; month: string; value: number };
 type BenchmarkAnalyticsResult = {
@@ -320,6 +342,25 @@ function numberOrNull(value: unknown) {
 function positiveNumberOrNull(value: unknown) {
   const num = numberOrNull(value);
   return num !== null && num > 0 ? num : null;
+}
+
+function nonZeroNumberOrNull(value: unknown) {
+  const num = numberOrNull(value);
+  return num !== null && num !== 0 ? num : null;
+}
+
+function growthRate(current: number | null, previous: number | null) {
+  if (current === null || previous === null || previous === 0) {
+    return null;
+  }
+  return current / previous - 1;
+}
+
+function ratioPct(numerator: number | null, denominator: number | null) {
+  if (numerator === null || denominator === null || denominator === 0) {
+    return null;
+  }
+  return (numerator / denominator) * 100;
 }
 
 function epsNumberOrNull(value: unknown) {
@@ -1312,15 +1353,20 @@ function secValueByUnits(facts: SecCompanyFacts | null, concepts: string[], fisc
   return null;
 }
 
+function secShareValue(facts: SecCompanyFacts | null, fiscalYear: number) {
+  return (
+    positiveNumberOrNull(secValueByUnits(facts, SEC_DILUTED_SHARE_FIELDS, fiscalYear, SEC_SHARE_UNITS)) ??
+    positiveNumberOrNull(secValueByUnits(facts, SEC_BASIC_SHARE_FIELDS, fiscalYear, SEC_SHARE_UNITS))
+  );
+}
+
 function secEpsValue(facts: SecCompanyFacts | null, fiscalYear: number, netIncome: number | null) {
   const reportedEps = epsNumberOrNull(secValueByUnits(facts, SEC_EPS_FACT_FIELDS, fiscalYear, SEC_EPS_UNITS));
   if (reportedEps !== null) {
     return reportedEps;
   }
   const commonIncome = secValue(facts, SEC_COMMON_INCOME_FIELDS, fiscalYear) ?? netIncome;
-  const shares =
-    positiveNumberOrNull(secValueByUnits(facts, SEC_DILUTED_SHARE_FIELDS, fiscalYear, SEC_SHARE_UNITS)) ??
-    positiveNumberOrNull(secValueByUnits(facts, SEC_BASIC_SHARE_FIELDS, fiscalYear, SEC_SHARE_UNITS));
+  const shares = secShareValue(facts, fiscalYear);
   if (commonIncome === null || shares === null) {
     return null;
   }
@@ -2019,8 +2065,13 @@ function openDartRatioValuesForYear(
   const revenue = dartValue(rows, year, "revenue", savedMappings);
   const operatingIncome = dartValue(rows, year, "operating_income", savedMappings);
   const netIncome = dartValue(rows, year, "net_income", savedMappings);
+  const assets = dartValue(rows, year, "total_assets", savedMappings);
   const equity = dartValue(rows, year, "total_equity", savedMappings);
   const previousYear = years[years.indexOf(year) + 1];
+  const previousRevenue = previousYear ? dartValue(rows, previousYear, "revenue", savedMappings) : null;
+  const previousOperatingIncome = previousYear ? dartValue(rows, previousYear, "operating_income", savedMappings) : null;
+  const previousNetIncome = previousYear ? dartValue(rows, previousYear, "net_income", savedMappings) : null;
+  const previousAssets = previousYear ? dartValue(rows, previousYear, "total_assets", savedMappings) : null;
   const previousEquity = previousYear ? dartValue(rows, previousYear, "total_equity", savedMappings) : null;
   const epsRow = rows.find((row) =>
     row.bsns_year === year &&
@@ -2032,12 +2083,36 @@ function openDartRatioValuesForYear(
   );
   const eps = epsNumberOrNull(dartNumber(epsRow?.thstrm_amount));
   const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
+  const averageAssets = assets !== null && previousAssets !== null ? (assets + previousAssets) / 2 : assets;
+  const depreciation = dartValue(rows, year, "depreciation", savedMappings);
+  const shortTermDebt = dartValue(rows, year, "short_term_debt", savedMappings);
+  const longTermDebt = dartValue(rows, year, "long_term_debt", savedMappings);
+  const totalDebt =
+    shortTermDebt !== null || longTermDebt !== null
+      ? (shortTermDebt || 0) + (longTermDebt || 0)
+      : null;
+  const cashAndShortInvestments = dartValue(rows, year, "cash_short_investments", savedMappings);
   return {
+    ...emptyRatioValues(),
     eps,
     per: eps !== null && eps !== 0 && marketPrice !== null ? marketPrice / eps : null,
     netMargin: revenue !== null && revenue !== 0 && netIncome !== null ? netIncome / revenue : null,
     operatingMargin: revenue !== null && revenue !== 0 && operatingIncome !== null ? operatingIncome / revenue : null,
-    roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null
+    roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null,
+    roa: averageAssets !== null && averageAssets !== 0 && netIncome !== null ? netIncome / averageAssets : null,
+    revenueGrowth: growthRate(revenue, previousRevenue),
+    operatingIncomeGrowth: growthRate(operatingIncome, previousOperatingIncome),
+    earningsGrowth: growthRate(netIncome, previousNetIncome),
+    ebitda: operatingIncome !== null || depreciation !== null ? (operatingIncome || 0) + (depreciation || 0) : null,
+    totalDebt,
+    cashAndShortInvestments,
+    revenue,
+    operatingIncome,
+    netIncome,
+    totalAssets: assets,
+    averageAssets,
+    totalEquity: equity,
+    averageEquity
   };
 }
 
@@ -2099,7 +2174,29 @@ function formatRatio(value: number | null, type: "number" | "percent") {
 }
 
 function emptyRatioValues(): RatioValues {
-  return { eps: null, per: null, netMargin: null, operatingMargin: null, roe: null };
+  return {
+    eps: null,
+    per: null,
+    netMargin: null,
+    operatingMargin: null,
+    roe: null,
+    roa: null,
+    revenueGrowth: null,
+    operatingIncomeGrowth: null,
+    earningsGrowth: null,
+    bookValuePerShare: null,
+    sharesOutstanding: null,
+    ebitda: null,
+    totalDebt: null,
+    cashAndShortInvestments: null,
+    revenue: null,
+    operatingIncome: null,
+    netIncome: null,
+    totalAssets: null,
+    averageAssets: null,
+    totalEquity: null,
+    averageEquity: null
+  };
 }
 
 function ratioValues(summary: Record<string, unknown>): RatioValues {
@@ -2109,12 +2206,30 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
   const eps = epsNumberOrNull(rawValue(stats.trailingEps));
   const marketPrice = positiveNumberOrNull(rawValue(price.regularMarketPrice));
   const per = numberOrNull(rawValue(stats.trailingPE)) ?? (eps !== null && eps !== 0 && marketPrice ? marketPrice / eps : null);
+  const bookValuePerShare = numberOrNull(rawValue(stats.bookValue));
+  const sharesOutstanding = positiveNumberOrNull(rawValue(stats.sharesOutstanding));
   return {
     eps,
     per,
     netMargin: numberOrNull(rawValue(financialData.profitMargins)),
     operatingMargin: numberOrNull(rawValue(financialData.operatingMargins)),
-    roe: numberOrNull(rawValue(financialData.returnOnEquity))
+    roe: numberOrNull(rawValue(financialData.returnOnEquity)),
+    roa: numberOrNull(rawValue(financialData.returnOnAssets)),
+    revenueGrowth: numberOrNull(rawValue(financialData.revenueGrowth)),
+    operatingIncomeGrowth: null,
+    earningsGrowth: numberOrNull(rawValue(financialData.earningsGrowth)),
+    bookValuePerShare,
+    sharesOutstanding,
+    ebitda: numberOrNull(rawValue(financialData.ebitda)),
+    totalDebt: numberOrNull(rawValue(financialData.totalDebt)),
+    cashAndShortInvestments: numberOrNull(rawValue(financialData.totalCash)),
+    revenue: numberOrNull(rawValue(financialData.totalRevenue)),
+    operatingIncome: null,
+    netIncome: null,
+    totalAssets: null,
+    averageAssets: null,
+    totalEquity: bookValuePerShare !== null && sharesOutstanding !== null ? bookValuePerShare * sharesOutstanding : null,
+    averageEquity: null
   };
 }
 
@@ -2123,18 +2238,49 @@ function secRatioValuesForYear(facts: SecCompanyFacts | null, fiscalYear: number
     return emptyRatioValues();
   }
   const revenue = secValue(facts, SEC_FACT_FIELDS.revenue, fiscalYear);
+  const previousRevenue = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.revenue, previousFiscalYear) : null;
   const operatingIncome = secValue(facts, SEC_FACT_FIELDS.operating_income, fiscalYear);
+  const previousOperatingIncome = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.operating_income, previousFiscalYear) : null;
   const netIncome = secValue(facts, SEC_FACT_FIELDS.net_income, fiscalYear);
+  const previousNetIncome = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.net_income, previousFiscalYear) : null;
+  const assets = secValue(facts, SEC_FACT_FIELDS.total_assets, fiscalYear);
+  const previousAssets = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.total_assets, previousFiscalYear) : null;
   const equity = secValue(facts, SEC_FACT_FIELDS.total_equity, fiscalYear);
   const previousEquity = previousFiscalYear ? secValue(facts, SEC_FACT_FIELDS.total_equity, previousFiscalYear) : null;
   const eps = secEpsValue(facts, fiscalYear, netIncome);
+  const sharesOutstanding = secShareValue(facts, fiscalYear);
   const averageEquity = equity !== null && previousEquity !== null ? (equity + previousEquity) / 2 : equity;
+  const averageAssets = assets !== null && previousAssets !== null ? (assets + previousAssets) / 2 : assets;
+  const depreciation = secValue(facts, SEC_FACT_FIELDS.depreciation, fiscalYear);
+  const shortTermDebt = secValue(facts, SEC_FACT_FIELDS.short_term_debt, fiscalYear);
+  const longTermDebt = secValue(facts, SEC_FACT_FIELDS.long_term_debt, fiscalYear);
+  const totalDebt =
+    shortTermDebt !== null || longTermDebt !== null
+      ? (shortTermDebt || 0) + (longTermDebt || 0)
+      : null;
+  const cashAndShortInvestments = secValue(facts, SEC_FACT_FIELDS.cash_short_investments, fiscalYear);
   return {
     eps,
     per: eps !== null && eps !== 0 && marketPrice !== null && marketPrice > 0 ? marketPrice / eps : null,
     netMargin: revenue !== null && revenue !== 0 && netIncome !== null ? netIncome / revenue : null,
     operatingMargin: revenue !== null && revenue !== 0 && operatingIncome !== null ? operatingIncome / revenue : null,
-    roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null
+    roe: averageEquity !== null && averageEquity !== 0 && netIncome !== null ? netIncome / averageEquity : null,
+    roa: averageAssets !== null && averageAssets !== 0 && netIncome !== null ? netIncome / averageAssets : null,
+    revenueGrowth: growthRate(revenue, previousRevenue),
+    operatingIncomeGrowth: growthRate(operatingIncome, previousOperatingIncome),
+    earningsGrowth: growthRate(netIncome, previousNetIncome),
+    bookValuePerShare: equity !== null && sharesOutstanding !== null ? equity / sharesOutstanding : null,
+    sharesOutstanding,
+    ebitda: operatingIncome !== null || depreciation !== null ? (operatingIncome || 0) + (depreciation || 0) : null,
+    totalDebt,
+    cashAndShortInvestments,
+    revenue,
+    operatingIncome,
+    netIncome,
+    totalAssets: assets,
+    averageAssets,
+    totalEquity: equity,
+    averageEquity
   };
 }
 
@@ -2158,7 +2304,23 @@ async function secRatioValues(symbol: string, marketPrice: number | null): Promi
     per: latest.per,
     netMargin: latest.netMargin,
     operatingMargin: latest.operatingMargin,
-    roe: latest.roe
+    roe: latest.roe,
+    roa: latest.roa,
+    revenueGrowth: latest.revenueGrowth,
+    operatingIncomeGrowth: latest.operatingIncomeGrowth,
+    earningsGrowth: latest.earningsGrowth,
+    bookValuePerShare: latest.bookValuePerShare,
+    sharesOutstanding: latest.sharesOutstanding,
+    ebitda: latest.ebitda,
+    totalDebt: latest.totalDebt,
+    cashAndShortInvestments: latest.cashAndShortInvestments,
+    revenue: latest.revenue,
+    operatingIncome: latest.operatingIncome,
+    netIncome: latest.netIncome,
+    totalAssets: latest.totalAssets,
+    averageAssets: latest.averageAssets,
+    totalEquity: latest.totalEquity,
+    averageEquity: latest.averageEquity
   };
 }
 
@@ -2168,7 +2330,23 @@ function mergeRatioValues(primary: RatioValues, fallback: RatioValues) {
     per: primary.per ?? fallback.per,
     netMargin: primary.netMargin ?? fallback.netMargin,
     operatingMargin: primary.operatingMargin ?? fallback.operatingMargin,
-    roe: primary.roe ?? fallback.roe
+    roe: primary.roe ?? fallback.roe,
+    roa: primary.roa ?? fallback.roa,
+    revenueGrowth: primary.revenueGrowth ?? fallback.revenueGrowth,
+    operatingIncomeGrowth: primary.operatingIncomeGrowth ?? fallback.operatingIncomeGrowth,
+    earningsGrowth: primary.earningsGrowth ?? fallback.earningsGrowth,
+    bookValuePerShare: primary.bookValuePerShare ?? fallback.bookValuePerShare,
+    sharesOutstanding: primary.sharesOutstanding ?? fallback.sharesOutstanding,
+    ebitda: primary.ebitda ?? fallback.ebitda,
+    totalDebt: primary.totalDebt ?? fallback.totalDebt,
+    cashAndShortInvestments: primary.cashAndShortInvestments ?? fallback.cashAndShortInvestments,
+    revenue: primary.revenue ?? fallback.revenue,
+    operatingIncome: primary.operatingIncome ?? fallback.operatingIncome,
+    netIncome: primary.netIncome ?? fallback.netIncome,
+    totalAssets: primary.totalAssets ?? fallback.totalAssets,
+    averageAssets: primary.averageAssets ?? fallback.averageAssets,
+    totalEquity: primary.totalEquity ?? fallback.totalEquity,
+    averageEquity: primary.averageEquity ?? fallback.averageEquity
   };
 }
 
@@ -2186,7 +2364,23 @@ function periodToRatioValues(period: PeriodRatioValues | undefined): RatioValues
     per: period.per,
     netMargin: period.netMargin,
     operatingMargin: period.operatingMargin,
-    roe: period.roe
+    roe: period.roe,
+    roa: period.roa,
+    revenueGrowth: period.revenueGrowth,
+    operatingIncomeGrowth: period.operatingIncomeGrowth,
+    earningsGrowth: period.earningsGrowth,
+    bookValuePerShare: period.bookValuePerShare,
+    sharesOutstanding: period.sharesOutstanding,
+    ebitda: period.ebitda,
+    totalDebt: period.totalDebt,
+    cashAndShortInvestments: period.cashAndShortInvestments,
+    revenue: period.revenue,
+    operatingIncome: period.operatingIncome,
+    netIncome: period.netIncome,
+    totalAssets: period.totalAssets,
+    averageAssets: period.averageAssets,
+    totalEquity: period.totalEquity,
+    averageEquity: period.averageEquity
   };
 }
 
@@ -2374,6 +2568,8 @@ export async function buildFinancialFundamentalFromSources(
   }
 
   const eps = company.eps ?? (company.per !== null && company.per !== 0 && marketPrice !== null ? marketPrice / company.per : null);
+  const sharesOutstanding = company.sharesOutstanding;
+  const refreshedMarketCap = marketCap ?? (marketPrice !== null && sharesOutstanding !== null ? marketPrice * sharesOutstanding : null);
   const { sector, industry } = canonicalFundamentalClassification(normalized, resolvedProfile, secProfile, quote);
   return {
     symbol: normalized,
@@ -2385,9 +2581,26 @@ export async function buildFinancialFundamentalFromSources(
     fiscalYear,
     eps,
     roePct: company.roe === null || company.roe === undefined ? null : company.roe * 100,
-    netIncome,
-    averageEquity,
-    marketCap,
+    roaPct: company.roa === null || company.roa === undefined ? null : company.roa * 100,
+    netMarginPct: company.netMargin === null || company.netMargin === undefined ? null : company.netMargin * 100,
+    operatingMarginPct: company.operatingMargin === null || company.operatingMargin === undefined ? null : company.operatingMargin * 100,
+    revenueGrowthPct: company.revenueGrowth === null || company.revenueGrowth === undefined ? null : company.revenueGrowth * 100,
+    operatingIncomeGrowthPct:
+      company.operatingIncomeGrowth === null || company.operatingIncomeGrowth === undefined ? null : company.operatingIncomeGrowth * 100,
+    earningsGrowthPct: company.earningsGrowth === null || company.earningsGrowth === undefined ? null : company.earningsGrowth * 100,
+    revenue: company.revenue,
+    operatingIncome: company.operatingIncome,
+    netIncome: company.netIncome ?? netIncome,
+    totalAssets: company.totalAssets,
+    averageAssets: company.averageAssets,
+    totalEquity: company.totalEquity,
+    averageEquity: company.averageEquity ?? averageEquity,
+    marketCap: refreshedMarketCap,
+    sharesOutstanding,
+    bookValuePerShare: company.bookValuePerShare,
+    ebitda: company.ebitda,
+    totalDebt: company.totalDebt,
+    cashAndShortInvestments: company.cashAndShortInvestments,
     priceAtRefresh: marketPrice,
     source,
     refreshedAt: new Date().toISOString()

@@ -288,6 +288,32 @@ function companyPerFromFundamental(fundamental: FinancialFundamentalSnapshot, pr
   return price / eps;
 }
 
+function companyPbrFromFundamental(fundamental: FinancialFundamentalSnapshot, priceValue: number | null | undefined) {
+  const price = positiveNumber(priceValue);
+  const bookValuePerShare = nonZeroNumber(fundamental.bookValuePerShare);
+  if (price === null || bookValuePerShare === null) {
+    return null;
+  }
+  return price / bookValuePerShare;
+}
+
+function companyEvEbitdaFromFundamental(fundamental: FinancialFundamentalSnapshot, priceValue: number | null | undefined) {
+  const price = positiveNumber(priceValue);
+  const ebitda = nonZeroNumber(fundamental.ebitda);
+  if (ebitda === null) {
+    return null;
+  }
+  const marketCap =
+    price !== null && positiveNumber(fundamental.sharesOutstanding) !== null
+      ? price * positiveNumber(fundamental.sharesOutstanding)!
+      : positiveNumber(fundamental.marketCap);
+  if (marketCap === null) {
+    return null;
+  }
+  const enterpriseValue = marketCap + (finiteNumber(fundamental.totalDebt) || 0) - (finiteNumber(fundamental.cashAndShortInvestments) || 0);
+  return enterpriseValue / ebitda;
+}
+
 function evaluationFromFundamental(
   fundamental: FinancialFundamentalSnapshot,
   quote: Quote | undefined,
@@ -307,7 +333,15 @@ function evaluationFromFundamental(
     changePct,
     companyEps: fundamental.eps,
     companyPer,
-    companyRoe: fundamental.roePct ?? finiteNumber(supplementalMetrics.companyRoe)
+    companyPbr: companyPbrFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyPbr),
+    companyRoe: fundamental.roePct ?? finiteNumber(supplementalMetrics.companyRoe),
+    companyRoa: fundamental.roaPct ?? finiteNumber(supplementalMetrics.companyRoa),
+    companyNetMargin: fundamental.netMarginPct ?? finiteNumber(supplementalMetrics.companyNetMargin),
+    companyOperatingMargin: fundamental.operatingMarginPct ?? finiteNumber(supplementalMetrics.companyOperatingMargin),
+    companyEvEbitda: companyEvEbitdaFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyEvEbitda),
+    revenueGrowthPct: fundamental.revenueGrowthPct ?? finiteNumber(supplementalMetrics.revenueGrowthPct),
+    operatingIncomeGrowthPct: fundamental.operatingIncomeGrowthPct ?? finiteNumber(supplementalMetrics.operatingIncomeGrowthPct),
+    earningsGrowthPct: fundamental.earningsGrowthPct ?? finiteNumber(supplementalMetrics.earningsGrowthPct)
   };
   return {
     symbol: fundamental.symbol,
