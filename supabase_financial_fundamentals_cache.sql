@@ -27,6 +27,9 @@ create table if not exists public.financial_fundamentals_cache (
   ebitda numeric,
   total_debt numeric,
   cash_and_short_investments numeric,
+  fundamental_type text,
+  eps_unavailable_reason text,
+  classification_source text,
   price_at_refresh numeric,
   source text not null default 'financial_sources',
   refreshed_at timestamptz not null default now(),
@@ -60,6 +63,9 @@ alter table public.financial_fundamentals_cache
   add column if not exists book_value_per_share numeric,
   add column if not exists ebitda numeric,
   add column if not exists total_debt numeric,
-  add column if not exists cash_and_short_investments numeric;
+  add column if not exists cash_and_short_investments numeric,
+  add column if not exists fundamental_type text,
+  add column if not exists eps_unavailable_reason text,
+  add column if not exists classification_source text;
 
 alter table public.financial_fundamentals_cache enable row level security;

@@ -368,6 +368,79 @@ function epsNumberOrNull(value: unknown) {
   return eps === 0 ? null : eps;
 }
 
+type EpsApplicabilityInput = {
+  symbol: string;
+  name?: unknown;
+  sector?: unknown;
+  industry?: unknown;
+  quoteType?: unknown;
+};
+
+function normalizedLowerText(...values: unknown[]) {
+  return values
+    .map((value) => String(rawValue(value) || ""))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+export function epsUnavailableReasonForSecurity(input: EpsApplicabilityInput) {
+  const symbol = normalizeSymbol(input.symbol);
+  const text = normalizedLowerText(input.name, input.sector, input.industry, input.quoteType);
+  const sector = normalizedLowerText(input.sector);
+  const industry = normalizedLowerText(input.industry);
+  const quoteType = normalizedLowerText(input.quoteType);
+
+  if (
+    quoteType === "etf" ||
+    quoteType === "mutualfund" ||
+    sector === "etf" ||
+    industry.includes("exchange traded fund") ||
+    /\b(etf|etn|exchange traded product|closed-end fund|mutual fund)\b/i.test(text)
+  ) {
+    return "exchange_traded_product";
+  }
+  if (/\b(warrant|warrants)\b/i.test(text) || /-(WS|WT|W)$/.test(symbol)) {
+    return "warrant";
+  }
+  if (/\b(right|rights)\b/i.test(text) || /-R$/.test(symbol)) {
+    return "right";
+  }
+  if (/\b(unit|units)\b/i.test(text) || /-U$/.test(symbol)) {
+    return "unit";
+  }
+  if (/\b(preferred|preference|depositary share|depositary shares)\b/i.test(text)) {
+    return "preferred_security";
+  }
+  if (/\b(notes due|senior notes|subordinated notes|debenture|bond)\b/i.test(text)) {
+    return "debt_security";
+  }
+  if (/\b(spac|blank check|acquisition corp\.?|acquisition corporation)\b/i.test(text)) {
+    return "spac_or_blank_check";
+  }
+  return null;
+}
+
+function nonOperatingClassification(reason: string, profile: { sector?: string; industry?: string }, quote: Quote | null | undefined) {
+  if (reason === "exchange_traded_product") {
+    return { sector: "ETF", industry: "Exchange Traded Fund" };
+  }
+  if (reason === "preferred_security") {
+    return { sector: "Financial Services", industry: "Preferred Security" };
+  }
+  if (reason === "debt_security") {
+    return { sector: "Financial Services", industry: "Debt Security" };
+  }
+  if (reason === "spac_or_blank_check") {
+    return { sector: "Financial Services", industry: "Special Purpose Acquisition Company" };
+  }
+  return {
+    sector: profile.sector || quote?.sector || "Financial Services",
+    industry: profile.industry || quote?.industry || "Special Purpose Security"
+  };
+}
+
 function quoteToMover(quote: Quote): MarketMoverRow {
   return {
     symbol: quote.symbol,
@@ -2534,6 +2607,53 @@ export async function buildFinancialFundamentalFromSources(
   const quotePrice = positiveNumberOrNull(quote?.price);
   const marketPrice = quotePrice ?? summaryPrice;
   const marketCap = positiveNumberOrNull(rawValue(priceModule.marketCap));
+  const epsUnavailableReason = !isKoreaSymbol(normalized)
+    ? epsUnavailableReasonForSecurity({
+        symbol: normalized,
+        name: resolvedProfile.name || quote?.name,
+        sector: resolvedProfile.sector || quote?.sector,
+        industry: resolvedProfile.industry || quote?.industry,
+        quoteType: priceModule.quoteType
+      })
+    : null;
+  if (epsUnavailableReason) {
+    const classification = nonOperatingClassification(epsUnavailableReason, resolvedProfile, quote);
+    return {
+      symbol: normalized,
+      market,
+      name: resolvedProfile.name || quote?.name || normalized,
+      sector: classification.sector,
+      industry: classification.industry,
+      currency: quote?.currency || String(priceModule.currency || "USD").toUpperCase(),
+      fiscalYear: null,
+      eps: null,
+      roePct: null,
+      roaPct: null,
+      netMarginPct: null,
+      operatingMarginPct: null,
+      revenueGrowthPct: null,
+      operatingIncomeGrowthPct: null,
+      earningsGrowthPct: null,
+      revenue: null,
+      operatingIncome: null,
+      netIncome: null,
+      totalAssets: null,
+      averageAssets: null,
+      totalEquity: null,
+      averageEquity: null,
+      marketCap,
+      sharesOutstanding: null,
+      bookValuePerShare: null,
+      ebitda: null,
+      totalDebt: null,
+      cashAndShortInvestments: null,
+      fundamentalType: "non_operating_security",
+      epsUnavailableReason,
+      priceAtRefresh: marketPrice,
+      source: "fundamental_not_applicable",
+      refreshedAt: new Date().toISOString()
+    };
+  }
   let source = "yahoo_summary";
   let fiscalYear: number | null = null;
   let company = ratioValues(summary);
@@ -2601,6 +2721,8 @@ export async function buildFinancialFundamentalFromSources(
     ebitda: company.ebitda,
     totalDebt: company.totalDebt,
     cashAndShortInvestments: company.cashAndShortInvestments,
+    fundamentalType: "operating_company",
+    epsUnavailableReason: null,
     priceAtRefresh: marketPrice,
     source,
     refreshedAt: new Date().toISOString()
@@ -2623,6 +2745,28 @@ export async function buildFinancialFundamentalProfileFromSources(
   };
   const priceModule = (summary.price || {}) as Record<string, unknown>;
   const resolvedProfile = fallbackProfile(normalized, profile, priceModule);
+  const epsUnavailableReason = !isKoreaSymbol(normalized)
+    ? epsUnavailableReasonForSecurity({
+        symbol: normalized,
+        name: resolvedProfile.name || quote?.name,
+        sector: resolvedProfile.sector || quote?.sector,
+        industry: resolvedProfile.industry || quote?.industry,
+        quoteType: priceModule.quoteType
+      })
+    : null;
+  if (epsUnavailableReason) {
+    const classification = nonOperatingClassification(epsUnavailableReason, resolvedProfile, quote);
+    return {
+      symbol: normalized,
+      market,
+      name: resolvedProfile.name || quote?.name || normalized,
+      sector: classification.sector,
+      industry: classification.industry,
+      currency: quote?.currency || String(priceModule.currency || "USD").toUpperCase(),
+      fundamentalType: "non_operating_security",
+      epsUnavailableReason
+    };
+  }
   const secProfile = isKoreaSymbol(normalized) ? null : await fetchSecSubmissionProfile(normalized);
   const { sector, industry } = canonicalFundamentalClassification(normalized, resolvedProfile, secProfile, quote);
   return {
@@ -2631,7 +2775,9 @@ export async function buildFinancialFundamentalProfileFromSources(
     name: resolvedProfile.name || quote?.name || normalized,
     sector,
     industry,
-    currency: quote?.currency || String(priceModule.currency || (isKoreaSymbol(normalized) ? "KRW" : "USD")).toUpperCase()
+    currency: quote?.currency || String(priceModule.currency || (isKoreaSymbol(normalized) ? "KRW" : "USD")).toUpperCase(),
+    fundamentalType: null,
+    epsUnavailableReason: null
   };
 }
 

@@ -1,4 +1,4 @@
-import { buildFinancialFundamentalFromSources, buildFinancialFundamentalProfileFromSources } from "./marketData";
+import { buildFinancialFundamentalFromSources, buildFinancialFundamentalProfileFromSources, epsUnavailableReasonForSecurity } from "./marketData";
 import { getCachedMarketQuotes } from "./prices";
 import { normalizeSymbol } from "./symbols";
 import { getStrategyUniverse } from "./strategyMetricCache";
@@ -93,6 +93,20 @@ function isMissingClassification(snapshot: FinancialFundamentalSnapshot | undefi
   return !sector || !industry || sector === "Unclassified" || industry === "Unclassified";
 }
 
+function epsUnavailableReason(snapshot: FinancialFundamentalSnapshot | undefined, symbol: string) {
+  return (
+    snapshot?.epsUnavailableReason ||
+    (snapshot?.source === "fundamental_not_applicable" ? "not_applicable" : "") ||
+    epsUnavailableReasonForSecurity({
+      symbol,
+      name: snapshot?.name,
+      sector: snapshot?.sector,
+      industry: snapshot?.industry
+    }) ||
+    ""
+  );
+}
+
 function isFresh(refreshedAt: string | undefined) {
   const refreshed = refreshedAt ? Date.parse(refreshedAt) : 0;
   return Number.isFinite(refreshed) && Date.now() - refreshed <= FINANCIAL_FUNDAMENTALS_CACHE_MAX_AGE_MS;
@@ -153,6 +167,9 @@ function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapsh
     ebitda: numberOrNull(row.ebitda),
     totalDebt: numberOrNull(row.total_debt),
     cashAndShortInvestments: numberOrNull(row.cash_and_short_investments),
+    fundamentalType: row.fundamental_type === null || row.fundamental_type === undefined ? null : String(row.fundamental_type),
+    epsUnavailableReason:
+      row.eps_unavailable_reason === null || row.eps_unavailable_reason === undefined ? null : String(row.eps_unavailable_reason),
     priceAtRefresh: numberOrNull(row.price_at_refresh),
     source: String(row.source || "financial_fundamentals_cache"),
     refreshedAt: String(row.refreshed_at || "")
@@ -189,6 +206,8 @@ function snapshotToRow(snapshot: FinancialFundamentalSnapshot) {
     ebitda: snapshot.ebitda,
     total_debt: snapshot.totalDebt,
     cash_and_short_investments: snapshot.cashAndShortInvestments,
+    fundamental_type: snapshot.fundamentalType,
+    eps_unavailable_reason: snapshot.epsUnavailableReason,
     price_at_refresh: snapshot.priceAtRefresh,
     source: snapshot.source,
     refreshed_at: snapshot.refreshedAt,
@@ -306,13 +325,15 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
       symbols.map((symbol) => {
         const snapshot = cache.get(`${market}:${symbol}`);
         const officialSource = snapshot?.source === "sec_company_facts" || snapshot?.source === "opendart_monthly_cache";
-        const missingEps = snapshot?.eps === null || snapshot?.eps === 0;
+        const epsNotApplicable = Boolean(epsUnavailableReason(snapshot, symbol));
+        const missingEps = (snapshot?.eps === null || snapshot?.eps === 0) && !epsNotApplicable;
         const missingClassification = isMissingClassification(snapshot);
         return {
           market,
           symbol,
           snapshot,
           officialSource,
+          epsNotApplicable,
           missingEps,
           missingClassification,
           refreshedAtMs: snapshot?.refreshedAt ? Date.parse(snapshot.refreshedAt) : 0
@@ -374,7 +395,9 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
                   name: profile.name || candidate.snapshot.name,
                   sector: profile.sector,
                   industry: profile.industry,
-                  currency: profile.currency || candidate.snapshot.currency
+                  currency: profile.currency || candidate.snapshot.currency,
+                  fundamentalType: profile.fundamentalType || candidate.snapshot.fundamentalType,
+                  epsUnavailableReason: profile.epsUnavailableReason || candidate.snapshot.epsUnavailableReason
                 };
               })
             : buildFinancialFundamentalFromSources(candidate.symbol, candidate.market, quoteCache.get(candidate.symbol) || null),

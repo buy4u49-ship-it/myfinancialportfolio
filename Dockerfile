@@ -10,5 +10,6 @@ COPY requirements-worker.txt .
 RUN python -m pip install --upgrade pip && python -m pip install -r requirements-worker.txt
 
 COPY market_price_worker.py .
+COPY fundamental_warm_worker.py .
 
 CMD ["python", "market_price_worker.py"]

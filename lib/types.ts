@@ -464,6 +464,8 @@ export type FinancialFundamentalSnapshot = {
   ebitda?: number | null;
   totalDebt?: number | null;
   cashAndShortInvestments?: number | null;
+  fundamentalType?: string | null;
+  epsUnavailableReason?: string | null;
   priceAtRefresh: number | null;
   source: string;
   refreshedAt: string;
