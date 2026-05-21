@@ -1,12 +1,12 @@
 {
   "crons": [
     {
-      "path": "/api/strategy-metrics/refresh",
-      "schedule": "*/15 * * * *"
+      "path": "/api/strategy-metrics/refresh/metrics",
+      "schedule": "* * * * *"
     },
     {
-      "path": "/api/strategy-watch",
-      "schedule": "0 * * * *"
+      "path": "/api/strategy-metrics/refresh/fundamentals",
+      "schedule": "0 3 * * *"
     }
   ]
 }

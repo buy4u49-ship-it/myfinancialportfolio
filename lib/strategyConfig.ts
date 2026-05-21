@@ -118,6 +118,8 @@ export const STRATEGY_METRICS: StrategyMetricOption[] = [
   { key: "fullPeriodBeta", label: "Company Full Period Beta", category: "volatility", kind: "beta" },
   { key: "industryFullPeriodBeta", label: "Industry Full Period Beta", category: "volatility", kind: "beta" },
   { key: "standardDeviationPct", label: "Standard Deviation", category: "volatility", kind: "percent" },
+  { key: "volume1m", label: "1-Min Volume", category: "volume", kind: "ratio" },
+  { key: "tradingValue1m", label: "1-Min Trading Value", category: "volume", kind: "price" },
   {
     key: "volumeSpike",
     label: "Volume Spike",

@@ -311,6 +311,8 @@ export type StrategyConditionCategory = "price" | "volatility" | "volume" | "fun
 export type StrategyMetricKey =
   | "price"
   | "changePct"
+  | "volume1m"
+  | "tradingValue1m"
   | "oneMonthReturnPct"
   | "oneMonthVolatilityPct"
   | "companyEps"

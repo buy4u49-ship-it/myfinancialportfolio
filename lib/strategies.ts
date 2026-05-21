@@ -5,8 +5,16 @@ import {
   STRATEGY_QUOTE_CACHE_MAX_AGE_MS
 } from "./financialFundamentalsCache";
 import { getCachedMarketQuotes } from "./prices";
-import { defaultStrategyCondition, strategyMetricLabel, strategyMetricOption, STRATEGY_METRICS, STRATEGY_OPERATORS } from "./strategyConfig";
+import {
+  defaultStrategyCondition,
+  strategyMetricDefaultParams,
+  strategyMetricLabel,
+  strategyMetricOption,
+  STRATEGY_METRICS,
+  STRATEGY_OPERATORS
+} from "./strategyConfig";
 import { getStrategyUniverse, readStrategyMetricCache, strategyMetricSnapshotFresh } from "./strategyMetricCache";
+import { supabaseAdmin } from "./supabaseAdmin";
 import type {
   FinancialFundamentalSnapshot,
   Quote,
@@ -25,6 +33,7 @@ const VALID_MARKETS = new Set<StrategyMarket>(["us", "korea", "crypto"]);
 const VALID_METRICS = new Set<StrategyMetricKey>(STRATEGY_METRICS.map((item) => item.key));
 const VALID_OPERATORS = new Set<StrategyOperator>(STRATEGY_OPERATORS);
 const VALID_CATEGORIES = new Set<StrategyConditionCategory>(["price", "volatility", "volume", "fundamental"]);
+const MARKET_METRIC_SNAPSHOT_TABLE = "market_metric_snapshot";
 
 function utcNowIso() {
   return new Date().toISOString();
@@ -133,6 +142,31 @@ export function normalizeStrategies(record: { strategies?: StrategyDefinition[] 
 
 function rightValue(right: StrategyRightOperand, metrics: Partial<Record<StrategyMetricKey, number | null>>) {
   return right.type === "number" ? right.value : metrics[right.metric] ?? null;
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message || "");
+  }
+  return String(error || "");
+}
+
+function isMissingMarketMetricSnapshotError(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code || "") : "";
+  const message = errorMessage(error).toLowerCase();
+  return (
+    code === "42P01" ||
+    code === "42883" ||
+    code === "PGRST202" ||
+    code === "PGRST205" ||
+    message.includes("does not exist") ||
+    message.includes("could not find the function") ||
+    message.includes("could not find the table") ||
+    message.includes("schema cache")
+  );
 }
 
 function compare(left: number | null | undefined, operator: StrategyOperator, right: number | null | undefined) {
@@ -885,8 +919,198 @@ function evaluateSnapshot(
   };
 }
 
+type MarketMetricScreenRow = {
+  symbol?: unknown;
+  market?: unknown;
+  name?: unknown;
+  sector?: unknown;
+  industry?: unknown;
+  price?: unknown;
+  change_pct?: unknown;
+  volume_1m?: unknown;
+  trading_value_1m?: unknown;
+  metrics?: unknown;
+  refreshed_at?: unknown;
+  filtered_count?: unknown;
+};
+
+function conditionUsesDefaultParams(metric: StrategyMetricKey, params?: StrategyCondition["params"]) {
+  const option = strategyMetricOption(metric);
+  if (!option?.params?.length) {
+    return true;
+  }
+  const defaults = strategyMetricDefaultParams(metric);
+  return option.params.every((param) => {
+    const raw = params?.[param.key];
+    if (raw === undefined || raw === null || raw === "") {
+      return true;
+    }
+    const value = Number(raw);
+    return Number.isFinite(value) && value === Number(defaults[param.key]);
+  });
+}
+
+function strategyDbFilterSupported(strategy: StrategyDefinition) {
+  return strategy.conditions.every((condition) => {
+    if (!conditionUsesDefaultParams(condition.leftMetric, condition.params)) {
+      return false;
+    }
+    return condition.right.type === "number" || conditionUsesDefaultParams(condition.right.metric, condition.params);
+  });
+}
+
+function numericJsonMetrics(input: unknown) {
+  const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return Object.entries(record).reduce<Partial<Record<StrategyMetricKey, number | null>>>((next, [key, value]) => {
+    if (!isStrategyMetric(key)) {
+      return next;
+    }
+    if (value === null) {
+      next[key] = null;
+      return next;
+    }
+    const num = Number(value);
+    if (Number.isFinite(num)) {
+      next[key] = num;
+    }
+    return next;
+  }, {});
+}
+
+function rowNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function rowToEvaluationSnapshot(row: MarketMetricScreenRow): EvaluationSnapshot | null {
+  const symbol = String(row.symbol || "").toUpperCase();
+  const market = String(row.market || "");
+  if (!symbol || !isStrategyMarket(market)) {
+    return null;
+  }
+  const price = rowNumber(row.price);
+  const changePct = rowNumber(row.change_pct);
+  const volume1m = rowNumber(row.volume_1m);
+  const tradingValue1m = rowNumber(row.trading_value_1m);
+  const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
+    ...numericJsonMetrics(row.metrics),
+    price,
+    changePct,
+    volume1m,
+    tradingValue1m
+  };
+  return {
+    symbol,
+    market,
+    name: String(row.name || symbol),
+    sector: String(row.sector || "Unclassified"),
+    industry: String(row.industry || row.sector || "Unclassified"),
+    price,
+    changePct,
+    metrics,
+    fresh: true,
+    refreshedAt: String(row.refreshed_at || "")
+  };
+}
+
+async function countMarketMetricSnapshotRows(strategy: StrategyDefinition, priceOnly = false) {
+  let query = supabaseAdmin()
+    .from(MARKET_METRIC_SNAPSHOT_TABLE)
+    .select("symbol", { count: "exact", head: true })
+    .in("market", strategy.markets);
+  if (strategy.sectors?.length) {
+    query = query.in("sector", strategy.sectors);
+  }
+  if (priceOnly) {
+    query = query.not("price", "is", null);
+  }
+  const { count, error } = await query;
+  if (error) {
+    if (isMissingMarketMetricSnapshotError(error)) {
+      return null;
+    }
+    throw new Error(errorMessage(error) || "Market metric snapshot count failed.");
+  }
+  return count ?? 0;
+}
+
+async function evaluateStrategyFromMarketMetricSnapshot(
+  strategy: StrategyDefinition,
+  options: EvaluationOptions
+): Promise<StrategyEvaluation | null> {
+  if (!strategyDbFilterSupported(strategy)) {
+    return null;
+  }
+  const batchOffset = Math.max(0, Math.round(options.offset || 0));
+  const batchLimit = Math.max(1, Math.min(1_000, Math.round(options.limit || 1_000)));
+  const { data, error } = await supabaseAdmin().rpc("screen_market_metric_snapshot", {
+    p_markets: strategy.markets,
+    p_sectors: strategy.sectors || [],
+    p_conditions: strategy.conditions,
+    p_offset: batchOffset,
+    p_limit: batchLimit
+  });
+  if (error) {
+    if (isMissingMarketMetricSnapshotError(error)) {
+      return null;
+    }
+    throw new Error(errorMessage(error) || "Market metric DB screening failed.");
+  }
+
+  const rows = ((data || []) as MarketMetricScreenRow[]).filter(Boolean);
+  const snapshots = rows.map(rowToEvaluationSnapshot).filter((snapshot): snapshot is EvaluationSnapshot => snapshot !== null);
+  const matches = snapshots.map((snapshot) => ({
+    symbol: snapshot.symbol,
+    name: snapshot.name || snapshot.symbol,
+    market: snapshot.market,
+    price: snapshot.price,
+    changePct: snapshot.changePct,
+    metrics: snapshot.metrics,
+    reasons: strategy.conditions.map((condition) => conditionReason(condition, snapshot.metrics, snapshot))
+  }));
+  const filteredCount = rowNumber(rows[0]?.filtered_count) ?? matches.length;
+  const [cachedCount, priceCachedCount] = await Promise.all([
+    countMarketMetricSnapshotRows(strategy),
+    countMarketMetricSnapshotRows(strategy, true)
+  ]);
+  if (cachedCount === null || priceCachedCount === null) {
+    return null;
+  }
+  const evaluatedAt = utcNowIso();
+  const refreshedTimes = snapshots.map((snapshot) => Date.parse(snapshot.refreshedAt)).filter((value) => Number.isFinite(value));
+  const nextOffset = batchOffset + matches.length < filteredCount ? batchOffset + matches.length : null;
+  return {
+    strategy: {
+      ...strategy,
+      last_evaluated_at: evaluatedAt,
+      last_match_count: filteredCount
+    },
+    matches: matches.sort((a, b) => a.market.localeCompare(b.market) || a.symbol.localeCompare(b.symbol)),
+    evaluatedAt,
+    errors: [],
+    universeCount: cachedCount,
+    cachedCount,
+    staleCount: 0,
+    priceCachedCount,
+    priceMissingCount: Math.max(0, cachedCount - priceCachedCount),
+    cacheRefreshedAt: refreshedTimes.length ? new Date(Math.max(...refreshedTimes)).toISOString() : undefined,
+    batchOffset,
+    batchLimit,
+    batchEvaluatedCount: matches.length,
+    batchNextOffset: nextOffset,
+    isPartial: nextOffset !== null || batchOffset > 0
+  };
+}
+
 export async function evaluateStrategy(input: unknown, options: EvaluationOptions = {}): Promise<StrategyEvaluation> {
   const strategy = normalizeStrategy(input);
+  const dbEvaluation = await evaluateStrategyFromMarketMetricSnapshot(strategy, options);
+  if (dbEvaluation) {
+    return dbEvaluation;
+  }
   const requiredAggregateMetrics = strategyAggregateMetrics(strategy);
   const universeByMarket = await Promise.all(strategy.markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
   const universeEntries = universeByMarket.flatMap(({ market, symbols }) => symbols.map((symbol) => ({ market, symbol })));
