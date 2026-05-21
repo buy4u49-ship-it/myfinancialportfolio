@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminRecord } from "@/lib/admin";
 import { refreshFinancialFundamentalsCache } from "@/lib/financialFundamentalsCache";
-import { refreshStrategyMetricCache } from "@/lib/strategyMetricCache";
+import { refreshMarketMetricSnapshot } from "@/lib/marketMetricSnapshot";
 import type { StrategyMarket } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -75,7 +75,7 @@ function emptyResult(markets: StrategyMarket[] | undefined) {
   };
 }
 
-async function refresh(request: NextRequest, body: Record<string, unknown> = {}) {
+export async function refreshStrategyMetricsRequest(request: NextRequest, body: Record<string, unknown> = {}) {
   try {
     await requireRefreshAccess(request);
     const params = request.nextUrl.searchParams;
@@ -84,9 +84,9 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
     const routeStartedAt = Date.now();
     const routeBudgetMs = 45_000;
     const remainingBudgetMs = () => Math.max(5_000, routeBudgetMs - (Date.now() - routeStartedAt));
-    const requestedLimit = Math.max(1, Math.min(50, Math.round(Number(body.limit ?? params.get("limit") ?? 20))));
+    const requestedLimit = Math.max(1, Math.min(5_000, Math.round(Number(body.limit ?? params.get("limit") ?? 20))));
     const force = body.force === true || params.get("force") === "true";
-    const fundamentalLimit = requestedLimit;
+    const fundamentalLimit = Math.min(50, requestedLimit);
     const metricLimit = requestedLimit;
     const fundamentalResult =
       scope === "metrics"
@@ -100,7 +100,7 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
     const metricResult =
       scope === "fundamentals"
         ? emptyResult(markets)
-        : await refreshStrategyMetricCache({
+        : await refreshMarketMetricSnapshot({
             markets,
             limit: metricLimit,
             force,
@@ -124,10 +124,10 @@ async function refresh(request: NextRequest, body: Record<string, unknown> = {})
 }
 
 export async function GET(request: NextRequest) {
-  return refresh(request);
+  return refreshStrategyMetricsRequest(request);
 }
 
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-  return refresh(request, body);
+  return refreshStrategyMetricsRequest(request, body);
 }
