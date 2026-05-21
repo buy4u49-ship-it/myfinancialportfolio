@@ -169,6 +169,12 @@ function isMissingMarketMetricSnapshotError(error: unknown) {
   );
 }
 
+function marketMetricSnapshotSetupError() {
+  return new Error(
+    "Market metric snapshot DB screening is not ready. Run supabase_market_metric_snapshot.sql in Supabase, then run Warm caches before Screening."
+  );
+}
+
 function compare(left: number | null | undefined, operator: StrategyOperator, right: number | null | undefined) {
   if (left === null || left === undefined || right === null || right === undefined || !Number.isFinite(left) || !Number.isFinite(right)) {
     return false;
@@ -1055,7 +1061,7 @@ async function evaluateStrategyFromMarketMetricSnapshot(
   });
   if (error) {
     if (isMissingMarketMetricSnapshotError(error)) {
-      return null;
+      throw marketMetricSnapshotSetupError();
     }
     throw new Error(errorMessage(error) || "Market metric DB screening failed.");
   }
@@ -1077,7 +1083,7 @@ async function evaluateStrategyFromMarketMetricSnapshot(
     countMarketMetricSnapshotRows(strategy, true)
   ]);
   if (cachedCount === null || priceCachedCount === null) {
-    return null;
+    throw marketMetricSnapshotSetupError();
   }
   const evaluatedAt = utcNowIso();
   const refreshedTimes = snapshots.map((snapshot) => Date.parse(snapshot.refreshedAt)).filter((value) => Number.isFinite(value));
