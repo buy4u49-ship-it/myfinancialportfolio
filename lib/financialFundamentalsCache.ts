@@ -117,8 +117,34 @@ function canRepairClassificationOnly(item: {
   officialSource: boolean;
   missingEps: boolean;
   missingClassification: boolean;
+  missingDerivedMetrics?: boolean;
 }) {
-  return Boolean(item.snapshot && item.missingClassification && isFresh(item.snapshot.refreshedAt) && (!item.missingEps || item.officialSource));
+  return Boolean(
+    item.snapshot &&
+      item.missingClassification &&
+      !item.missingDerivedMetrics &&
+      isFresh(item.snapshot.refreshedAt) &&
+      (!item.missingEps || item.officialSource)
+  );
+}
+
+function missingStatementDerivedMetrics(snapshot: FinancialFundamentalSnapshot | undefined) {
+  if (!snapshot || snapshot.source === "fundamental_not_applicable" || snapshot.fundamentalType === "non_operating_security") {
+    return false;
+  }
+  const statementMetrics = [
+    snapshot.roaPct,
+    snapshot.netMarginPct,
+    snapshot.operatingMarginPct,
+    snapshot.revenueGrowthPct,
+    snapshot.operatingIncomeGrowthPct,
+    snapshot.earningsGrowthPct,
+    snapshot.revenue,
+    snapshot.operatingIncome,
+    snapshot.totalAssets,
+    snapshot.totalEquity
+  ];
+  return statementMetrics.every((value) => value === null || value === undefined) || snapshot.revenueGrowthPct === null || snapshot.revenueGrowthPct === undefined;
 }
 
 function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapshot | null {
@@ -328,6 +354,7 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
         const epsNotApplicable = Boolean(epsUnavailableReason(snapshot, symbol));
         const missingEps = (snapshot?.eps === null || snapshot?.eps === 0) && !epsNotApplicable;
         const missingClassification = isMissingClassification(snapshot);
+        const missingDerivedMetrics = missingStatementDerivedMetrics(snapshot);
         return {
           market,
           symbol,
@@ -336,6 +363,7 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
           epsNotApplicable,
           missingEps,
           missingClassification,
+          missingDerivedMetrics,
           refreshedAtMs: snapshot?.refreshedAt ? Date.parse(snapshot.refreshedAt) : 0
         };
       })
@@ -345,11 +373,18 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
         options.force ||
         !item.snapshot ||
         item.missingClassification ||
+        item.missingDerivedMetrics ||
         !isFresh(item.snapshot.refreshedAt) ||
         (item.missingEps && !item.officialSource)
     )
     .sort((a, b) => {
-      const priority = (item: { snapshot?: FinancialFundamentalSnapshot; officialSource: boolean; missingEps: boolean; missingClassification: boolean }) => {
+      const priority = (item: {
+        snapshot?: FinancialFundamentalSnapshot;
+        officialSource: boolean;
+        missingEps: boolean;
+        missingClassification: boolean;
+        missingDerivedMetrics: boolean;
+      }) => {
         if (!item.snapshot) {
           return 0;
         }
@@ -362,10 +397,13 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
         if (item.missingEps) {
           return 3;
         }
-        if (!item.officialSource) {
+        if (item.missingDerivedMetrics) {
           return 4;
         }
-        return 5;
+        if (!item.officialSource) {
+          return 5;
+        }
+        return 6;
       };
       return priority(a) - priority(b) || a.refreshedAtMs - b.refreshedAtMs;
     })
