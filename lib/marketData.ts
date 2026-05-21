@@ -1285,7 +1285,20 @@ const SEC_FACT_FIELDS: Record<string, string[]> = {
   capital_surplus: ["AdditionalPaidInCapital"],
   retained_earnings: ["RetainedEarningsAccumulatedDeficit"],
   treasury_stock: ["TreasuryStockValue"],
-  revenue: ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
+  revenue: [
+    "Revenues",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "SalesRevenueNet",
+    "SalesRevenueGoodsNet",
+    "SalesRevenueServicesNet",
+    "RevenueMineralSales",
+    "RealEstateRevenueNet",
+    "InterestAndDividendIncomeOperating",
+    "InterestIncomeExpenseOperatingNet",
+    "InvestmentIncomeInterest",
+    "PremiumsEarnedNet"
+  ],
   cost_of_revenue: ["CostOfRevenue", "CostOfGoodsAndServicesSold"],
   gross_profit: ["GrossProfit"],
   sga: ["SellingGeneralAndAdministrativeExpense"],
@@ -1388,12 +1401,16 @@ function isAnnualSecForm(form: string | undefined) {
   return Boolean(form && (form.startsWith("10-K") || form.startsWith("20-F") || form.startsWith("40-F")));
 }
 
+function isAnnualSecFactRow(row: { fp?: string; form?: string }) {
+  return isAnnualSecForm(row.form) && (!row.fp || row.fp === "FY");
+}
+
 function secFactRowsByUnits(facts: SecCompanyFacts | null, concept: string, units: string[]) {
   const unitMap = facts?.facts?.["us-gaap"]?.[concept]?.units || {};
   const acceptedUnits = new Set(units.map(normalizedSecUnit));
   const rows = Object.entries(unitMap).flatMap(([unit, unitRows]) => (acceptedUnits.has(normalizedSecUnit(unit)) ? unitRows : []));
   return rows
-    .filter((row) => isAnnualSecForm(row.form) && row.fp === "FY" && Number.isFinite(row.val) && row.fy)
+    .filter((row) => isAnnualSecFactRow(row) && Number.isFinite(row.val) && row.fy)
     .sort((a, b) => String(b.filed || b.end || "").localeCompare(String(a.filed || a.end || "")));
 }
 
@@ -2246,6 +2263,55 @@ function formatRatio(value: number | null, type: "number" | "percent") {
   return value.toFixed(2);
 }
 
+function statementRows(summary: Record<string, unknown>, moduleKey: string, rowKey: string) {
+  const module = summary[moduleKey] && typeof summary[moduleKey] === "object" ? (summary[moduleKey] as Record<string, unknown>) : {};
+  const rows = module[rowKey];
+  return Array.isArray(rows)
+    ? rows
+        .filter((row): row is Record<string, unknown> => Boolean(row && typeof row === "object"))
+        .sort((a, b) => Number(rawValue(b.endDate)) - Number(rawValue(a.endDate)))
+    : [];
+}
+
+function statementNumber(row: Record<string, unknown> | undefined, fields: string[]) {
+  if (!row) {
+    return null;
+  }
+  for (const field of fields) {
+    const value = numberOrNull(rawValue(row[field]));
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function latestStatementNumber(rows: Record<string, unknown>[], fields: string[]) {
+  for (const row of rows) {
+    const value = statementNumber(row, fields);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function statementGrowth(rows: Record<string, unknown>[], fields: string[]) {
+  const values = rows.map((row) => statementNumber(row, fields)).filter((value): value is number => value !== null);
+  if (values.length < 2) {
+    return null;
+  }
+  return growthRate(values[0], values[1]);
+}
+
+function annualOrQuarterlyStatementGrowth(
+  annualRows: Record<string, unknown>[],
+  quarterlyRows: Record<string, unknown>[],
+  fields: string[]
+) {
+  return statementGrowth(annualRows, fields) ?? statementGrowth(quarterlyRows, fields);
+}
+
 function emptyRatioValues(): RatioValues {
   return {
     eps: null,
@@ -2276,11 +2342,20 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
   const price = (summary.price || {}) as Record<string, unknown>;
   const financialData = (summary.financialData || {}) as Record<string, unknown>;
   const stats = (summary.defaultKeyStatistics || {}) as Record<string, unknown>;
+  const annualIncomeRows = statementRows(summary, "incomeStatementHistory", "incomeStatementHistory");
+  const quarterlyIncomeRows = statementRows(summary, "incomeStatementHistoryQuarterly", "incomeStatementHistory");
+  const revenueFields = ["totalRevenue", "revenue"];
+  const operatingIncomeFields = ["operatingIncome", "ebit"];
+  const netIncomeFields = ["netIncome", "netIncomeApplicableToCommonShares"];
   const eps = epsNumberOrNull(rawValue(stats.trailingEps));
   const marketPrice = positiveNumberOrNull(rawValue(price.regularMarketPrice));
   const per = numberOrNull(rawValue(stats.trailingPE)) ?? (eps !== null && eps !== 0 && marketPrice ? marketPrice / eps : null);
   const bookValuePerShare = numberOrNull(rawValue(stats.bookValue));
   const sharesOutstanding = positiveNumberOrNull(rawValue(stats.sharesOutstanding));
+  const statementRevenue = latestStatementNumber(annualIncomeRows, revenueFields) ?? latestStatementNumber(quarterlyIncomeRows, revenueFields);
+  const statementOperatingIncome =
+    latestStatementNumber(annualIncomeRows, operatingIncomeFields) ?? latestStatementNumber(quarterlyIncomeRows, operatingIncomeFields);
+  const statementNetIncome = latestStatementNumber(annualIncomeRows, netIncomeFields) ?? latestStatementNumber(quarterlyIncomeRows, netIncomeFields);
   return {
     eps,
     per,
@@ -2288,17 +2363,17 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
     operatingMargin: numberOrNull(rawValue(financialData.operatingMargins)),
     roe: numberOrNull(rawValue(financialData.returnOnEquity)),
     roa: numberOrNull(rawValue(financialData.returnOnAssets)),
-    revenueGrowth: numberOrNull(rawValue(financialData.revenueGrowth)),
-    operatingIncomeGrowth: null,
-    earningsGrowth: numberOrNull(rawValue(financialData.earningsGrowth)),
+    revenueGrowth: numberOrNull(rawValue(financialData.revenueGrowth)) ?? annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, revenueFields),
+    operatingIncomeGrowth: annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, operatingIncomeFields),
+    earningsGrowth: numberOrNull(rawValue(financialData.earningsGrowth)) ?? annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, netIncomeFields),
     bookValuePerShare,
     sharesOutstanding,
     ebitda: numberOrNull(rawValue(financialData.ebitda)),
     totalDebt: numberOrNull(rawValue(financialData.totalDebt)),
     cashAndShortInvestments: numberOrNull(rawValue(financialData.totalCash)),
-    revenue: numberOrNull(rawValue(financialData.totalRevenue)),
-    operatingIncome: null,
-    netIncome: null,
+    revenue: numberOrNull(rawValue(financialData.totalRevenue)) ?? statementRevenue,
+    operatingIncome: statementOperatingIncome,
+    netIncome: statementNetIncome,
     totalAssets: null,
     averageAssets: null,
     totalEquity: bookValuePerShare !== null && sharesOutstanding !== null ? bookValuePerShare * sharesOutstanding : null,
