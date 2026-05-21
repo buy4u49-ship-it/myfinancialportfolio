@@ -3983,7 +3983,7 @@ function StrategiesPanel({
 
     const scopePlans: Array<{ scope: RefreshScope; batchSize: number; batchCount: number }> = [
       { scope: "fundamentals", batchSize: 30, batchCount: 12 },
-      { scope: "metrics", batchSize: 5000, batchCount: 1 }
+      { scope: "metrics", batchSize: 300, batchCount: 16 }
     ];
     setCacheBusy(true);
     setStrategyStatus("");
@@ -4021,7 +4021,8 @@ function StrategiesPanel({
 
           const progress = scope === "fundamentals" ? data.refreshedCount : Number(data.metricRefreshedCount || 0);
           const cachedCount = scope === "fundamentals" ? data.cachedCount : Number(data.metricCachedCount || 0);
-          const fullyCached = data.universeCount > 0 && cachedCount >= data.universeCount;
+          const staleCount = scope === "fundamentals" ? data.staleCount : Number(data.metricStaleCount || 0);
+          const fullyCached = data.universeCount > 0 && cachedCount >= data.universeCount && staleCount === 0;
           if (fullyCached || progress === 0) {
             break;
           }

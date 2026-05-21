@@ -56,6 +56,7 @@ type MarketMetricSnapshot = {
   technicalRefreshedAt: string | null;
   fundamentalRefreshedAt: string | null;
   refreshedAt: string;
+  updatedAt: string;
 };
 
 type QuoteSnapshot = {
@@ -614,7 +615,8 @@ function snapshotFromInputs(
     volumeRefreshedAt: quote?.updatedAt || null,
     technicalRefreshedAt: quote?.updatedAt || supplemental?.refreshedAt || null,
     fundamentalRefreshedAt: fundamental?.refreshedAt || null,
-    refreshedAt: quote?.updatedAt || supplemental?.refreshedAt || fundamental?.refreshedAt || now
+    refreshedAt: quote?.updatedAt || supplemental?.refreshedAt || fundamental?.refreshedAt || now,
+    updatedAt: now
   };
 }
 
@@ -683,7 +685,105 @@ function cleanMetrics(metrics: Partial<Record<StrategyMetricKey, number | null>>
   );
 }
 
+function numericMetrics(input: unknown) {
+  const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  return Object.entries(record).reduce<Partial<Record<StrategyMetricKey, number | null>>>((next, [key, value]) => {
+    if (value === null) {
+      next[key as StrategyMetricKey] = null;
+      return next;
+    }
+    const num = finiteNumber(value);
+    if (num !== null) {
+      next[key as StrategyMetricKey] = num;
+    }
+    return next;
+  }, {});
+}
+
+function rowToMarketMetricSnapshot(row: Record<string, unknown>): MarketMetricSnapshot | null {
+  const symbol = normalizeSymbol(String(row.symbol || ""));
+  const market = String(row.market || "") as StrategyMarket;
+  if (!symbol || (market !== "us" && market !== "korea" && market !== "crypto")) {
+    return null;
+  }
+  const price = finiteNumber(row.price);
+  const changePct = finiteNumber(row.change_pct);
+  const volume1m = finiteNumber(row.volume_1m);
+  const tradingValue1m = finiteNumber(row.trading_value_1m);
+  return {
+    symbol,
+    market,
+    name: String(row.name || symbol),
+    sector: String(row.sector || "Unclassified"),
+    industry: String(row.industry || row.sector || "Unclassified"),
+    price,
+    changePct,
+    volume1m,
+    tradingValue1m,
+    metrics: {
+      ...numericMetrics(row.metrics),
+      price,
+      changePct,
+      volume1m,
+      tradingValue1m
+    },
+    metricTimeframe: "1m",
+    priceRefreshedAt: row.price_refreshed_at ? String(row.price_refreshed_at) : null,
+    volumeRefreshedAt: row.volume_refreshed_at ? String(row.volume_refreshed_at) : null,
+    technicalRefreshedAt: row.technical_refreshed_at ? String(row.technical_refreshed_at) : null,
+    fundamentalRefreshedAt: row.fundamental_refreshed_at ? String(row.fundamental_refreshed_at) : null,
+    refreshedAt: String(row.refreshed_at || row.updated_at || ""),
+    updatedAt: String(row.updated_at || row.refreshed_at || "")
+  };
+}
+
+async function readExistingMarketMetricSnapshots(markets: StrategyMarket[]) {
+  const map = new Map<string, MarketMetricSnapshot>();
+  for (let from = 0; ; from += 1000) {
+    let query = supabaseAdmin()
+      .from(MARKET_METRIC_SNAPSHOT_TABLE)
+      .select(
+        "symbol,market,name,sector,industry,price,change_pct,volume_1m,trading_value_1m,metrics,price_refreshed_at,volume_refreshed_at,technical_refreshed_at,fundamental_refreshed_at,refreshed_at,updated_at"
+      )
+      .range(from, from + 999);
+    if (markets.length) {
+      query = query.in("market", markets);
+    }
+    const { data, error } = await query;
+    if (error) {
+      return map;
+    }
+    if (!data?.length) {
+      break;
+    }
+    data.forEach((row) => {
+      const snapshot = rowToMarketMetricSnapshot(row as Record<string, unknown>);
+      if (snapshot) {
+        map.set(`${snapshot.market}:${snapshot.symbol}`, snapshot);
+      }
+    });
+    if (data.length < 1000) {
+      break;
+    }
+  }
+  return map;
+}
+
+function snapshotUpdatedAtMs(snapshot: MarketMetricSnapshot | undefined) {
+  const updated = snapshot?.updatedAt ? Date.parse(snapshot.updatedAt) : 0;
+  return Number.isFinite(updated) ? updated : 0;
+}
+
+function shouldRefreshSnapshot(snapshot: MarketMetricSnapshot | undefined, force?: boolean) {
+  if (force || !snapshot) {
+    return true;
+  }
+  const updated = snapshotUpdatedAtMs(snapshot);
+  return !updated || Date.now() - updated > MARKET_QUOTE_MAX_AGE_MS;
+}
+
 function snapshotRow(snapshot: MarketMetricSnapshot) {
+  const updatedAt = new Date().toISOString();
   return {
     symbol: snapshot.symbol,
     market: snapshot.market,
@@ -700,9 +800,9 @@ function snapshotRow(snapshot: MarketMetricSnapshot) {
     volume_refreshed_at: snapshot.volumeRefreshedAt,
     technical_refreshed_at: snapshot.technicalRefreshedAt,
     fundamental_refreshed_at: snapshot.fundamentalRefreshedAt,
-    aggregate_refreshed_at: new Date().toISOString(),
+    aggregate_refreshed_at: updatedAt,
     refreshed_at: snapshot.refreshedAt,
-    updated_at: new Date().toISOString()
+    updated_at: updatedAt
   };
 }
 
@@ -722,34 +822,52 @@ export async function writeMarketMetricSnapshot(snapshots: MarketMetricSnapshot[
 
 export async function refreshMarketMetricSnapshot(options: RefreshOptions = {}): Promise<RefreshResult> {
   const markets = options.markets?.length ? options.markets : (["us", "korea", "crypto"] as StrategyMarket[]);
+  const limit = Math.max(1, Math.min(350, Math.round(options.limit || 250)));
   const universeByMarket = await Promise.all(markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
   const universeEntries = universeByMarket.flatMap(({ market, symbols }) => symbols.map((symbol) => ({ market, symbol })));
-  const allSymbols = uniqueSorted(universeEntries.map((entry) => entry.symbol));
-  const stockMarkets = markets.filter((market) => market === "us" || market === "korea");
+  const existingSnapshots = await readExistingMarketMetricSnapshots(markets);
+  const candidates = universeEntries
+    .filter((entry) => shouldRefreshSnapshot(existingSnapshots.get(`${entry.market}:${entry.symbol}`), options.force))
+    .sort((a, b) => {
+      const left = existingSnapshots.get(`${a.market}:${a.symbol}`);
+      const right = existingSnapshots.get(`${b.market}:${b.symbol}`);
+      return snapshotUpdatedAtMs(left) - snapshotUpdatedAtMs(right) || a.market.localeCompare(b.market) || a.symbol.localeCompare(b.symbol);
+    });
+  const selectedEntries = candidates.slice(0, limit);
+  const selectedSymbols = uniqueSorted(selectedEntries.map((entry) => entry.symbol));
+  const selectedMarkets = Array.from(new Set(selectedEntries.map((entry) => entry.market)));
+  const stockMarkets = selectedMarkets.filter((market) => market === "us" || market === "korea");
   const [fundamentalCache, supplementalCache, quoteCache] = await Promise.all([
-    stockMarkets.length ? readFinancialFundamentalsCache(allSymbols, stockMarkets) : Promise.resolve(new Map<string, FinancialFundamentalSnapshot>()),
-    readStrategyMetricCache(allSymbols, markets),
-    readQuoteCache(allSymbols)
+    stockMarkets.length && selectedSymbols.length
+      ? readFinancialFundamentalsCache(selectedSymbols, stockMarkets)
+      : Promise.resolve(new Map<string, FinancialFundamentalSnapshot>()),
+    selectedSymbols.length ? readStrategyMetricCache(selectedSymbols, selectedMarkets) : Promise.resolve(new Map<string, StrategyMetricSnapshot>()),
+    selectedSymbols.length ? readQuoteCache(selectedSymbols) : Promise.resolve(new Map<string, QuoteSnapshot>())
   ]);
 
-  const snapshots = universeEntries
+  const snapshots = selectedEntries
     .map(({ market, symbol }) =>
       snapshotFromInputs(market, symbol, fundamentalCache.get(`${market}:${symbol}`), supplementalCache.get(`${market}:${symbol}`), quoteCache.get(symbol))
     )
     .filter((snapshot): snapshot is MarketMetricSnapshot => snapshot !== null);
 
-  attachPeerAggregates(snapshots);
+  const aggregateUniverse = new Map(existingSnapshots);
+  snapshots.forEach((snapshot) => {
+    aggregateUniverse.set(`${snapshot.market}:${snapshot.symbol}`, snapshot);
+  });
+  attachPeerAggregates(Array.from(aggregateUniverse.values()));
   await writeMarketMetricSnapshot(snapshots);
 
   const refreshedAt = new Date().toISOString();
+  const cachedCount = existingSnapshots.size + snapshots.filter((snapshot) => !existingSnapshots.has(`${snapshot.market}:${snapshot.symbol}`)).length;
   return {
     markets,
     universeCount: universeEntries.length,
-    cachedCount: snapshots.length,
-    staleCount: snapshots.filter((snapshot) => !snapshot.priceRefreshedAt || Date.now() - Date.parse(snapshot.priceRefreshedAt) > MARKET_QUOTE_MAX_AGE_MS).length,
+    cachedCount,
+    staleCount: Math.max(0, candidates.length - snapshots.length),
     refreshedCount: snapshots.length,
     errors: [],
     refreshedAt,
-    timeBudgetReached: false
+    timeBudgetReached: candidates.length > snapshots.length
   };
 }
