@@ -36,8 +36,11 @@ type RatioValues = {
   totalDebt: number | null;
   cashAndShortInvestments: number | null;
   revenue: number | null;
+  previousRevenue: number | null;
   operatingIncome: number | null;
+  previousOperatingIncome: number | null;
   netIncome: number | null;
+  previousNetIncome: number | null;
   totalAssets: number | null;
   averageAssets: number | null;
   totalEquity: number | null;
@@ -2197,8 +2200,11 @@ function openDartRatioValuesForYear(
     totalDebt,
     cashAndShortInvestments,
     revenue,
+    previousRevenue,
     operatingIncome,
+    previousOperatingIncome,
     netIncome,
+    previousNetIncome,
     totalAssets: assets,
     averageAssets,
     totalEquity: equity,
@@ -2296,6 +2302,31 @@ function latestStatementNumber(rows: Record<string, unknown>[], fields: string[]
   return null;
 }
 
+function statementPair(rows: Record<string, unknown>[], fields: string[]) {
+  const values = rows.map((row) => statementNumber(row, fields)).filter((value): value is number => value !== null);
+  return {
+    current: values[0] ?? null,
+    previous: values[1] ?? null
+  };
+}
+
+function statementPairGrowth(pair: { current: number | null; previous: number | null }) {
+  return growthRate(pair.current, pair.previous);
+}
+
+function annualOrQuarterlyStatementPair(
+  annualRows: Record<string, unknown>[],
+  quarterlyRows: Record<string, unknown>[],
+  fields: string[]
+) {
+  const annualPair = statementPair(annualRows, fields);
+  if (annualPair.current !== null && annualPair.previous !== null) {
+    return annualPair;
+  }
+  const quarterlyPair = statementPair(quarterlyRows, fields);
+  return quarterlyPair.current !== null && quarterlyPair.previous !== null ? quarterlyPair : annualPair;
+}
+
 function statementGrowth(rows: Record<string, unknown>[], fields: string[]) {
   const values = rows.map((row) => statementNumber(row, fields)).filter((value): value is number => value !== null);
   if (values.length < 2) {
@@ -2329,8 +2360,11 @@ function emptyRatioValues(): RatioValues {
     totalDebt: null,
     cashAndShortInvestments: null,
     revenue: null,
+    previousRevenue: null,
     operatingIncome: null,
+    previousOperatingIncome: null,
     netIncome: null,
+    previousNetIncome: null,
     totalAssets: null,
     averageAssets: null,
     totalEquity: null,
@@ -2352,6 +2386,9 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
   const per = numberOrNull(rawValue(stats.trailingPE)) ?? (eps !== null && eps !== 0 && marketPrice ? marketPrice / eps : null);
   const bookValuePerShare = numberOrNull(rawValue(stats.bookValue));
   const sharesOutstanding = positiveNumberOrNull(rawValue(stats.sharesOutstanding));
+  const revenuePair = annualOrQuarterlyStatementPair(annualIncomeRows, quarterlyIncomeRows, revenueFields);
+  const operatingIncomePair = annualOrQuarterlyStatementPair(annualIncomeRows, quarterlyIncomeRows, operatingIncomeFields);
+  const netIncomePair = annualOrQuarterlyStatementPair(annualIncomeRows, quarterlyIncomeRows, netIncomeFields);
   const statementRevenue = latestStatementNumber(annualIncomeRows, revenueFields) ?? latestStatementNumber(quarterlyIncomeRows, revenueFields);
   const statementOperatingIncome =
     latestStatementNumber(annualIncomeRows, operatingIncomeFields) ?? latestStatementNumber(quarterlyIncomeRows, operatingIncomeFields);
@@ -2363,17 +2400,27 @@ function ratioValues(summary: Record<string, unknown>): RatioValues {
     operatingMargin: numberOrNull(rawValue(financialData.operatingMargins)),
     roe: numberOrNull(rawValue(financialData.returnOnEquity)),
     roa: numberOrNull(rawValue(financialData.returnOnAssets)),
-    revenueGrowth: numberOrNull(rawValue(financialData.revenueGrowth)) ?? annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, revenueFields),
-    operatingIncomeGrowth: annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, operatingIncomeFields),
-    earningsGrowth: numberOrNull(rawValue(financialData.earningsGrowth)) ?? annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, netIncomeFields),
+    revenueGrowth:
+      statementPairGrowth(revenuePair) ??
+      annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, revenueFields) ??
+      numberOrNull(rawValue(financialData.revenueGrowth)),
+    operatingIncomeGrowth:
+      statementPairGrowth(operatingIncomePair) ?? annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, operatingIncomeFields),
+    earningsGrowth:
+      statementPairGrowth(netIncomePair) ??
+      annualOrQuarterlyStatementGrowth(annualIncomeRows, quarterlyIncomeRows, netIncomeFields) ??
+      numberOrNull(rawValue(financialData.earningsGrowth)),
     bookValuePerShare,
     sharesOutstanding,
     ebitda: numberOrNull(rawValue(financialData.ebitda)),
     totalDebt: numberOrNull(rawValue(financialData.totalDebt)),
     cashAndShortInvestments: numberOrNull(rawValue(financialData.totalCash)),
     revenue: numberOrNull(rawValue(financialData.totalRevenue)) ?? statementRevenue,
+    previousRevenue: revenuePair.previous,
     operatingIncome: statementOperatingIncome,
+    previousOperatingIncome: operatingIncomePair.previous,
     netIncome: statementNetIncome,
+    previousNetIncome: netIncomePair.previous,
     totalAssets: null,
     averageAssets: null,
     totalEquity: bookValuePerShare !== null && sharesOutstanding !== null ? bookValuePerShare * sharesOutstanding : null,
@@ -2423,8 +2470,11 @@ function secRatioValuesForYear(facts: SecCompanyFacts | null, fiscalYear: number
     totalDebt,
     cashAndShortInvestments,
     revenue,
+    previousRevenue,
     operatingIncome,
+    previousOperatingIncome,
     netIncome,
+    previousNetIncome,
     totalAssets: assets,
     averageAssets,
     totalEquity: equity,
@@ -2463,8 +2513,11 @@ async function secRatioValues(symbol: string, marketPrice: number | null): Promi
     totalDebt: latest.totalDebt,
     cashAndShortInvestments: latest.cashAndShortInvestments,
     revenue: latest.revenue,
+    previousRevenue: latest.previousRevenue,
     operatingIncome: latest.operatingIncome,
+    previousOperatingIncome: latest.previousOperatingIncome,
     netIncome: latest.netIncome,
+    previousNetIncome: latest.previousNetIncome,
     totalAssets: latest.totalAssets,
     averageAssets: latest.averageAssets,
     totalEquity: latest.totalEquity,
@@ -2489,8 +2542,11 @@ function mergeRatioValues(primary: RatioValues, fallback: RatioValues) {
     totalDebt: primary.totalDebt ?? fallback.totalDebt,
     cashAndShortInvestments: primary.cashAndShortInvestments ?? fallback.cashAndShortInvestments,
     revenue: primary.revenue ?? fallback.revenue,
+    previousRevenue: primary.previousRevenue ?? fallback.previousRevenue,
     operatingIncome: primary.operatingIncome ?? fallback.operatingIncome,
+    previousOperatingIncome: primary.previousOperatingIncome ?? fallback.previousOperatingIncome,
     netIncome: primary.netIncome ?? fallback.netIncome,
+    previousNetIncome: primary.previousNetIncome ?? fallback.previousNetIncome,
     totalAssets: primary.totalAssets ?? fallback.totalAssets,
     averageAssets: primary.averageAssets ?? fallback.averageAssets,
     totalEquity: primary.totalEquity ?? fallback.totalEquity,
@@ -2523,8 +2579,11 @@ function periodToRatioValues(period: PeriodRatioValues | undefined): RatioValues
     totalDebt: period.totalDebt,
     cashAndShortInvestments: period.cashAndShortInvestments,
     revenue: period.revenue,
+    previousRevenue: period.previousRevenue,
     operatingIncome: period.operatingIncome,
+    previousOperatingIncome: period.previousOperatingIncome,
     netIncome: period.netIncome,
+    previousNetIncome: period.previousNetIncome,
     totalAssets: period.totalAssets,
     averageAssets: period.averageAssets,
     totalEquity: period.totalEquity,
@@ -2710,8 +2769,11 @@ export async function buildFinancialFundamentalFromSources(
       operatingIncomeGrowthPct: null,
       earningsGrowthPct: null,
       revenue: null,
+      previousRevenue: null,
       operatingIncome: null,
+      previousOperatingIncome: null,
       netIncome: null,
+      previousNetIncome: null,
       totalAssets: null,
       averageAssets: null,
       totalEquity: null,
@@ -2766,6 +2828,9 @@ export async function buildFinancialFundamentalFromSources(
   const sharesOutstanding = company.sharesOutstanding;
   const refreshedMarketCap = marketCap ?? (marketPrice !== null && sharesOutstanding !== null ? marketPrice * sharesOutstanding : null);
   const { sector, industry } = canonicalFundamentalClassification(normalized, resolvedProfile, secProfile, quote);
+  const revenueGrowth = company.revenueGrowth ?? growthRate(company.revenue, company.previousRevenue);
+  const operatingIncomeGrowth = company.operatingIncomeGrowth ?? growthRate(company.operatingIncome, company.previousOperatingIncome);
+  const earningsGrowth = company.earningsGrowth ?? growthRate(company.netIncome, company.previousNetIncome);
   return {
     symbol: normalized,
     market,
@@ -2779,13 +2844,16 @@ export async function buildFinancialFundamentalFromSources(
     roaPct: company.roa === null || company.roa === undefined ? null : company.roa * 100,
     netMarginPct: company.netMargin === null || company.netMargin === undefined ? null : company.netMargin * 100,
     operatingMarginPct: company.operatingMargin === null || company.operatingMargin === undefined ? null : company.operatingMargin * 100,
-    revenueGrowthPct: company.revenueGrowth === null || company.revenueGrowth === undefined ? null : company.revenueGrowth * 100,
+    revenueGrowthPct: revenueGrowth === null || revenueGrowth === undefined ? null : revenueGrowth * 100,
     operatingIncomeGrowthPct:
-      company.operatingIncomeGrowth === null || company.operatingIncomeGrowth === undefined ? null : company.operatingIncomeGrowth * 100,
-    earningsGrowthPct: company.earningsGrowth === null || company.earningsGrowth === undefined ? null : company.earningsGrowth * 100,
+      operatingIncomeGrowth === null || operatingIncomeGrowth === undefined ? null : operatingIncomeGrowth * 100,
+    earningsGrowthPct: earningsGrowth === null || earningsGrowth === undefined ? null : earningsGrowth * 100,
     revenue: company.revenue,
+    previousRevenue: company.previousRevenue,
     operatingIncome: company.operatingIncome,
+    previousOperatingIncome: company.previousOperatingIncome,
     netIncome: company.netIncome ?? netIncome,
+    previousNetIncome: company.previousNetIncome,
     totalAssets: company.totalAssets,
     averageAssets: company.averageAssets,
     totalEquity: company.totalEquity,

@@ -454,8 +454,11 @@ export type FinancialFundamentalSnapshot = {
   operatingIncomeGrowthPct?: number | null;
   earningsGrowthPct?: number | null;
   revenue?: number | null;
+  previousRevenue?: number | null;
   operatingIncome?: number | null;
+  previousOperatingIncome?: number | null;
   netIncome: number | null;
+  previousNetIncome?: number | null;
   totalAssets?: number | null;
   averageAssets?: number | null;
   totalEquity?: number | null;

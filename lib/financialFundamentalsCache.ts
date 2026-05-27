@@ -140,11 +140,22 @@ function missingStatementDerivedMetrics(snapshot: FinancialFundamentalSnapshot |
     snapshot.operatingIncomeGrowthPct,
     snapshot.earningsGrowthPct,
     snapshot.revenue,
+    snapshot.previousRevenue,
     snapshot.operatingIncome,
+    snapshot.previousOperatingIncome,
+    snapshot.previousNetIncome,
     snapshot.totalAssets,
     snapshot.totalEquity
   ];
-  return statementMetrics.every((value) => value === null || value === undefined) || snapshot.revenueGrowthPct === null || snapshot.revenueGrowthPct === undefined;
+  return (
+    statementMetrics.every((value) => value === null || value === undefined) ||
+    snapshot.revenue === null ||
+    snapshot.revenue === undefined ||
+    snapshot.previousRevenue === null ||
+    snapshot.previousRevenue === undefined ||
+    snapshot.revenueGrowthPct === null ||
+    snapshot.revenueGrowthPct === undefined
+  );
 }
 
 function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapshot | null {
@@ -181,8 +192,11 @@ function rowToSnapshot(row: Record<string, unknown>): FinancialFundamentalSnapsh
     operatingIncomeGrowthPct: numberOrNull(row.operating_income_growth_pct),
     earningsGrowthPct: numberOrNull(row.earnings_growth_pct),
     revenue: numberOrNull(row.revenue),
+    previousRevenue: numberOrNull(row.previous_revenue),
     operatingIncome: numberOrNull(row.operating_income),
+    previousOperatingIncome: numberOrNull(row.previous_operating_income),
     netIncome: numberOrNull(row.net_income),
+    previousNetIncome: numberOrNull(row.previous_net_income),
     totalAssets: numberOrNull(row.total_assets),
     averageAssets: numberOrNull(row.average_assets),
     totalEquity: numberOrNull(row.total_equity),
@@ -220,8 +234,11 @@ function snapshotToRow(snapshot: FinancialFundamentalSnapshot) {
     operating_income_growth_pct: snapshot.operatingIncomeGrowthPct,
     earnings_growth_pct: snapshot.earningsGrowthPct,
     revenue: snapshot.revenue,
+    previous_revenue: snapshot.previousRevenue,
     operating_income: snapshot.operatingIncome,
+    previous_operating_income: snapshot.previousOperatingIncome,
     net_income: snapshot.netIncome,
+    previous_net_income: snapshot.previousNetIncome,
     total_assets: snapshot.totalAssets,
     average_assets: snapshot.averageAssets,
     total_equity: snapshot.totalEquity,

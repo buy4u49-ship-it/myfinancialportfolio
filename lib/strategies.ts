@@ -267,6 +267,15 @@ function positiveNumber(value: number | null | undefined) {
   return num !== null && num > 0 ? num : null;
 }
 
+function pctChange(current: number | null | undefined, previous: number | null | undefined) {
+  const currentValue = finiteNumber(current);
+  const previousValue = finiteNumber(previous);
+  if (currentValue === null || previousValue === null || previousValue === 0) {
+    return null;
+  }
+  return (currentValue / previousValue - 1) * 100;
+}
+
 function nonZeroNumber(value: number | null | undefined) {
   const num = finiteNumber(value);
   return num !== null && num !== 0 ? num : null;
@@ -367,6 +376,14 @@ function evaluationFromFundamental(
     positiveNumber(fundamental.priceAtRefresh);
   const changePct = finiteNumber(quote?.changePct) ?? finiteNumber(supplementalMetrics.changePct) ?? finiteNumber(supplemental?.changePct);
   const companyPer = companyPerFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyPer);
+  const revenueGrowthPct =
+    fundamental.revenueGrowthPct ?? pctChange(fundamental.revenue, fundamental.previousRevenue) ?? finiteNumber(supplementalMetrics.revenueGrowthPct);
+  const operatingIncomeGrowthPct =
+    fundamental.operatingIncomeGrowthPct ??
+    pctChange(fundamental.operatingIncome, fundamental.previousOperatingIncome) ??
+    finiteNumber(supplementalMetrics.operatingIncomeGrowthPct);
+  const earningsGrowthPct =
+    fundamental.earningsGrowthPct ?? pctChange(fundamental.netIncome, fundamental.previousNetIncome) ?? finiteNumber(supplementalMetrics.earningsGrowthPct);
   const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
     ...supplementalMetrics,
     price,
@@ -379,9 +396,9 @@ function evaluationFromFundamental(
     companyNetMargin: fundamental.netMarginPct ?? finiteNumber(supplementalMetrics.companyNetMargin),
     companyOperatingMargin: fundamental.operatingMarginPct ?? finiteNumber(supplementalMetrics.companyOperatingMargin),
     companyEvEbitda: companyEvEbitdaFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyEvEbitda),
-    revenueGrowthPct: fundamental.revenueGrowthPct ?? finiteNumber(supplementalMetrics.revenueGrowthPct),
-    operatingIncomeGrowthPct: fundamental.operatingIncomeGrowthPct ?? finiteNumber(supplementalMetrics.operatingIncomeGrowthPct),
-    earningsGrowthPct: fundamental.earningsGrowthPct ?? finiteNumber(supplementalMetrics.earningsGrowthPct)
+    revenueGrowthPct,
+    operatingIncomeGrowthPct,
+    earningsGrowthPct
   };
   return {
     symbol: fundamental.symbol,

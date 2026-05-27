@@ -566,6 +566,14 @@ function snapshotFromInputs(
   const oneMonth = oneMonthMetrics(supplemental, quote);
   const technicalMetrics = quote?.candles1m.length ? technicalMetricsFromCandles(quote.candles1m) : {};
   const companyPer = fundamental ? companyPerFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyPer) : finiteNumber(supplementalMetrics.companyPer);
+  const revenueGrowthPct =
+    fundamental?.revenueGrowthPct ?? pctChange(finiteNumber(fundamental?.revenue), finiteNumber(fundamental?.previousRevenue)) ?? finiteNumber(supplementalMetrics.revenueGrowthPct);
+  const operatingIncomeGrowthPct =
+    fundamental?.operatingIncomeGrowthPct ??
+    pctChange(finiteNumber(fundamental?.operatingIncome), finiteNumber(fundamental?.previousOperatingIncome)) ??
+    finiteNumber(supplementalMetrics.operatingIncomeGrowthPct);
+  const earningsGrowthPct =
+    fundamental?.earningsGrowthPct ?? pctChange(finiteNumber(fundamental?.netIncome), finiteNumber(fundamental?.previousNetIncome)) ?? finiteNumber(supplementalMetrics.earningsGrowthPct);
 
   const metrics: Partial<Record<StrategyMetricKey, number | null>> = {
     ...supplementalMetrics,
@@ -587,9 +595,9 @@ function snapshotFromInputs(
     companyEvEbitda: fundamental
       ? companyEvEbitdaFromFundamental(fundamental, price) ?? finiteNumber(supplementalMetrics.companyEvEbitda)
       : finiteNumber(supplementalMetrics.companyEvEbitda),
-    revenueGrowthPct: fundamental?.revenueGrowthPct ?? finiteNumber(supplementalMetrics.revenueGrowthPct),
-    operatingIncomeGrowthPct: fundamental?.operatingIncomeGrowthPct ?? finiteNumber(supplementalMetrics.operatingIncomeGrowthPct),
-    earningsGrowthPct: fundamental?.earningsGrowthPct ?? finiteNumber(supplementalMetrics.earningsGrowthPct)
+    revenueGrowthPct,
+    operatingIncomeGrowthPct,
+    earningsGrowthPct
   };
 
   const name = fundamental?.name || supplemental?.name || symbol;
