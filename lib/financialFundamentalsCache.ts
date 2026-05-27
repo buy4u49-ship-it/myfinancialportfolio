@@ -346,7 +346,7 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
   const allSymbols = universeByMarket.flatMap((item) => item.symbols);
   const cache = await readFinancialFundamentalsCache(allSymbols, markets);
   const quoteCache = await getCachedMarketQuotes(allSymbols, { maxAgeMs: STRATEGY_QUOTE_MAX_AGE_MS });
-  const candidates = universeByMarket
+  const refreshCandidates = universeByMarket
     .flatMap(({ market, symbols }) =>
       symbols.map((symbol) => {
         const snapshot = cache.get(`${market}:${symbol}`);
@@ -406,8 +406,8 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
         return 6;
       };
       return priority(a) - priority(b) || a.refreshedAtMs - b.refreshedAtMs;
-    })
-    .slice(0, limit);
+    });
+  const candidates = refreshCandidates.slice(0, limit);
 
   const snapshots: FinancialFundamentalSnapshot[] = [];
   const errors: RefreshResult["errors"] = [];
@@ -465,21 +465,13 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
   }
   await writeFinancialFundamentalsCache(snapshots);
 
-  const refreshedKeys = new Set(snapshots.map((snapshot) => `${snapshot.market}:${snapshot.symbol}`));
+  const refreshedKeys = new Set(
+    snapshots
+      .filter((snapshot) => !isMissingClassification(snapshot) && !missingStatementDerivedMetrics(snapshot))
+      .map((snapshot) => `${snapshot.market}:${snapshot.symbol}`)
+  );
   const cachedCount = cache.size + snapshots.filter((snapshot) => !cache.has(`${snapshot.market}:${snapshot.symbol}`)).length;
-  const staleCount = universeByMarket.reduce((sum, { market, symbols }) => {
-    return (
-      sum +
-      symbols.filter((symbol) => {
-        const key = `${market}:${symbol}`;
-        if (refreshedKeys.has(key)) {
-          return false;
-        }
-        const snapshot = cache.get(key);
-        return snapshot ? !isFresh(snapshot.refreshedAt) : false;
-      }).length
-    );
-  }, 0);
+  const staleCount = refreshCandidates.filter((candidate) => !refreshedKeys.has(`${candidate.market}:${candidate.symbol}`)).length;
 
   return {
     markets,
@@ -489,7 +481,7 @@ export async function refreshFinancialFundamentalsCache(options: RefreshOptions 
     refreshedCount: snapshots.length,
     errors,
     refreshedAt: new Date().toISOString(),
-    timeBudgetReached
+    timeBudgetReached: timeBudgetReached || staleCount > 0
   };
 }
 
