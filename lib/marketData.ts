@@ -1283,23 +1283,35 @@ const SEC_FACT_FIELDS: Record<string, string[]> = {
   noncurrent_liabilities: ["LiabilitiesNoncurrent"],
   long_term_debt: ["LongTermDebtNoncurrent", "LongTermDebtAndFinanceLeaseObligationsNoncurrent"],
   other_liabilities: ["OtherLiabilitiesNoncurrent"],
-  total_equity: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
+  total_equity: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "Equity"],
   common_stock: ["CommonStocksIncludingAdditionalPaidInCapital", "CommonStockValue"],
   capital_surplus: ["AdditionalPaidInCapital"],
   retained_earnings: ["RetainedEarningsAccumulatedDeficit"],
   treasury_stock: ["TreasuryStockValue"],
   revenue: [
     "Revenues",
+    "Revenue",
     "RevenueFromContractWithCustomerExcludingAssessedTax",
     "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "RevenueFromContractsWithCustomers",
     "SalesRevenueNet",
     "SalesRevenueGoodsNet",
     "SalesRevenueServicesNet",
+    "SalesRevenueGoodsGross",
+    "SalesRevenueServicesGross",
     "RevenueMineralSales",
     "RealEstateRevenueNet",
+    "RentalIncome",
+    "PassengerRevenue",
+    "FreightRevenue",
+    "OilAndGasRevenue",
+    "HealthCareOrganizationRevenue",
+    "OperatingLeasesIncomeStatementLeaseRevenue",
     "InterestAndDividendIncomeOperating",
+    "InterestIncomeOperating",
     "InterestIncomeExpenseOperatingNet",
     "InvestmentIncomeInterest",
+    "InvestmentIncomeNet",
     "PremiumsEarnedNet"
   ],
   cost_of_revenue: ["CostOfRevenue", "CostOfGoodsAndServicesSold"],
@@ -1314,7 +1326,7 @@ const SEC_FACT_FIELDS: Record<string, string[]> = {
   research: ["ResearchAndDevelopmentExpense"],
   bad_debt: ["AllowanceForDoubtfulAccountsExpense"],
   other_sga: ["OtherOperatingExpenses"],
-  operating_income: ["OperatingIncomeLoss"],
+  operating_income: ["OperatingIncomeLoss", "OperatingProfitLoss"],
   non_operating: ["NonoperatingIncomeExpense", "OtherNonoperatingIncomeExpense"],
   pretax_income: ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
   tax: ["IncomeTaxExpenseBenefit"],
@@ -1360,14 +1372,15 @@ const SEC_BASIC_SHARE_FIELDS = [
 ];
 
 type SecCompanyFacts = {
-  facts?: {
-    "us-gaap"?: Record<
+  facts?: Record<
+    string,
+    Record<
       string,
       {
         units?: Record<string, Array<{ fy?: number; fp?: string; form?: string; end?: string; filed?: string; val?: number }>>;
       }
-    >;
-  };
+    >
+  >;
 };
 
 async function fetchSecCompanyFacts(symbol: string): Promise<SecCompanyFacts | null> {
@@ -1409,16 +1422,35 @@ function isAnnualSecFactRow(row: { fp?: string; form?: string }) {
 }
 
 function secFactRowsByUnits(facts: SecCompanyFacts | null, concept: string, units: string[]) {
-  const unitMap = facts?.facts?.["us-gaap"]?.[concept]?.units || {};
   const acceptedUnits = new Set(units.map(normalizedSecUnit));
-  const rows = Object.entries(unitMap).flatMap(([unit, unitRows]) => (acceptedUnits.has(normalizedSecUnit(unit)) ? unitRows : []));
-  return rows
+  const conceptUnitMaps = Object.values(facts?.facts || {}).map((taxonomy) => taxonomy?.[concept]?.units || {});
+  const matchingRows = conceptUnitMaps.flatMap((unitMap) =>
+    Object.entries(unitMap).flatMap(([unit, unitRows]) => (acceptedUnits.has(normalizedSecUnit(unit)) ? unitRows : []))
+  );
+  const fallbackRows =
+    matchingRows.length || !acceptedUnits.has("usd")
+      ? []
+      : conceptUnitMaps.flatMap((unitMap) =>
+          Object.entries(unitMap).flatMap(([unit, unitRows]) => {
+            const normalized = normalizedSecUnit(unit);
+            return normalized && !normalized.includes("/") && !normalized.includes("share") ? unitRows : [];
+          })
+        );
+  return [...matchingRows, ...fallbackRows]
     .filter((row) => isAnnualSecFactRow(row) && Number.isFinite(row.val) && row.fy)
     .sort((a, b) => String(b.filed || b.end || "").localeCompare(String(a.filed || a.end || "")));
 }
 
 function secPeriods(facts: SecCompanyFacts | null) {
-  const candidates = ["Assets", "Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "NetIncomeLoss"]
+  const periodConcepts = Array.from(
+    new Set([
+      ...SEC_FACT_FIELDS.total_assets,
+      ...SEC_FACT_FIELDS.revenue,
+      ...SEC_FACT_FIELDS.operating_income,
+      ...SEC_FACT_FIELDS.net_income
+    ])
+  );
+  const candidates = periodConcepts
     .flatMap((concept) => secFactRows(facts, concept))
     .filter((row) => row.fy && row.end);
   const unique = new Map<number, { fy: number; end: string }>();

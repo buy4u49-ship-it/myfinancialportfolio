@@ -455,21 +455,50 @@ function displayMarketSymbol(symbol: string) {
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const rawText = await response.text();
-  let payload: (T & { error?: string }) | null = null;
+  let payload: (T & { error?: unknown }) | null = null;
   try {
-    payload = rawText ? (JSON.parse(rawText) as T & { error?: string }) : null;
+    payload = rawText ? (JSON.parse(rawText) as T & { error?: unknown }) : null;
   } catch {
     const preview = rawText.trim().replace(/\s+/g, " ").slice(0, 240);
     const fallback = preview || response.statusText || "Empty response";
     throw new Error(`Server returned a non-JSON response (${response.status}): ${fallback}`);
   }
   if (!response.ok) {
-    throw new Error(payload?.error || `Request failed with status ${response.status}.`);
+    throw new Error(readableError(payload?.error) || `Request failed with status ${response.status}.`);
   }
   if (!payload) {
     throw new Error("Server returned an empty response.");
   }
   return payload;
+}
+
+function readableError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const parts = [
+      record.message,
+      record.details,
+      record.hint,
+      record.code ? `code: ${record.code}` : ""
+    ]
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean);
+    if (parts.length) {
+      return parts.join(" ");
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error || "");
 }
 
 function firebaseConfig() {

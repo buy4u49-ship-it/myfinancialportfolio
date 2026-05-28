@@ -11,7 +11,7 @@ kill_timeout = "5s"
   stock1 = "python market_price_worker.py --disable-crypto --stock-shard-count 4 --stock-shard-index 1"
   stock2 = "python market_price_worker.py --disable-crypto --stock-shard-count 4 --stock-shard-index 2"
   stock3 = "python market_price_worker.py --disable-crypto --stock-shard-count 4 --stock-shard-index 3"
-  warm = "python fundamental_warm_worker.py --loop --classification-limit 800 --mark-limit 1200 --sleep-seconds 900"
+  warm = "python fundamental_warm_worker.py --loop --classification-limit 800 --mark-limit 1200 --statement-limit 180 --sleep-seconds 900"
 
 [http_service]
   internal_port = 8080

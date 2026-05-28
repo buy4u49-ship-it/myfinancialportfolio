@@ -108,6 +108,17 @@ function uniqueSorted(symbols: string[]) {
   return Array.from(new Set(symbols.map((symbol) => normalizeSymbol(symbol)).filter(Boolean))).sort();
 }
 
+function uniqueEntries(entries: Array<{ market: StrategyMarket; symbol: string }>) {
+  const map = new Map<string, { market: StrategyMarket; symbol: string }>();
+  entries.forEach((entry) => {
+    const symbol = normalizeSymbol(entry.symbol);
+    if (symbol && !map.has(`${entry.market}:${symbol}`)) {
+      map.set(`${entry.market}:${symbol}`, { market: entry.market, symbol });
+    }
+  });
+  return Array.from(map.values());
+}
+
 function finiteNumber(value: unknown) {
   if (value === null || value === undefined || value === "") {
     return null;
@@ -116,9 +127,42 @@ function finiteNumber(value: unknown) {
   return Number.isFinite(num) ? num : null;
 }
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const parts = [record.message, record.details, record.hint, record.code ? `code: ${record.code}` : ""]
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean);
+    if (parts.length) {
+      return parts.join(" ");
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error || "");
+}
+
 function positiveNumber(value: unknown) {
   const num = finiteNumber(value);
   return num !== null && num > 0 ? num : null;
+}
+
+function timestampOrNull(value: unknown) {
+  if (!value) {
+    return null;
+  }
+  const text = String(value);
+  const time = Date.parse(text);
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
 }
 
 function nonZeroNumber(value: unknown) {
@@ -792,6 +836,7 @@ function shouldRefreshSnapshot(snapshot: MarketMetricSnapshot | undefined, force
 
 function snapshotRow(snapshot: MarketMetricSnapshot) {
   const updatedAt = new Date().toISOString();
+  const refreshedAt = timestampOrNull(snapshot.refreshedAt) || updatedAt;
   return {
     symbol: snapshot.symbol,
     market: snapshot.market,
@@ -804,12 +849,12 @@ function snapshotRow(snapshot: MarketMetricSnapshot) {
     trading_value_1m: snapshot.tradingValue1m,
     metrics: cleanMetrics(snapshot.metrics),
     metric_timeframe: snapshot.metricTimeframe,
-    price_refreshed_at: snapshot.priceRefreshedAt,
-    volume_refreshed_at: snapshot.volumeRefreshedAt,
-    technical_refreshed_at: snapshot.technicalRefreshedAt,
-    fundamental_refreshed_at: snapshot.fundamentalRefreshedAt,
+    price_refreshed_at: timestampOrNull(snapshot.priceRefreshedAt),
+    volume_refreshed_at: timestampOrNull(snapshot.volumeRefreshedAt),
+    technical_refreshed_at: timestampOrNull(snapshot.technicalRefreshedAt),
+    fundamental_refreshed_at: timestampOrNull(snapshot.fundamentalRefreshedAt),
     aggregate_refreshed_at: updatedAt,
-    refreshed_at: snapshot.refreshedAt,
+    refreshed_at: refreshedAt,
     updated_at: updatedAt
   };
 }
@@ -818,12 +863,13 @@ export async function writeMarketMetricSnapshot(snapshots: MarketMetricSnapshot[
   if (!snapshots.length) {
     return;
   }
-  for (const rowChunk of chunk(snapshots.map(snapshotRow), 150)) {
+  const uniqueSnapshots = Array.from(new Map(snapshots.map((snapshot) => [`${snapshot.market}:${snapshot.symbol}`, snapshot])).values());
+  for (const rowChunk of chunk(uniqueSnapshots.map(snapshotRow), 150)) {
     const { error } = await supabaseAdmin()
       .from(MARKET_METRIC_SNAPSHOT_TABLE)
       .upsert(rowChunk, { onConflict: "symbol,market" });
     if (error) {
-      throw new Error(error.message || "Market metric snapshot write failed.");
+      throw new Error(errorMessage(error) || "Market metric snapshot write failed.");
     }
   }
 }
@@ -832,7 +878,7 @@ export async function refreshMarketMetricSnapshot(options: RefreshOptions = {}):
   const markets = options.markets?.length ? options.markets : (["us", "korea", "crypto"] as StrategyMarket[]);
   const limit = Math.max(1, Math.min(350, Math.round(options.limit || 250)));
   const universeByMarket = await Promise.all(markets.map(async (market) => ({ market, symbols: await getStrategyUniverse(market) })));
-  const universeEntries = universeByMarket.flatMap(({ market, symbols }) => symbols.map((symbol) => ({ market, symbol })));
+  const universeEntries = uniqueEntries(universeByMarket.flatMap(({ market, symbols }) => symbols.map((symbol) => ({ market, symbol }))));
   const existingSnapshots = await readExistingMarketMetricSnapshots(markets);
   const candidates = universeEntries
     .filter((entry) => shouldRefreshSnapshot(existingSnapshots.get(`${entry.market}:${entry.symbol}`), options.force))

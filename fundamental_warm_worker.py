@@ -16,6 +16,60 @@ from typing import Any
 FUNDAMENTALS_TABLE = "financial_fundamentals_cache"
 SEC_TICKERS_EXCHANGE_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_FACT_FIELDS: dict[str, list[str]] = {
+    "revenue": [
+        "Revenues",
+        "Revenue",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "RevenueFromContractsWithCustomers",
+        "SalesRevenueNet",
+        "SalesRevenueGoodsNet",
+        "SalesRevenueServicesNet",
+        "SalesRevenueGoodsGross",
+        "SalesRevenueServicesGross",
+        "RevenueMineralSales",
+        "RealEstateRevenueNet",
+        "RentalIncome",
+        "PassengerRevenue",
+        "FreightRevenue",
+        "OilAndGasRevenue",
+        "HealthCareOrganizationRevenue",
+        "OperatingLeasesIncomeStatementLeaseRevenue",
+        "InterestAndDividendIncomeOperating",
+        "InterestIncomeOperating",
+        "InterestIncomeExpenseOperatingNet",
+        "InvestmentIncomeInterest",
+        "InvestmentIncomeNet",
+        "PremiumsEarnedNet",
+    ],
+    "operating_income": ["OperatingIncomeLoss", "OperatingProfitLoss"],
+    "net_income": ["NetIncomeLoss", "ProfitLoss"],
+    "total_assets": ["Assets"],
+    "total_equity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "Equity"],
+    "depreciation": ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"],
+    "short_term_debt": ["ShortTermBorrowings", "ShortTermDebtCurrent"],
+    "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebtAndFinanceLeaseObligationsNoncurrent"],
+    "cash_short_investments": ["CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "CashAndCashEquivalentsAtCarryingValue", "ShortTermInvestments"],
+}
+SEC_EPS_FACT_FIELDS = [
+    "EarningsPerShareDiluted",
+    "EarningsPerShareBasic",
+    "EarningsPerShareBasicAndDiluted",
+    "IncomeLossFromContinuingOperationsPerDilutedShare",
+    "IncomeLossFromContinuingOperationsPerBasicShare",
+    "IncomeLossFromContinuingOperationsPerBasicAndDilutedShare",
+]
+SEC_EPS_UNITS = ["USD/shares", "USD/share", "USD / shares", "USD / share", "USD-per-shares", "USD-per-share"]
+SEC_SHARE_FIELDS = [
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "WeightedAverageNumberOfSharesOutstandingDiluted",
+    "WeightedAverageNumberOfShareOutstandingDiluted",
+    "WeightedAverageNumberOfSharesOutstandingBasic",
+    "WeightedAverageNumberOfShareOutstandingBasic",
+    "WeightedAverageNumberOfSharesOutstandingBasicAndDiluted",
+    "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+]
 
 
 def utc_now_iso() -> str:
@@ -184,6 +238,124 @@ def sec_industry_description(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def normalized_sec_unit(unit: str) -> str:
+    return re.sub(r"/+", "/", re.sub(r"\s+", "", unit.lower()).replace("-per-", "/"))
+
+
+def is_annual_sec_form(form: Any) -> bool:
+    value = str(form or "")
+    return value.startswith("10-K") or value.startswith("20-F") or value.startswith("40-F")
+
+
+def is_annual_sec_fact_row(row: dict[str, Any]) -> bool:
+    fp = str(row.get("fp") or "")
+    return is_annual_sec_form(row.get("form")) and (not fp or fp == "FY")
+
+
+def numeric_value(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
+
+
+def sec_fact_rows_by_units(facts: dict[str, Any] | None, concept: str, units: list[str]) -> list[dict[str, Any]]:
+    accepted = {normalized_sec_unit(unit) for unit in units}
+    concept_unit_maps = []
+    for taxonomy in (facts or {}).get("facts", {}).values():
+        if isinstance(taxonomy, dict):
+            concept_units = taxonomy.get(concept, {}).get("units", {})
+            if isinstance(concept_units, dict):
+                concept_unit_maps.append(concept_units)
+
+    matching_rows: list[dict[str, Any]] = []
+    for unit_map in concept_unit_maps:
+        for unit, rows in unit_map.items():
+            if normalized_sec_unit(str(unit)) in accepted and isinstance(rows, list):
+                matching_rows.extend(row for row in rows if isinstance(row, dict))
+
+    fallback_rows: list[dict[str, Any]] = []
+    if not matching_rows and "usd" in accepted:
+        for unit_map in concept_unit_maps:
+            for unit, rows in unit_map.items():
+                normalized = normalized_sec_unit(str(unit))
+                if normalized and "/" not in normalized and "share" not in normalized and isinstance(rows, list):
+                    fallback_rows.extend(row for row in rows if isinstance(row, dict))
+
+    return sorted(
+        [
+            row
+            for row in [*matching_rows, *fallback_rows]
+            if is_annual_sec_fact_row(row) and numeric_value(row.get("val")) is not None and row.get("fy")
+        ],
+        key=lambda row: str(row.get("filed") or row.get("end") or ""),
+        reverse=True,
+    )
+
+
+def sec_fact_rows(facts: dict[str, Any] | None, concept: str) -> list[dict[str, Any]]:
+    return sec_fact_rows_by_units(facts, concept, ["USD"])
+
+
+def sec_periods(facts: dict[str, Any] | None) -> list[int]:
+    concepts = sorted({concept for concepts in SEC_FACT_FIELDS.values() for concept in concepts})
+    years: dict[int, str] = {}
+    for concept in concepts:
+        for row in sec_fact_rows(facts, concept):
+            try:
+                fy = int(row.get("fy"))
+            except (TypeError, ValueError):
+                continue
+            years.setdefault(fy, str(row.get("end") or row.get("filed") or ""))
+    return sorted(years.keys(), reverse=True)[:4]
+
+
+def sec_value_by_units(facts: dict[str, Any] | None, concepts: list[str], fiscal_year: int | None, units: list[str]) -> float | None:
+    if not fiscal_year:
+        return None
+    for concept in concepts:
+        for row in sec_fact_rows_by_units(facts, concept, units):
+            if row.get("fy") == fiscal_year:
+                value = numeric_value(row.get("val"))
+                if value is not None:
+                    return value
+    return None
+
+
+def sec_value(facts: dict[str, Any] | None, concepts: list[str], fiscal_year: int | None) -> float | None:
+    return sec_value_by_units(facts, concepts, fiscal_year, ["USD"])
+
+
+def sec_growth_pct(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous in (None, 0):
+        return None
+    return (current / previous - 1) * 100
+
+
+def ratio_pct(numerator: float | None, denominator: float | None) -> float | None:
+    if numerator is None or denominator in (None, 0):
+        return None
+    return numerator / denominator * 100
+
+
+def sec_share_value(facts: dict[str, Any] | None, fiscal_year: int | None) -> float | None:
+    value = sec_value_by_units(facts, SEC_SHARE_FIELDS, fiscal_year, ["shares"])
+    return value if value and value > 0 else None
+
+
+def sec_eps_value(facts: dict[str, Any] | None, fiscal_year: int | None, net_income: float | None) -> float | None:
+    reported = sec_value_by_units(facts, SEC_EPS_FACT_FIELDS, fiscal_year, SEC_EPS_UNITS)
+    if reported not in (None, 0):
+        return reported
+    shares = sec_share_value(facts, fiscal_year)
+    if net_income is not None and shares:
+        return net_income / shares
+    return None
+
+
 def sec_sector_from_sic(sic: int | None, industry: str) -> str:
     text = industry.lower()
     if sic is None:
@@ -290,6 +462,11 @@ def fetch_sec_submission_profile(cik: str) -> tuple[str, str] | None:
     return sector, industry or sector
 
 
+def fetch_sec_company_facts(cik: str) -> dict[str, Any] | None:
+    payload = request_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json", timeout=30)
+    return payload if isinstance(payload, dict) else None
+
+
 def missing_classification_rows(limit: int) -> list[dict[str, Any]]:
     return supabase_select(
         FUNDAMENTALS_TABLE,
@@ -312,6 +489,26 @@ def eps_candidate_rows(limit: int) -> list[dict[str, Any]]:
             "limit": str(limit),
         },
     )
+
+
+def statement_candidate_rows(limit: int) -> list[dict[str, Any]]:
+    rows = supabase_select(
+        FUNDAMENTALS_TABLE,
+        {
+            "select": "symbol,market,name,sector,industry,source,fundamental_type,eps_unavailable_reason,revenue,previous_revenue,revenue_growth_pct,operating_income,previous_operating_income,operating_income_growth_pct,net_income,previous_net_income,earnings_growth_pct,refreshed_at",
+            "market": "eq.us",
+            "or": "(revenue.is.null,previous_revenue.is.null,revenue_growth_pct.is.null,operating_income_growth_pct.is.null,earnings_growth_pct.is.null)",
+            "order": "refreshed_at.asc.nullsfirst",
+            "limit": str(limit),
+        },
+    )
+    return [
+        row
+        for row in rows
+        if row.get("fundamental_type") != "non_operating_security"
+        and not row.get("eps_unavailable_reason")
+        and not eps_unavailable_reason(row)
+    ]
 
 
 def mark_non_applicable_eps(limit: int) -> int:
@@ -395,12 +592,105 @@ def backfill_sec_classification(limit: int, sec_delay_seconds: float) -> int:
     return len(updates)
 
 
+def compact_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if value is not None}
+
+
+def sec_statement_update(symbol: str, facts: dict[str, Any] | None) -> dict[str, Any] | None:
+    periods = sec_periods(facts)
+    if not periods:
+        return None
+    fiscal_year = periods[0]
+    previous_fiscal_year = periods[1] if len(periods) > 1 else None
+    revenue = sec_value(facts, SEC_FACT_FIELDS["revenue"], fiscal_year)
+    previous_revenue = sec_value(facts, SEC_FACT_FIELDS["revenue"], previous_fiscal_year)
+    operating_income = sec_value(facts, SEC_FACT_FIELDS["operating_income"], fiscal_year)
+    previous_operating_income = sec_value(facts, SEC_FACT_FIELDS["operating_income"], previous_fiscal_year)
+    net_income = sec_value(facts, SEC_FACT_FIELDS["net_income"], fiscal_year)
+    previous_net_income = sec_value(facts, SEC_FACT_FIELDS["net_income"], previous_fiscal_year)
+    assets = sec_value(facts, SEC_FACT_FIELDS["total_assets"], fiscal_year)
+    previous_assets = sec_value(facts, SEC_FACT_FIELDS["total_assets"], previous_fiscal_year)
+    equity = sec_value(facts, SEC_FACT_FIELDS["total_equity"], fiscal_year)
+    previous_equity = sec_value(facts, SEC_FACT_FIELDS["total_equity"], previous_fiscal_year)
+    average_assets = (assets + previous_assets) / 2 if assets is not None and previous_assets is not None else assets
+    average_equity = (equity + previous_equity) / 2 if equity is not None and previous_equity is not None else equity
+    depreciation = sec_value(facts, SEC_FACT_FIELDS["depreciation"], fiscal_year)
+    short_term_debt = sec_value(facts, SEC_FACT_FIELDS["short_term_debt"], fiscal_year)
+    long_term_debt = sec_value(facts, SEC_FACT_FIELDS["long_term_debt"], fiscal_year)
+    total_debt = None
+    if short_term_debt is not None or long_term_debt is not None:
+        total_debt = (short_term_debt or 0) + (long_term_debt or 0)
+    shares = sec_share_value(facts, fiscal_year)
+    eps = sec_eps_value(facts, fiscal_year, net_income)
+    now = utc_now_iso()
+    row = {
+        "symbol": symbol,
+        "market": "us",
+        "fiscal_year": fiscal_year,
+        "eps": eps,
+        "roe_pct": ratio_pct(net_income, average_equity),
+        "roa_pct": ratio_pct(net_income, average_assets),
+        "net_margin_pct": ratio_pct(net_income, revenue),
+        "operating_margin_pct": ratio_pct(operating_income, revenue),
+        "revenue_growth_pct": sec_growth_pct(revenue, previous_revenue),
+        "operating_income_growth_pct": sec_growth_pct(operating_income, previous_operating_income),
+        "earnings_growth_pct": sec_growth_pct(net_income, previous_net_income),
+        "revenue": revenue,
+        "previous_revenue": previous_revenue,
+        "operating_income": operating_income,
+        "previous_operating_income": previous_operating_income,
+        "net_income": net_income,
+        "previous_net_income": previous_net_income,
+        "total_assets": assets,
+        "average_assets": average_assets,
+        "total_equity": equity,
+        "average_equity": average_equity,
+        "shares_outstanding": shares,
+        "book_value_per_share": equity / shares if equity is not None and shares else None,
+        "ebitda": (operating_income or 0) + (depreciation or 0) if operating_income is not None or depreciation is not None else None,
+        "total_debt": total_debt,
+        "cash_and_short_investments": sec_value(facts, SEC_FACT_FIELDS["cash_short_investments"], fiscal_year),
+        "fundamental_type": "operating_company",
+        "source": "sec_company_facts",
+        "refreshed_at": now,
+        "updated_at": now,
+    }
+    update = compact_row(row)
+    return update if len(update) > 5 else None
+
+
+def backfill_sec_statement_values(limit: int, sec_delay_seconds: float) -> int:
+    rows = statement_candidate_rows(limit)
+    if not rows:
+        return 0
+    cik_map = load_sec_cik_map()
+    updates: list[dict[str, Any]] = []
+    for row in rows:
+        symbol = normalize_symbol(str(row.get("symbol") or ""))
+        cik = cik_map.get(symbol)
+        if not symbol or not cik:
+            continue
+        try:
+            update = sec_statement_update(symbol, fetch_sec_company_facts(cik))
+        except Exception as exc:
+            print(f"{utc_now_iso()} SEC company facts failed for {symbol}: {exc}", flush=True)
+            time.sleep(sec_delay_seconds)
+            continue
+        time.sleep(sec_delay_seconds)
+        if update:
+            updates.append(update)
+    for index in range(0, len(updates), 50):
+        supabase_upsert(FUNDAMENTALS_TABLE, updates[index : index + 50])
+    return len(updates)
+
+
 def run_once(args: argparse.Namespace) -> None:
     marked = mark_non_applicable_eps(args.mark_limit)
     classified = backfill_sec_classification(args.classification_limit, args.sec_delay_seconds)
+    statements = backfill_sec_statement_values(args.statement_limit, args.sec_delay_seconds)
     print(
         f"{utc_now_iso()} fundamental warm pass complete: marked {marked} EPS-not-applicable rows, "
-        f"backfilled {classified} SEC classifications",
+        f"backfilled {classified} SEC classifications, backfilled {statements} SEC statement rows",
         flush=True,
     )
 
@@ -411,6 +701,7 @@ def main() -> None:
     parser.add_argument("--sleep-seconds", type=float, default=float(os.environ.get("FUNDAMENTAL_WARM_SLEEP_SECONDS", "900")))
     parser.add_argument("--classification-limit", type=int, default=int(os.environ.get("FUNDAMENTAL_WARM_CLASSIFICATION_LIMIT", "800")))
     parser.add_argument("--mark-limit", type=int, default=int(os.environ.get("FUNDAMENTAL_WARM_MARK_LIMIT", "1200")))
+    parser.add_argument("--statement-limit", type=int, default=int(os.environ.get("FUNDAMENTAL_WARM_STATEMENT_LIMIT", "180")))
     parser.add_argument("--sec-delay-seconds", type=float, default=float(os.environ.get("SEC_REQUEST_DELAY_SECONDS", "0.12")))
     args = parser.parse_args()
 
