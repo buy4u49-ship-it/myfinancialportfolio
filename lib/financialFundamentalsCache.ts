@@ -80,6 +80,56 @@ function isMissingFinancialColumn(error: unknown) {
   return (message.includes("column") || message.includes("schema cache")) && message.includes("financial_fundamentals_cache");
 }
 
+const OPTIONAL_FINANCIAL_COLUMNS = new Set([
+  "roa_pct",
+  "net_margin_pct",
+  "operating_margin_pct",
+  "revenue_growth_pct",
+  "operating_income_growth_pct",
+  "earnings_growth_pct",
+  "revenue",
+  "previous_revenue",
+  "operating_income",
+  "previous_operating_income",
+  "net_income",
+  "previous_net_income",
+  "total_assets",
+  "average_assets",
+  "total_equity",
+  "average_equity",
+  "market_cap",
+  "shares_outstanding",
+  "book_value_per_share",
+  "ebitda",
+  "total_debt",
+  "cash_and_short_investments",
+  "fundamental_type",
+  "eps_unavailable_reason",
+  "classification_source"
+]);
+const REQUIRED_STATEMENT_COLUMNS = new Set([
+  "revenue",
+  "previous_revenue",
+  "operating_income",
+  "previous_operating_income",
+  "net_income",
+  "previous_net_income"
+]);
+
+function missingFinancialColumnName(error: unknown) {
+  const message = errorMessage(error);
+  if (!isMissingFinancialColumn(error) && !isMissingMarketCapColumn(error)) {
+    return "";
+  }
+  const quoted = message.match(/['"]([a-zA-Z0-9_]+)['"]\s+column/) || message.match(/column\s+['"]?([a-zA-Z0-9_]+)['"]?/);
+  const column = quoted?.[1] || "";
+  return OPTIONAL_FINANCIAL_COLUMNS.has(column) ? column : "";
+}
+
+function omitColumns(row: ReturnType<typeof snapshotToRow>, columns: Set<string>) {
+  return Object.fromEntries(Object.entries(row).filter(([key]) => !columns.has(key)));
+}
+
 function isStockMarket(market: StrategyMarket): market is Exclude<StrategyMarket, "crypto"> {
   return market === "us" || market === "korea";
 }
@@ -310,45 +360,37 @@ export async function readFinancialFundamentalsCache(symbols: string[], markets?
   return snapshots;
 }
 
-function baseFinancialRow(row: ReturnType<typeof snapshotToRow>) {
-  return {
-    symbol: row.symbol,
-    market: row.market,
-    name: row.name,
-    sector: row.sector,
-    industry: row.industry,
-    currency: row.currency,
-    fiscal_year: row.fiscal_year,
-    eps: row.eps,
-    roe_pct: row.roe_pct,
-    net_income: row.net_income,
-    average_equity: row.average_equity,
-    price_at_refresh: row.price_at_refresh,
-    source: row.source,
-    refreshed_at: row.refreshed_at,
-    updated_at: row.updated_at
-  };
-}
-
 export async function writeFinancialFundamentalsCache(snapshots: FinancialFundamentalSnapshot[]) {
   if (!snapshots.length) {
     return;
   }
   for (const rowChunk of chunk(snapshots.map(snapshotToRow), 100)) {
-    const { error } = await supabaseAdmin()
-      .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
-      .upsert(rowChunk, { onConflict: "symbol,market" });
-    if (error && (isMissingMarketCapColumn(error) || isMissingFinancialColumn(error))) {
-      const fallbackRows = rowChunk.map(baseFinancialRow);
-      const fallback = await supabaseAdmin()
+    const omittedColumns = new Set<string>();
+    for (let attempt = 0; attempt <= OPTIONAL_FINANCIAL_COLUMNS.size; attempt += 1) {
+      const rows = omittedColumns.size ? rowChunk.map((row) => omitColumns(row, omittedColumns)) : rowChunk;
+      const { error } = await supabaseAdmin()
         .from(FINANCIAL_FUNDAMENTALS_CACHE_TABLE)
-        .upsert(fallbackRows, { onConflict: "symbol,market" });
-      if (!fallback.error) {
+        .upsert(rows, { onConflict: "symbol,market" });
+      if (!error) {
+        if (omittedColumns.has("revenue") || omittedColumns.has("previous_revenue")) {
+          throw new Error("Financial fundamentals cache schema is missing revenue columns. Run supabase_financial_fundamentals_cache.sql in Supabase before warming caches.");
+        }
+        if (omittedColumns.size) {
+          console.warn(`Financial fundamentals cache write skipped missing columns: ${Array.from(omittedColumns).join(", ")}`);
+        }
+        break;
+      }
+      const missingColumn = missingFinancialColumnName(error);
+      if (missingColumn && !omittedColumns.has(missingColumn)) {
+        if (REQUIRED_STATEMENT_COLUMNS.has(missingColumn)) {
+          throw new Error(`Financial fundamentals cache schema is missing ${missingColumn}. Run supabase_financial_fundamentals_cache.sql in Supabase before warming caches.`);
+        }
+        omittedColumns.add(missingColumn);
         continue;
       }
-      throw new Error(errorMessage(fallback.error) || "Financial fundamentals cache write failed.");
-    }
-    if (error) {
+      if (isMissingMarketCapColumn(error) || isMissingFinancialColumn(error)) {
+        throw new Error("Financial fundamentals cache schema is missing financial columns. Run supabase_financial_fundamentals_cache.sql in Supabase before warming caches.");
+      }
       throw new Error(errorMessage(error) || "Financial fundamentals cache write failed.");
     }
   }
