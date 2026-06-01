@@ -173,17 +173,22 @@ def supabase_select(table: str, params: dict[str, str], timeout: int = 30) -> li
     return data if isinstance(data, list) else []
 
 
+def uniform_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    keys = sorted({key for row in rows for key in row.keys()})
+    return [{key: row.get(key) for key in keys} for row in rows]
+
+
 def supabase_upsert(table: str, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     try:
-        supabase_request("POST", table, rows)
+        supabase_request("POST", table, uniform_rows(rows))
     except RuntimeError as exc:
         message = str(exc).lower()
         optional_columns = {"fundamental_type", "eps_unavailable_reason", "classification_source", "average_equity", "price_at_refresh"}
         if any(column in message for column in optional_columns):
             stripped = [{key: value for key, value in row.items() if key not in optional_columns} for row in rows]
-            supabase_request("POST", table, stripped)
+            supabase_request("POST", table, uniform_rows(stripped))
             return
         raise
 
