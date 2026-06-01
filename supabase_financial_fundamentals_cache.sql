@@ -65,6 +65,7 @@ alter table public.financial_fundamentals_cache
   add column if not exists total_assets numeric,
   add column if not exists average_assets numeric,
   add column if not exists total_equity numeric,
+  add column if not exists average_equity numeric,
   add column if not exists market_cap numeric,
   add column if not exists shares_outstanding numeric,
   add column if not exists book_value_per_share numeric,
@@ -73,6 +74,7 @@ alter table public.financial_fundamentals_cache
   add column if not exists cash_and_short_investments numeric,
   add column if not exists fundamental_type text,
   add column if not exists eps_unavailable_reason text,
-  add column if not exists classification_source text;
+  add column if not exists classification_source text,
+  add column if not exists price_at_refresh numeric;
 
 alter table public.financial_fundamentals_cache enable row level security;

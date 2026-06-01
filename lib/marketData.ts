@@ -1028,6 +1028,7 @@ const SEC_CIKS: Record<string, string> = {
   LLY: "0000059478",
   UNH: "0000731766",
   JNJ: "0000200406",
+  FARM: "0000034563",
   XOM: "0000034088",
   CVX: "0000093410"
 };
@@ -1057,37 +1058,63 @@ function cikString(value: unknown) {
   return String(Math.trunc(numeric)).padStart(10, "0");
 }
 
-async function fetchSecTickerMap() {
-  try {
-    const response = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", {
-      headers: {
-        accept: "application/json",
-        "user-agent": "myfinancialportfolio-next/1.0 contact@example.com"
-      },
-      next: { revalidate: 21_600 }
-    });
-    if (!response.ok) {
-      return new Map<string, string>();
-    }
-    const payload = (await response.json()) as { fields?: string[]; data?: unknown[][] };
-    const fields = payload.fields || [];
-    const tickerIndex = fields.indexOf("ticker");
-    const cikIndex = fields.indexOf("cik");
-    if (tickerIndex < 0 || cikIndex < 0 || !Array.isArray(payload.data)) {
-      return new Map<string, string>();
-    }
-    const map = new Map<string, string>();
-    for (const row of payload.data) {
-      const ticker = String(row[tickerIndex] || "").toUpperCase().trim();
-      const cik = cikString(row[cikIndex]);
-      if (ticker && cik && !map.has(ticker)) {
-        map.set(ticker, cik);
-      }
-    }
-    return map;
-  } catch {
-    return new Map<string, string>();
+async function addSecExchangeTickerMap(map: Map<string, string>) {
+  const response = await fetch("https://www.sec.gov/files/company_tickers_exchange.json", {
+    headers: {
+      accept: "application/json",
+      "user-agent": "myfinancialportfolio-next/1.0 contact@example.com"
+    },
+    next: { revalidate: 21_600 }
+  });
+  if (!response.ok) {
+    return;
   }
+  const payload = (await response.json()) as { fields?: string[]; data?: unknown[][] };
+  const fields = payload.fields || [];
+  const tickerIndex = fields.indexOf("ticker");
+  const cikIndex = fields.indexOf("cik");
+  if (tickerIndex < 0 || cikIndex < 0 || !Array.isArray(payload.data)) {
+    return;
+  }
+  for (const row of payload.data) {
+    const ticker = String(row[tickerIndex] || "").toUpperCase().trim();
+    const cik = cikString(row[cikIndex]);
+    if (ticker && cik && !map.has(ticker)) {
+      map.set(ticker, cik);
+    }
+  }
+}
+
+async function addSecCompanyTickerMap(map: Map<string, string>) {
+  const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
+    headers: {
+      accept: "application/json",
+      "user-agent": "myfinancialportfolio-next/1.0 contact@example.com"
+    },
+    next: { revalidate: 21_600 }
+  });
+  if (!response.ok) {
+    return;
+  }
+  const payload = (await response.json()) as Record<string, { ticker?: unknown; cik_str?: unknown }>;
+  for (const item of Object.values(payload || {})) {
+    const ticker = String(item?.ticker || "").toUpperCase().trim();
+    const cik = cikString(item?.cik_str);
+    if (ticker && cik && !map.has(ticker)) {
+      map.set(ticker, cik);
+    }
+  }
+}
+
+async function fetchSecTickerMap() {
+  const map = new Map<string, string>();
+  await Promise.allSettled([addSecExchangeTickerMap(map), addSecCompanyTickerMap(map)]);
+  for (const [ticker, cik] of Object.entries(SEC_CIKS)) {
+    if (!map.has(ticker)) {
+      map.set(ticker, cik);
+    }
+  }
+  return map;
 }
 
 async function resolveSecCik(symbol: string) {
@@ -1307,6 +1334,7 @@ const SEC_FACT_FIELDS: Record<string, string[]> = {
     "OilAndGasRevenue",
     "HealthCareOrganizationRevenue",
     "OperatingLeasesIncomeStatementLeaseRevenue",
+    "GrossInvestmentIncomeOperating",
     "InterestAndDividendIncomeOperating",
     "InterestIncomeOperating",
     "InterestIncomeExpenseOperatingNet",

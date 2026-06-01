@@ -105,7 +105,8 @@ const OPTIONAL_FINANCIAL_COLUMNS = new Set([
   "cash_and_short_investments",
   "fundamental_type",
   "eps_unavailable_reason",
-  "classification_source"
+  "classification_source",
+  "price_at_refresh"
 ]);
 const REQUIRED_STATEMENT_COLUMNS = new Set([
   "revenue",

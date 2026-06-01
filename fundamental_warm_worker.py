@@ -16,6 +16,9 @@ from typing import Any
 FUNDAMENTALS_TABLE = "financial_fundamentals_cache"
 SEC_TICKERS_EXCHANGE_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_CIKS = {
+    "FARM": "0000034563",
+}
 SEC_FACT_FIELDS: dict[str, list[str]] = {
     "revenue": [
         "Revenues",
@@ -36,6 +39,7 @@ SEC_FACT_FIELDS: dict[str, list[str]] = {
         "OilAndGasRevenue",
         "HealthCareOrganizationRevenue",
         "OperatingLeasesIncomeStatementLeaseRevenue",
+        "GrossInvestmentIncomeOperating",
         "InterestAndDividendIncomeOperating",
         "InterestIncomeOperating",
         "InterestIncomeExpenseOperatingNet",
@@ -176,7 +180,7 @@ def supabase_upsert(table: str, rows: list[dict[str, Any]]) -> None:
         supabase_request("POST", table, rows)
     except RuntimeError as exc:
         message = str(exc).lower()
-        optional_columns = {"fundamental_type", "eps_unavailable_reason", "classification_source"}
+        optional_columns = {"fundamental_type", "eps_unavailable_reason", "classification_source", "average_equity", "price_at_refresh"}
         if any(column in message for column in optional_columns):
             stripped = [{key: value for key, value in row.items() if key not in optional_columns} for row in rows]
             supabase_request("POST", table, stripped)
@@ -432,18 +436,21 @@ def load_sec_cik_map() -> dict[str, str]:
     except Exception as exc:
         print(f"{utc_now_iso()} SEC exchange ticker map failed: {exc}", flush=True)
 
-    if mapping:
-        return mapping
+    try:
+        payload = request_json(SEC_TICKERS_URL)
+        if isinstance(payload, dict):
+            for item in payload.values():
+                if not isinstance(item, dict):
+                    continue
+                ticker = normalize_symbol(str(item.get("ticker") or ""))
+                cik = str(item.get("cik_str") or "").zfill(10)
+                if ticker and cik and ticker not in mapping:
+                    mapping[ticker] = cik
+    except Exception as exc:
+        print(f"{utc_now_iso()} SEC company ticker map failed: {exc}", flush=True)
 
-    payload = request_json(SEC_TICKERS_URL)
-    if isinstance(payload, dict):
-        for item in payload.values():
-            if not isinstance(item, dict):
-                continue
-            ticker = normalize_symbol(str(item.get("ticker") or ""))
-            cik = str(item.get("cik_str") or "").zfill(10)
-            if ticker and cik:
-                mapping[ticker] = cik
+    for ticker, cik in SEC_CIKS.items():
+        mapping.setdefault(ticker, cik)
     return mapping
 
 
